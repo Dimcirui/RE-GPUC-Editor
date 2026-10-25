@@ -122,8 +122,10 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
         if context.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
         mode = self.import_mode
+        fell_back = []                                         # (file, why) imported with Keep Structure instead
         if mode == "REBUILD" and mesh is None:                 # the default with no mesh: the shape only
             mode = "KEEP"
+            fell_back.append(("", "no mesh collection (Rebuild from Bones needs the mesh's bones)"))
             self.report({"WARNING"}, "No mesh collection: imported with Keep Structure (Rebuild from Bones needs "
                                      "the mesh's bones)")
         done = []
@@ -149,11 +151,34 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
             done.append(name)
             for note in notes:
                 self.report({"WARNING"}, f"{name}: {note}" if len(paths) > 1 else note)
+                if note.startswith("Not rebuilt ("):
+                    fell_back.append((name, note[len("Not rebuilt ("):note.rfind("): imported with")]))
+        if fell_back and done:
+            _fell_back_popup(context, fell_back)
         if not done:
             return {"CANCELLED"}
         context.scene["REEGpucLastImportedVersion"] = int(fileio.gp.ext_of_path(paths[-1])[1:])
         self.report({"INFO"}, f"Imported {', '.join(done)} ({dict((m[0], m[1]) for m in IMPORT_MODES)[mode]})")
         return {"FINISHED"}
+
+
+def _fell_back_popup(context, fell_back) -> None:
+    """Say in a popup that files were imported with Keep Structure, not rebuilt, and why (a report alone is easily
+    missed among the others). Not in background Blender."""
+    if bpy.app.background:
+        return
+    import textwrap
+
+    def draw(menu, _context):
+        col = menu.layout.column()
+        for name, why in fell_back:
+            if name:
+                col.label(text=name, icon="FILE")
+            for k, line in enumerate(textwrap.wrap(why, 90)):
+                col.label(text=line, icon="BLANK1" if k or name else "INFO")
+        col.separator()
+        col.label(text="Their Parts keep the file's structure (locked): values can be edited, not regenerated")
+    context.window_manager.popup_menu(draw, title="Imported with Keep Structure, not rebuilt", icon="ERROR")
 
 
 class REE_GPUC_FH_import(bpy.types.FileHandler):
