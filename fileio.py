@@ -637,7 +637,8 @@ def _write_capsules(g, coll, arm, notes) -> None:
     caps = capsule_records(coll, arm, notes)
     if 16 not in g.sections:
         if caps:
-            notes.append(f"{len(caps)} own capsules left out: this file has no capsule section to put them in")
+            notes.append(f"{len(caps)} own capsules left out: this file has no capsule section to put them in "
+                         f"(a template that has own capsules keeps them; Keep Structure cannot add the section)")
         return
     g.sections[16].data = bytearray(b"".join(struct.pack("<II8x3ff3ff", ha, hb, *oa, ra, *ob, rb)
                                              for ha, hb, oa, ra, ob, rb in caps))
