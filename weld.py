@@ -7,8 +7,9 @@ particles' rest centre (its transform locked). It holds the two Parts and the we
 pair on one point (sim.weld), the overlay draws them yellow, the selected one's larger.
 
 Parts made from bones (Weld Parts, Rebuild from Bones) weld each shared bone's lattice particle, found again from
-their bones whenever asked (a Part regenerated keeps its welds); the export writes those links and has each shared
-bone's joint driven by both particles alike, and leaves out a weld that cannot be written (problems), said. A Keep
+their bones whenever asked (a Part regenerated keeps its welds); the export writes those links (each shared bone's
+joint is driven by the particles of both, as every joint by the particles skinned to its bone), and leaves out a
+weld that cannot be written (problems), said. A Keep
 Structure cloth keeps its file's pairs (on the object) and writes them over its file: the tail is written, a weld
 cannot be added or taken out (the export refuses one the file has and the cloth no longer does)."""
 import bpy

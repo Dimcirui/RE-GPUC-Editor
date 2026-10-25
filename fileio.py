@@ -324,6 +324,7 @@ def _build_generated(coll, head, cfg_objs, part_objs, template, mesh_coll, ext=g
 
     positions, sim_weight, skin_bones, skin_w, faces, uvs, outputs = [], [], [], [], [], [], []
     shapes, part_vals, driven, base, starts = {}, [], {}, 0, {}
+    skinned = collections.defaultdict(list)            # bone -> (particle, its skin weight to it) of every Part
     for obj, why in weld.skipped(coll):
         notes.append(f"{obj.name} left out: {why}")
     welded = collections.defaultdict(set)              # the Parts each Part is welded to
@@ -363,32 +364,37 @@ def _build_generated(coll, head, cfg_objs, part_objs, template, mesh_coll, ext=g
             idx = [node_full[j] for j in d["skin"][i]]
             skin_bones.append(idx + [idx[0]] * 4)
             skin_w.append(list(u8) + [0] * 4)
-        # A node owns its lattice particle, independent of the edited rest position.
-        for name, i in weld.node_particles(d).items():
+            for j, x in zip(d["skin"][i], w / max(w.sum(), 1e-9)):
+                if x > 0:
+                    skinned[d["nodes"][j]].append((base + i, float(x)))
+        for name in d["nodes"]:
             if name not in weighted:
                 notes.append(f"{name} has no weights in the mesh: it is not driven")
                 continue
             if name in driven:
-                out, by = driven[name]
-                if welded[obj] & by:                       # welded on it: driven by each Part's particle alike
-                    by.add(obj)
-                    out["particles"].append(base + i)
-                    out["weights"] = [1.0 / len(out["particles"])] * len(out["particles"])
-                else:
+                if not welded[obj] & driven[name]:
                     shared.append(name)
+                driven[name].add(obj)
                 continue
             world = to_game @ np.array(arm.data.bones[name].matrix_local, float)
-            outputs.append(dict(palette=weighted.index(name), world=world.T, particles=[base + i], weights=[1.0],
-                                full=bones.index(name)))
-            driven[name] = (outputs[-1], {obj})
+            outputs.append(dict(palette=weighted.index(name), world=world.T, particles=[], weights=[],
+                                full=bones.index(name), bone=name))
+            driven[name] = {obj}
         if shared:
             notes.append(f"{obj.name}: {len(shared)} of its bones are an earlier Part's too ({', '.join(shared[:3])}"
-                         f"{', ...' if len(shared) > 3 else ''}) and it is not welded to it: only that Part drives "
-                         f"them")
+                         f"{', ...' if len(shared) > 3 else ''}) and it is not welded to it: their joints follow "
+                         f"both Parts")
         tails = _tails_bytes(obj.ree_gpuc_part)
         for a, b, typ, shape in grid.links(rows, cols, closed):
             shapes[(base + int(a), base + int(b), int(typ))] = tails[int(shape)]
         base += n
+    # as vanilla's: each joint driven by every particle skinned to its bone (of any Part, welded ones on both),
+    # by that skin weight; the heaviest MIN_SLOTS (ties: the lower particles), in descending particle order
+    for o in outputs:
+        keep = sorted(skinned[o.pop("bone")], key=lambda p: (-p[1], p[0]))[:gpuc_build.MIN_SLOTS]
+        keep.sort(key=lambda p: -p[0])
+        total = sum(x for _, x in keep)
+        o["particles"], o["weights"] = [p for p, _ in keep], [x / total for _, x in keep]
     outputs.sort(key=lambda o: o["full"])
     if not outputs:
         raise ExportError("no bone of the cloth has weights in the mesh: nothing would move")
