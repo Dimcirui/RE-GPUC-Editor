@@ -1,0 +1,11 @@
+__pycache__/
+*.zip
+.pytest_cache/
+backups/
+.thumbnails/
+*.blend1
+
+# development material kept locally, not published with the add-on
+docs/
+tools/
+tests/

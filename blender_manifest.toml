@@ -1,0 +1,28 @@
+schema_version = "1.0.0"
+
+id = "ree_gpuc_editor"
+version = "0.3.1"
+name = "RE GPUC Editor"
+tagline = "Edit Wilds, RE9 and Onimusha GPU cloth; keep-structure RE4"
+maintainer = "Dimcirui"
+type = "add-on"
+
+tags = ["Animation", "Physics", "Rigging"]
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "/.git/",
+  "/.gitignore",
+  "/.pytest_cache/",
+  "/tests/",
+  "/docs/",
+  "/tools/",
+  "/backups/",
+  "/.thumbnails/",
+  "/*.zip",
+]
