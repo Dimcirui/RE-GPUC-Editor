@@ -1,64 +1,87 @@
-# 版本记录
+# Change Log
 
 ## 0.4.0
 
-- 导出不再需要模板 `.gpuc`：导出对话框去掉了 Template .gpuc（它的文件夹按钮还会报“无法激活文件选择器对话框”）。对照游戏的布料着色器确认，模板提供的段 10、14、15、20、28 着色器都不读，其余内容编辑器本来就会覆盖，所以现在按各游戏的固定布局直接生成文件。和以前用模板导出相比，只有段 28 改成统一的默认值、段 14 / 15 不再带上，模拟结果不变。Wilds-Dynamics 接口也不再要求先导出一次。
-- Header 的 Unkn Param 5 改名为 **Friction**（着色器 StaticClothInfo 里的 friction，原版都是 0）。作用未知，仍灰显。改名后旧 .blend 里这个值回到 0。
-- 改写了 tooltip、提示和报错文字：去掉样本统计和验证状态的说法，作用不明的值统一写作“Effect unknown.”，报错写明下一步怎么做。
-- Header 去掉 Unkn Param 10、11：它们是自碰撞描述符的数量，编辑器不生成这些描述符，导出时固定写 0。插值、限制混合信息的数量和 simulationDeformWeightCount 也由导出按原版写入（0、0、1），不再取自模板。
-- 修复不选网格集合导入（Keep Structure）时参考骨架不生效：胶囊端点和根关节现在按 data/skeletons.json 放在 vanilla 位置，不再堆在原点；胶囊偏移的方向也与有网格时一致。已导入的集合需重新导入。
-- 从骨骼生成的布料可以缝合：在 General Tools 里选中两个 Part 后点 **Weld Parts**，按两个 Part 共用的骨骼缝合（每根共用骨骼在两边的格点粒子配成一对，Part 重新生成后会跟着变）。导出时写成静止长度 0 的约束；不能写出的 Weld 会跳过，并在提示里和 Weld 面板上说明原因。Rebuild from Bones 会读回文件里的缝合，Update Existing 会读回它们的参数。
-- 导出行为改变：从骨骼生成的布料，每个输出关节改为由所有蒙皮到这根骨骼的粒子按蒙皮权重驱动（最多 8 个），和原版相同；以前只用格点粒子驱动。带插入粒子的布料导出结果会变。
-- 更正：部分 RE9 原版文件有自带胶囊（71 个中 7 个，如 ch2030_45_51、ch4010_45_05），0.3.0 记录的“RE9 原版没有胶囊段”有误。
-- 自带胶囊不再因模板或原文件没有胶囊段而被丢弃：导出时按原版的排法新建胶囊段（Wilds、RE9、鬼武者，Keep Structure 也适用）。布料没有胶囊时，导出的文件也不再带空的胶囊段，与原版无胶囊文件一致。
+### ⚠️ Breaking
+- **Add-on id** — the add-on is now installed as `re_gpuc_editor` (was `ree_gpuc_editor`). **Uninstall the old version before installing this one, or both will be loaded.** Saved presets are kept.
+
+### New
+- **Weld Parts** — two Parts made from bones can be welded along the bones they share. Welds follow the Parts when they are regenerated, are exported, and come back with Rebuild from Bones and Update Existing. A weld that cannot be exported is skipped, and the export message and the Weld panel say why.
+
+### Changed
+- **Export** — no longer needs a template `.gpuc`; the Template field is gone from the export dialog. Wilds-Dynamics can build a cloth before it has been exported once.
+- **Export** — each driven joint now follows every particle skinned to its bone, as the game's own cloth does. Cloth with extra particles between bones exports differently.
+- **Header** — Unkn Param 5 is now **Friction** (effect unknown). **Its value in existing .blend files resets to 0.**
+- **Header** — Unkn Param 10 and 11 are removed; the export writes them.
+- **Tooltips and messages** — values of unknown effect say so plainly, and error messages say what to do next.
+
+### Fixed
+- **Export dialog** — the template file button no longer fails with "cannot activate file selector".
+- **Own capsules** — kept on export when the original file has no capsule section, in all games including Keep Structure. Cloth without capsules no longer exports an empty capsule section.
+- **Keep Structure without a mesh** — capsule ends and root joints are placed on the reference skeleton instead of the origin, and capsule offsets point the same way as with a mesh. **Re-import cloth imported this way.**
 
 ## 0.3.1
 
-- General Tools：Check All 改名为 **Check**，和 Create（新建 GPUC Header）并排放在第二行，与 Import / Export 上下对应。Check 检查活动 GPUC 的所有 Part。
-- 加入 GPL-3.0 许可证全文。安装包只包含插件本体。
+### Changed
+- **General Tools** — Check All is renamed **Check** and sits beside Create, below Import / Export. It checks every Part of the active cloth.
+- **License** — the full GPL-3.0 text is included. The package contains the add-on only.
 
 ## 0.3.0
 
-- 支持 Onimusha: Way of the Sword（`.gpuc.260209505`）：导入（Keep Structure、Rebuild from Bones）、导出、新建布料。21 个原版文件中，18 个无改动导出逐字节一致；另外 3 个直接驱动顶点、没有 Mesh Multi Joint Deform，按与 Wilds 相同的规则拒绝导入。
-- 鬼武者布料导出时保留自带胶囊（RE9 原版没有胶囊段，导出时丢弃并提示）。
-- Part 的 Friction 取消上限 1：鬼武者原版有 30 和 100。滑块仍到 1，预览模拟按 1 截断。
+### New
+- **Onimusha: Way of the Sword** — import (Keep Structure, Rebuild from Bones), export and new cloth. Files that drive mesh vertices directly cannot be imported, as in Wilds.
+
+### Changed
+- **Part Friction** — no longer limited to 1. The slider still stops at 1, and the preview uses at most 1.
+
+### Fixed
+- **Own capsules** — kept when exporting Onimusha cloth.
 
 ## 0.2.0
 
-- Mapping Range 的行为改变：修改 Min / Max 时保留顶点组权重和颜色分布，改为更新实际参数值（碰撞半径、限制距离等随之变化）。0.1.x 的做法相反。
+### Changed
+- **Mapping Range** — changing Min / Max now keeps the vertex group weights and colors and changes the particle values instead (collision radius, limit distances and so on). 0.1.x did the opposite.
 
 ## 0.1.10
 
-- 修复界面着色问题。
+### Fixed
+- **Particle display** — color issues in the interface.
 
 ## 0.1.9
 
-- 修复粒子着色与当前编辑参数的同步：修改 Value、Mapping Range，或执行 Paint / Set on Selected 时，Display 的粒子着色切换到当前参数。
+### Fixed
+- **Particle display** — the particle colors switch to the value being edited when you change Value or Mapping Range, or use Paint / Set on Selected.
 
 ## 0.1.8
 
-- 调整粒子参数的权重映射。
+### Changed
+- **Particle values** — adjusted how weights map to values.
 
 ## 0.1.7
 
-- 调整粒子布局。
+### Changed
+- **Particle layout** — adjusted.
 
 ## 0.1.6
 
-- 修复安装、启用时访问 Blender 受限上下文导致的 `_RestrictContext.active_object` 错误。初始选择同步改到注册完成后执行，禁用时清理尚未执行的定时回调。
+### Fixed
+- **Installation** — no longer fails with an `_RestrictContext.active_object` error when the add-on is installed or enabled.
 
 ## 0.1.5
 
-- 新增自定义参数预设（GPUC: Presets）。
+### New
+- **GPUC: Presets** — save and apply your own parameter presets.
 
 ## 0.1.3 – 0.1.4
 
-- 新增粒子位置偏移：在编辑模式里移动生成的粒子，退出时保存。
+### New
+- **Particle offsets** — move generated particles in Edit Mode; positions are saved when you leave it.
 
 ## 0.1.2
 
-- RE4 试验支持：修正碰撞掩码偏移为 Part `+0x34 / +0x38 / +0x3C`；`+0x30` 单独作为 float 编辑。旧试验版导入的 RE4 集合需要重新导入。
+### Fixed
+- **RE4** — Part collision masks are read from the right place, and the value before them is editable on its own. **Re-import RE4 cloth imported with earlier test versions.**
 
 ## 0.1.1
 
-- 首个打包版本；另有 RE4 Keep Structure 的试验版。
+- First packaged version, with a test version of RE4 Keep Structure.

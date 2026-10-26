@@ -1,80 +1,111 @@
 # RE GPUC Editor
 
-Blender 插件：为 RE Engine 游戏的 GPU 布料（`.gpuc`）从骨链生成粒子网格，批量设置粒子参数，预览近似模拟，并导入、导出 `.gpuc` 文件。
+**V0.4.0**
 
-*A Blender add-on for RE Engine GPU cloth (`.gpuc`): build the particle grid from bone chains, paint and set particle values, preview an approximate simulation, and import / export `.gpuc` files. Supports MH Wilds, RE9 and Onimusha: Way of the Sword; RE4 files can be edited in place. The UI is in English; this README is in Chinese.*
+[Change Log](CHANGELOG.md)
 
-## 支持的游戏
+This addon allows for creating, editing, importing and exporting RE Engine GPU cloth (.gpuc) files in Blender.
 
-| 游戏 | 扩展名 | 支持范围 | 游戏内验证 |
-|---|---|---|---|
-| Monster Hunter Wilds | `.gpuc.241111760` | 从骨骼生成、Rebuild from Bones、Keep Structure | 未验证 |
-| Resident Evil Requiem（RE9） | `.gpuc.250925365` | 同上 | 未验证 |
-| Onimusha: Way of the Sword | `.gpuc.260209505` | 同上 | 未验证 |
-| Resident Evil 4 | `.gpuc.221108868` | 仅 Keep Structure（在原文件上改参数） | 未验证 |
+### [Download RE GPUC Editor](https://github.com/Dimcirui/RE-GPUC-Editor/releases/latest)
 
-“未验证”指导出的文件只通过了格式层面的检查：原版文件无改动导出逐字节一致，编辑后只改动对应字段。尚未在游戏里实际运行过。
+## Features
+ - Generates GPU cloth from bone chains, with extra particles between bones and between chains.
+ - Imports existing .gpuc files: rebuilt from bones so they can be regenerated, or kept with their original structure for value edits.
+ - Particle values can be painted as vertex weights or set exactly on selected particles.
+ - Particles can be moved by hand in Edit Mode; the offsets survive rebuilds.
+ - Previews an approximate simulation with gravity, wind and draggable colliders.
+ - Presets of headers, configs, parts, collisions and welds can be saved and shared.
 
-## 安装
+## Supported Games
+| Game | Support |
+|---|---|
+| **Monster Hunter Wilds** | Full |
+| **Resident Evil Requiem (RE9)** | Full |
+| **Onimusha: Way of the Sword** | Full |
+| **Resident Evil 4** | Values edit only |
 
-1. 从 Releases 下载 `ree_gpuc_editor-<版本>.zip`。
-2. Blender 4.2 或更新版本：编辑 → 偏好设置 → 获取扩展 → 右上角下拉菜单 → 从磁盘安装，选择这个 zip。
-3. 导入、导出 `.gpuc` 需要配合 [RE Mesh Editor](https://github.com/NSACloud/RE-Mesh-Editor) 导入的网格和骨架。
+## Requirements
+* [Blender 4.2 or higher](https://www.blender.org/download/) (5.1 recommended)
+* [RE Mesh Editor](https://github.com/NSACloud/RE-Mesh-Editor), to import the mesh and armature the cloth belongs to
 
-升级时先卸载旧版本。自定义参数预设保存在 Blender 用户脚本目录，不受升级影响。
+## Installation
+Download `re_gpuc_editor-<version>.zip` from [Releases](https://github.com/Dimcirui/RE-GPUC-Editor/releases).
 
-## 快速上手
+In Blender, go to Edit > Preferences > Get Extensions, open the drop-down menu in the top right and click "Install from Disk". Select the zip file; the addon is then usable.
 
-1. **新建布料**：侧栏 RE GPUC → GPUC: General Tools → **Create**，在弹窗里选游戏、名字和骨架。
-2. **生成 Part**：切到姿态模式，在 GPUC: Pose Mode Tools 里点 Create Part From Parent Bones（只选每条链的首骨）或 Create Part From Selected Bones（选中整条链）。每条骨链是布料的一列。Between bones / Between chains 大于 0 时，会在骨与骨、链与链之间插入粒子。
-3. **设置粒子参数**：每个粒子参数对应一个顶点组，如 `gpuc_radius`、`gpuc_max_distance`。可以在 Particles 面板选好参数后点 Paint 直接刷权重；也可以点 Select Particles 选中粒子后，用 Set on Selected 设精确值。权重 0～1 映射到该 Part 的 Mapping Range（Min / Max）。
-4. **检查与重新生成**：修改骨骼静止位置并退出骨架编辑模式后，对应 Part 会自动重建。**Check** 检查活动 GPUC 的所有 Part 并报告问题。选中一个可重建的 Part 时，会出现 Regenerate Particles From Part，可以修改闭合和密度。
-5. **预览**：GPUC: Preview Simulation → Simulate。重力和风各用一支箭头表示，旋转箭头改方向，缩放改强度。Collider 行可以添加可拖动的球或胶囊。
-6. **导出**：General Tools → **Export**。不需要原版文件作模板。
+To update, uninstall the old version first. Earlier versions were installed as `ree_gpuc_editor`; uninstall that one too, or both will be loaded. Saved presets are kept.
 
-Config、Part、碰撞体、力的参数都在 Properties → Object 里。
+## Usage Guide
+**TL;DR Usage Guide**
 
-## 导入模式
+1. Import the mesh with RE Mesh Editor.
+2. In the RE GPUC sidebar tab, press "Create" under GPUC: General Tools and pick the game, name and armature.
+3. Switch to Pose Mode. Select the first bone of each chain and press "Create Part From Parent Bones", or select whole chains and press "Create Part From Selected Bones". Each chain becomes one column of the cloth.
+4. Set particle values in the Particles panel: "Paint" paints the chosen value as vertex weights, "Set on Selected" sets an exact value. Weights 0 to 1 map to the Part's Mapping Range.
+5. Configure the Header, Configs, Parts and colliders in the Object properties tab, or apply presets.
+6. (Optional) Preview under GPUC: Preview Simulation > Simulate.
+7. Export with "Export" under GPUC: General Tools.
 
-- **Rebuild from Bones**（默认）：按编辑器的网格模型重建，导入后可以重新生成。需要选择 Mesh Collection。文件结构不符合编辑器模型时，会自动改用 Keep Structure 并给出提示。
-- **Keep Structure**：保留原文件的粒子、约束和蒙皮结构，只编辑数值。没有改动时，导出结果和原文件逐字节相同。只能导出为原文件所属的游戏。
-- **Update Existing**：把文件里的参数套到已有的 GPUC 集合上。
+After you move bones in Edit Mode, the affected Parts rebuild when you leave it. "Check" reports problems with every Part of the active cloth.
 
-同一种格式的布料可以通过修改 Header 的 Game 在 Wilds、RE9、鬼武者之间转换，前提是这块布料是从骨骼生成或用 Rebuild from Bones 导入的。
+<details>
+  <summary>Import modes</summary>
 
-## 移动粒子
+* **Rebuild from Bones** (default): rebuilds the cloth with the editor's grid model, so it can be regenerated. Needs a Mesh Collection. Files whose structure does not fit the model are imported with Keep Structure instead, with a message saying why.
+* **Keep Structure**: keeps the file's particles, links and skinning, and lets you edit the values. With no edits, the export is byte for byte the original file. It can only be exported for the game the file came from.
+* **Update Existing**: applies the file's values to an existing GPUC collection.
 
-选中生成的 Part，按 Tab 进入编辑模式，可以用 `G`、轴向限制或比例编辑移动粒子。退出编辑模式时保存有效位置。
+A cloth generated from bones or imported with Rebuild from Bones can be converted between Wilds, RE9 and Onimusha by changing the Game in its Header.
 
-- 偏移保存在骨架的静止空间中。骨骼头位置改变后自动重建，偏移会保留；改变密度时偏移按网格坐标插值。
-- 顶点数、连接关系和 UV 受保护：如果删除、合并顶点或改动 UV，退出编辑模式时会恢复到最后一次有效状态。
-- **Reset Selected / Reset All** 把粒子恢复到骨骼生成的位置。
-- 带偏移的导出文件，再用 Rebuild from Bones 导入时可能会改用 Keep Structure。要继续编辑偏移，请保留 `.blend` 工作文件。
-- Keep Structure 的 Part（包括 RE4）不能移动粒子。
+</details>
 
-## 参数预设
+<details>
+  <summary>Moving particles</summary>
 
-侧栏 **GPUC: Presets** 可以把 Header、Config、Part、Collision、Weld 和预览用的力、碰撞体的参数保存为 JSON 预设，再应用到选中的同类对象上（支持撤销）。
+Select a generated Part and press Tab to enter Edit Mode. Move particles with `G`, axis constraints or proportional editing; valid positions are saved when you leave Edit Mode.
 
-- 预设按游戏分开保存，只能应用到同一游戏的对象。预览用的力和碰撞体在各游戏间共享。
-- Part 预设包含物理参数和四种约束形状的参数，不包含逐粒子的值。
-- 不保存对象引用、骨骼绑定、根关节、粒子位置偏移、蒙皮和拓扑。
-- **Open Preset Folder** 打开预设目录，可以直接复制 JSON 文件分享。
+* Offsets are stored in the armature's rest space. They are kept when the cloth rebuilds after bone heads move, and interpolated over the grid when the density changes.
+* Vertex count, connectivity and UVs are protected: deleting or merging vertices or changing UVs is undone when you leave Edit Mode.
+* "Reset Selected" / "Reset All" return particles to the positions generated from the bones.
+* A file exported with offsets may import with Keep Structure. Keep the .blend file to go on editing the offsets.
+* Particles of Keep Structure Parts (including RE4) cannot be moved.
 
-## RE4
+</details>
 
-RE4 只支持 Keep Structure：导入时自动使用这种模式，不需要 Mesh Collection。
+<details>
+  <summary>Presets</summary>
 
-- 可以修改粒子的 Simulation weight、Collision radius、Inverse mass、Max distance、Backstop radius，以及约束参数、Part 的摩擦、反弹、粘性和碰撞掩码，还有 Header 的 Max Velocity。
-- Config 里的字段按文件偏移命名（如 `RE4 value +0x24`），含义尚未确认，不能当作 Wilds 的同名参数。
-- 名字、Part 和 Config 的数量、骨骼绑定、碰撞体不能修改；不能预览模拟。
-- 导出时选 RE4，Joint Indices 用 As Imported。
+The GPUC: Presets panel saves Header, Config, Part, Collision, Weld and preview force and collider values as JSON presets, and applies them to selected objects of the same kind (with undo).
 
-## 许可证与来源
+* Presets are saved per game and apply only to objects of that game. Preview forces and colliders are shared by all games.
+* A Part preset holds the physics values and the four link shapes' settings, not per-particle values.
+* Object references, bone bindings, root joints, particle offsets, skinning and topology are not saved.
+* "Open Preset Folder" opens the folder, so the JSON files can be shared directly.
 
-本插件以 GPL-3.0-or-later 发布，全文见 [LICENSE](LICENSE)。
+</details>
 
-- `modules/gpuc.py`、`modules/gpuc_build.py` 源自 REE-Modding-Skill 的 `tools/gpuc/`（同为 GPL-3.0），本仓库有改动。
-- `data/skeletons.json` 由 MH Wilds 原版 `.fbxskel` 文件生成，只包含骨骼名、名字哈希、父子关系和静止矩阵，用作参考骨架：当胶囊端点或根关节指向的身体骨骼不在衣服网格的骨架里时，用它来定位。
+<details>
+  <summary>RE4</summary>
 
-版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+RE4 supports Keep Structure only: it is used automatically on import and needs no Mesh Collection.
+
+* You can edit the particles' Simulation weight, Collision radius, Inverse mass, Max distance and Backstop radius; the link settings; the Part's friction, bounce, stickiness and collision masks; and the Header's Max Velocity.
+* Config fields are named by their offset in the file (such as `RE4 value +0x24`). Their effects are unknown; they are not the Wilds fields of the same position.
+* Names, the number of Parts and Configs, bone bindings and colliders cannot be changed, and the simulation cannot be previewed.
+* Export with RE4 selected and Joint Indices set to As Imported.
+
+</details>
+
+## License and use
+
+RE GPUC Editor is released under the [GPL-3.0-or-later](LICENSE). `data/skeletons.json` is generated from Monster Hunter Wilds `.fbxskel` files and holds only bone names, name hashes, parent links and rest poses, used to place colliders on body bones.
+
+RE GPUC Editor is meant for modding and research in single-player games. It does not support cheating, interfering with anti-cheat or online services, or distributing copyrighted game files. You are responsible for following the law and each game's terms. None of this changes the rights the GPL grants.
+
+RE GPUC Editor is an independent project and is not affiliated with or endorsed by Capcom. All trademarks are the property of their respective owners.
+
+## Credits
+- [NSACloud](https://github.com/NSACloud) - RE Mesh Editor and RE Chain Editor, whose layout and naming this addon follows
+- [lxchhh3](https://github.com/lxchhh3) - GPUC format research and the dynamics model behind the preview simulation
+- [XenonBaruku](https://github.com/XenonBaruku) - [MHWs-Research-Templates](https://github.com/XenonBaruku/MHWs-Research-Templates), the original GPUC reference
+- [ShiyumeMeguri](https://github.com/ShiyumeMeguri) - [RuriClothPhysics](https://github.com/ShiyumeMeguri/RuriClothPhysics), the approach behind the preview simulation and the reference for its forces and colliders
