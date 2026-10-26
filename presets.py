@@ -35,6 +35,7 @@ _enum_cache = {}
 
 def root_directory():
     # User data survives extension replacement/upgrades. Merely drawing the panel does not create folders.
+    # The folder and the preset format keep the add-on's former id: renaming them would orphan saved presets.
     return Path(bpy.utils.user_resource("SCRIPTS")) / "presets" / "ree_gpuc_editor"
 
 
