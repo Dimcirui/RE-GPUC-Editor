@@ -1,10 +1,8 @@
 """Write a complete RE4 .gpuc.221108868 from cloth geometry (layout: docs/re4-structure.md).
 
-``write(m)`` serializes a semantic model (the dict ``build`` makes): counts, offsets, the batch table, name hashes,
-bounds, the thread group size and the string pool are derived. Rebuilt from the 111 game files' own models it gives
-every byte before the string pool back.
-``build(...)`` makes that model from the generator's geometry, with the new games' rules where RE4's own choices
-are unknown (tangent neighbour, bend links, batch split): the game reads what is stored.
+``write(m)`` serializes a semantic model and derives its counts, offsets, batch table, name hashes, bounds,
+thread group size and string pool. ``build(...)`` makes that model from the generator's geometry; where RE4's own
+choice of a value is unknown (tangent neighbour, bend links, batch split) it takes the new games' rule.
 
 Maintenance constraints:
 - Particles, and each batch's triangles, links and edges, are stored batch by batch; a batch holds whole Parts
@@ -23,9 +21,9 @@ from .gpuc_build import name_hash
 EXT = ".221108868"
 ORDER = (8, 7, 9, 0, 10, 2, 1, 3, 4, 5, 6, 16, 17, 11, 12, 13, 14, 15)
 ALIGN16 = {10, 2, 1, 3, 11, 12, 13, 14, 15}
-BATCH_LIMIT = 512                 # particles a batch takes before the next Part starts another (game files: <= 448)
+BATCH_LIMIT = 512                 # particles a batch takes before the next Part starts another
 SLOTS_452, SLOTS_328 = 8, 16
-# section 14 per particle (6 floats, effect unknown): the game files' commonest
+# section 14 per particle: 6 floats of unknown effect, written as their usual values
 S14 = struct.pack("<6f", 0.1, 0.75, 0.5, 0.8714, 0.8714, 0.8714)
 IDENTITY_34 = struct.pack("<12f", 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0)
 
@@ -161,14 +159,9 @@ def _frames_re4(pos, normals, tangent):
 
 def build(spec, pvalues, part_of, parts, configs, header, skin_remap, remap_len, link_tail=None, welds=None,
           colliders=None, vertices=None, notes=None):
-    """Return RE4 file bytes. ``spec`` a gpuc_build.ClothSpec (positions game space; ``outputs`` the driven joints
-    with ``palette`` their place in the mesh's remap, used unless ``vertices``); ``pvalues`` (P, 5) sim weight,
-    radius, inverse mass, max distance, backstop radius; ``part_of`` each particle's Part;
-    ``parts`` / ``configs`` dicts (name, config, root, body10, body24 / name, body0c); ``header`` dict (max_velocity,
-    h44, h60); ``skin_remap`` (P, 8) remap places and spec.skin_w their u8 weights; ``link_tail`` as gpuc_build's;
-    ``welds`` (a, b, type, tail); ``colliders`` {11 planes, 12 spheres, 13 capsules: [(joint, second joint or "",
-    payload: plane normal, distance / sphere offset, radius (16 B); capsule two of those (32 B))]}; ``vertices`` (positions (N, 3)
-    of the LOD0 vertices to drive, their indices, slots): the 328 layout instead of joints."""
+    """Return RE4 file bytes. ``spec.outputs`` are the driven joints (``palette``: a place in the mesh's remap)
+    unless ``vertices`` (LOD0 positions, their indices, slots) asks for the 328 layout; ``skin_remap`` holds remap
+    places for ``spec.skin_w``; ``colliders`` maps sections 11 / 12 / 13 to (joint, second joint or "", payload)."""
     notes = notes if notes is not None else []
     pos = np.asarray(spec.positions, np.float32).astype(np.float64)
     P = len(pos)
@@ -212,7 +205,7 @@ def build(spec, pvalues, part_of, parts, configs, header, skin_remap, remap_len,
     tangent = np.array([adj[i][0] for i in range(P)])
     _, normals = gpuc_build._frames(pos, [(a, b, c, None) for a, b, c in T_out], tangent)
     packed = np.array([gpuc_build._pack_normal(n) for n in normals], np.int64)
-    # links: a < b, the rest length float32 as the game files', a weld's 0
+    # links: a < b; the rest length computed in float32, a weld's 0
     tails = gpuc_build._template_link_tails(gpuc_build.blank(gpuc_build.gpuc.WILDS))
     p32 = pos.astype(np.float32)
     link_ab, link_rest, link_tail_b, link_type = [], [], [], []

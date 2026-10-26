@@ -82,7 +82,7 @@ def _poll_reference(self, coll):
 
 
 VERTEX_DRIVE_GAMES = {".241111760", ".250925365", ".260209505", ".221108868"}
-EXPERIMENTAL_DRIVE = {".241111760", ".250925365"}       # Wilds and RE9: no game file of theirs drives vertices
+EXPERIMENTAL_DRIVE = {".241111760", ".250925365"}       # Wilds and RE9: their vertex drive is experimental
 
 CLSP_COLLECTION_TYPE = "RE_CLSP_COLLECTION"        # the RE Chain Editor's imported .clsp
 
@@ -333,7 +333,7 @@ def fill_curves(cfg, force: bool = False) -> None:
 
 from .modules import re4
 
-# RE4 Config values: (label, the game files' commonest, the guess), named in the order of Wilds' fields they line up
+# RE4 Config values: (label, default, tooltip note), named in the order of Wilds' fields they line up
 # with (docs/re4-wilds-numeric-comparison); 0x30-0x38 at 0 stop the cloth moving in game
 RE4_CONFIG_FIELDS = {
     "re4_value_24": ("Velocity Damping", 0.0, "0 to 0.4 in game files"),

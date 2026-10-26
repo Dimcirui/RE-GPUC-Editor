@@ -145,7 +145,7 @@ def new_capsule(coll, arm, bone_a, offset_a, radius_a, bone_b, offset_b, radius_
 
 
 def new_plane(coll, arm, bone, normal=(0.0, 1.0, 0.0), distance=0.0):
-    """An RE4 plane on bone, facing normal (the joint's space; the game files' (0, 1, 0)), in the cloth's
+    """An RE4 plane on bone, facing normal (the joint's space), in the cloth's
     collisions collection."""
     from .generate import unique_name
     sub = collection(coll)

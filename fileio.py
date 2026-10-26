@@ -943,7 +943,7 @@ def _build_generated_re4(coll, head, arm, cfg_objs, part_objs, part_vals, spec, 
         if p.use_root_joint and root is None:
             notes.append(f"{obj.name}: its root joint {p.root_joint or '(none)'} is not a bone: written without one")
         parts.append({"name": p.part_name, "config": cfg_objs.index(p.config), "root": root,
-                      "body10": struct.pack("<ii", -1, -1),          # -1 in every game file
+                      "body10": struct.pack("<ii", -1, -1),          # RE4 has no CLSP flags: written -1
                       "body24": struct.pack("<4f3i", p.friction, p.bounce, p.stickiness, p.re4_value_30,
                                             p.plane_bits, p.sphere_bits, p.capsule_bits)})
     configs = []
@@ -959,7 +959,7 @@ def _build_generated_re4(coll, head, arm, cfg_objs, part_objs, part_vals, spec, 
         if any(reference.bone_owner(coll, arm, j) is None for j in (c.joint_a, c.joint_b))                 or c.radius_a <= 0 or c.radius_b <= 0:
             notes.append(f"{root.name}: left out (RE4 names a capsule's joints: both must be bones; radii over 0)")
             continue
-        if collision.is_sphere(c):          # a sphere names its joint and "" as the game files' do
+        if collision.is_sphere(c):          # a sphere names its joint and ""
             spheres.append((c.joint_a, "", struct.pack("<3ff", *c.offset_a, c.radius_a)))
             continue
         capsules.append((c.joint_a, c.joint_b, struct.pack("<3ff3ff", *c.offset_a, c.radius_a, *c.offset_b,

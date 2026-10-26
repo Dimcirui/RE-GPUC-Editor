@@ -438,7 +438,7 @@ class REE_GPUC_PT_object_config(_ObjectPanel, bpy.types.Panel):
             col = _split(layout)
             for name in re4.CONFIG:
                 sub = col.column()
-                sub.active = name in props.RE4_CONFIG_FIELDS          # the flags: 0 in every game file
+                sub.active = name in props.RE4_CONFIG_FIELDS          # the flags: effect unknown
                 sub.prop(cfg, name)
             return
         gated = ({n for _, names in CONFIG_GATES for n in names} | {g for g, _ in CONFIG_GATES}
@@ -553,7 +553,7 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
             sub.prop_search(p, "root_joint", p.armature.data, "bones", text="Joint")
         else:
             sub.prop(p, "root_joint", text="Joint")
-        if not re4_part:                        # RE4 has no CLSP: -1 in every game Part, written so on export
+        if not re4_part:                        # RE4 has no CLSP flags: written -1 on export
             _bits(col, p, "clsp_flags_a", "ree_gpuc_part.clsp_flags_a")
             _bits(col, p, "clsp_flags_b", "ree_gpuc_part.clsp_flags_b")
         for name in ("friction", "bounce", "stickiness", "surface_area"):

@@ -1,18 +1,8 @@
-"""Cloth that drives mesh vertices directly instead of joints (Kernel Flags bit 2, MeshMultiJointDeform, off).
+"""Bind mesh vertices to cloth triangles, and read and write the bindings of a cloth that drives mesh vertices
+(Kernel Flags bit 2 off; layout: docs/onimusha-vertex-drive.md).
 
-Each driven vertex of the mesh (every LOD) follows up to S cloth triangles:
-    vertex = sum_k w_k (a + u (b - a) + v (c - a) + h n),  n = unit normal of (b - a) x (c - a)
-with a, b, c the triangle's particles' rest positions (game space, float32 as in the file).
-
-Onimusha layout (written for Wilds and RE9 too, experimentally; no game file of theirs drives vertices):
-  section 23  J u32, all 0
-  section 24  J x S slots of 8 bytes (an empty slot: 0xFFFF0000, 0):
-                w0 = triangle << 16 | f16 u with its 2 low bits replaced by v's f16 bits 14 (bit 0) and 15 (bit 1)
-                w1 = u8 weight (/ 255) | h's f16 >> 3 (13 bits) << 8 | v's f16 bits 3 to 13 (11 bits) << 21
-  section 25 / 26 empty; the header pointer (normally to section 26) points at section 23
-  section 27  one i32 per mesh vertex, all LODs in their vertex-buffer order: its output, -1 when not driven
-  header      joints J, joint slots S, the mesh's vertex count and LOD count (Wilds 0x3C / 0x40)
-  section 7 / 10 deform-info counts 0; section 13's J
+A driven vertex is sum_k w_k (a + u (b - a) + v (c - a) + h n) over its slots, with a, b, c its triangle's
+particles' rest positions and n that triangle's unit normal.
 
 Maintenance constraints:
 - A vertex's index is its submesh's vertexStartIndex in the .mesh plus its index there (RE Mesh Editor's
@@ -136,7 +126,7 @@ def encode(tri, u, v, h, w):
 
 def decode(data, J, S):
     """Return (tri, u, v, h, w) arrays (J, S) from section 24 bytes; empty slots have tri -1, w 0. A slot whose
-    weight rounded to 0 keeps its triangle (game files have them), so the bytes encode back unchanged."""
+    weight rounded to 0 keeps its triangle, so decoded slots encode back unchanged."""
     s = np.frombuffer(bytes(data)[:J * S * 8], "<u4").reshape(J, S, 2).astype(np.int64)
     w0, w1 = s[..., 0], s[..., 1]
 
