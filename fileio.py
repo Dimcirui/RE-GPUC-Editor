@@ -758,14 +758,24 @@ def _build_generated_re4(coll, head, arm, cfg_objs, part_objs, part_vals, spec, 
         values = struct.pack("<6f", *(getattr(c, f"re4_value_{o:02x}") for o in range(0x24, 0x3C, 4)))
         configs.append({"name": obj.name, "body0c": struct.pack("<I", 0) + guid + struct.pack("<i", c.re4_flags_20)
                         + values + struct.pack("<i", c.re4_flags_3c)})
-    capsules = []
+    capsules, spheres, planes = [], [], []
     for root in by_name(r for r in collision.roots(bpy.context.scene) if r.name in coll.all_objects):
         c = root.ree_gpuc_capsule
         if any(reference.bone_owner(coll, arm, j) is None for j in (c.joint_a, c.joint_b))                 or c.radius_a <= 0 or c.radius_b <= 0:
             notes.append(f"{root.name}: left out (RE4 names a capsule's joints: both must be bones; radii over 0)")
             continue
+        if collision.is_sphere(c):          # a sphere names its joint and "" as the game files' do
+            spheres.append((c.joint_a, "", struct.pack("<3ff", *c.offset_a, c.radius_a)))
+            continue
         capsules.append((c.joint_a, c.joint_b, struct.pack("<3ff3ff", *c.offset_a, c.radius_a, *c.offset_b,
                                                              c.radius_b)))
+    for obj in by_name(o for o in collision.planes(bpy.context.scene) if o.name in coll.all_objects):
+        pl = obj.ree_gpuc_plane
+        n = np.asarray(pl.normal, float)
+        if reference.bone_owner(coll, arm, pl.joint) is None or np.linalg.norm(n) < 1e-9:
+            notes.append(f"{obj.name}: left out (a plane's joint must be a bone, its normal not zero)")
+            continue
+        planes.append((pl.joint, "", struct.pack("<3ff", *(n / np.linalg.norm(n)), pl.distance)))
     drive = None
     if vertices:
         if not mesh_path:
@@ -788,7 +798,8 @@ def _build_generated_re4(coll, head, arm, cfg_objs, part_objs, part_vals, spec, 
     try:
         return re4_build.build(spec, pvalues, part_of, parts, configs,
                                {"max_velocity": h.max_velocity, "h44": h.re4_unk44, "h60": h.re4_unk60},
-                               skin_remap, len(weighted), link_tail, _weld_links(coll, starts), capsules, drive, notes)
+                               skin_remap, len(weighted), link_tail, _weld_links(coll, starts),
+                               {11: planes, 12: spheres, 13: capsules}, drive, notes)
     except ValueError as e:
         raise ExportError(str(e)) from e
 
@@ -920,7 +931,7 @@ def _build_re4(coll, head, cfg_objs, part_objs):
     if ([o.get("ree_gpuc_re4_index", -1) for o in configs] != list(range(source.c["configs"]))
             or [o.get("ree_gpuc_re4_index", -1) for o in parts] != want):
         raise ExportError("RE4 cannot add, remove or replace Parts or Configs")
-    if any(r.name in coll.all_objects for r in collision.roots(bpy.context.scene)):
+    if any(r.name in coll.all_objects for r in collision.roots(bpy.context.scene) + collision.planes(bpy.context.scene)):
         raise ExportError("RE4 collisions are preserved in the source file; editing or adding capsules is not supported")
     header = _re4_changes(head, head.ree_gpuc_header, {"max_velocity"}, {"reference_clsp"})
     cfg_changes = [_re4_changes(o, o.ree_gpuc_config, re4.CONFIG) for o in configs]
@@ -993,6 +1004,8 @@ def capsule_records(coll, arm, notes) -> list:
     """Return the cloth's capsules as section 16 records; a joint on no bone falls back to its imported hash, and a
     capsule with neither, or a radius <= 0, is left out. Both cases add a note."""
     out = []
+    if any(o.name in coll.all_objects for o in collision.planes(bpy.context.scene)):
+        notes.append("Collision planes left out: only RE4 cloth has them")
     for root in by_name(r for r in collision.roots(bpy.context.scene) if r.name in coll.all_objects):
         c = root.ree_gpuc_capsule
         hashes = []

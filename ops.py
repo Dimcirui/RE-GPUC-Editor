@@ -653,8 +653,8 @@ class REE_GPUC_OT_remove_collider(bpy.types.Operator):
 
 
 class REE_GPUC_OT_collider_from_bones(bpy.types.Operator):
-    """Add .gpuc collision on the selected bones: a sphere on each bone's head, or a capsule between the heads of
-    two bones"""
+    """Add .gpuc collision on the selected bones: a sphere on each bone's head, a capsule between the heads of
+    two bones, or (RE4) a plane through each bone's head facing its +Y"""
     bl_idname = "ree_gpuc.collider_from_bones"
     bl_label = "Collision From Bones"
     bl_options = {"REGISTER", "UNDO"}
@@ -679,6 +679,14 @@ class REE_GPUC_OT_collider_from_bones(bpy.types.Operator):
             return {"CANCELLED"}
         if s.target is None:
             s.target = generate.new_collection(arm.name, arm)
+        if s.collider_kind == "PLANE":
+            if not props.is_re4(s.target):
+                self.report({"ERROR"}, "Only RE4 cloth has collision planes")
+                return {"CANCELLED"}
+            for pb in sel:
+                collision.new_plane(s.target, arm, pb.name)
+            self.report({"INFO"}, f"{len(sel)} planes")
+            return {"FINISHED"}
         zero, r = (0.0, 0.0, 0.0), self.radius
         if s.collider_kind == "SPHERE":
             made = [(pb.name, zero, pb.name, zero) for pb in sel]
@@ -808,8 +816,16 @@ def _bit_names(context, target) -> dict:
         return {i: ", ".join(n) for i, n in names.items()}
     if target == "ree_gpuc_part.clsp_flags_a":
         return FULL_BODY_CLSP
+    coll = _settings(context).target
+    re4_own = props.is_re4(coll)                 # RE4 writes its own spheres and planes apart from its capsules
+    if target == "ree_gpuc_part.plane_bits" and re4_own:
+        own = sorted(o.name for o in collision.planes(context.scene) if o.name in coll.all_objects)
+        return {i: name for i, name in enumerate(own) if i < 32}
     if target == "ree_gpuc_part.sphere_bits":
-        return {i: _short(s[0]) for i, s in enumerate(s for s in clsp if s[1] == "SPHERE") if i < 32}
+        own = sorted(o.name for o in collision.roots(context.scene) if re4_own and o.name in coll.all_objects
+                     and collision.is_sphere(o.ree_gpuc_capsule))
+        names = own + [_short(s[0]) + " (CLSP)" for s in clsp if s[1] == "SPHERE"]
+        return {i: name for i, name in enumerate(names) if i < 32}
     if target == "ree_gpuc_header.kernel_flags":
         return KERNEL_FLAGS
     if target == "ree_gpuc_config.info_state":
@@ -817,8 +833,8 @@ def _bit_names(context, target) -> dict:
     if target.endswith("_curve.clamp_flags"):
         return {0: "Clamp"}
     if target == "ree_gpuc_part.capsule_bits":
-        coll = _settings(context).target
-        own = sorted((o.name for o in collision.roots(context.scene) if coll and o.name in coll.all_objects))
+        own = sorted((o.name for o in collision.roots(context.scene) if coll and o.name in coll.all_objects
+                      and not (re4_own and collision.is_sphere(o.ree_gpuc_capsule))))
         names = own + [_short(s[0]) + " (CLSP)" for s in clsp if s[1] == "CAPSULE"]
         return {i: name for i, name in enumerate(names) if i < 32}
     return {}

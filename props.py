@@ -95,12 +95,13 @@ REE_GPUC_Header = type("REE_GPUC_Header", (bpy.types.PropertyGroup,), {
             description="A .clsp the RE Chain Editor imported, which the cloth will collide with in game: its "
                         "shapes name the CLSP Flags' bits and the preview collides with the ones a Part takes "
                         "(not written to the .gpuc)"),
-        # RE4 header values of unknown effect (a cloth made from bones; Keep Structure keeps the file's)
-        "re4_unk44": IntProperty(name="RE4 value +0x44", default=0,
-                                 description="RE4 only. Effect unknown. 0 to 3 in game files, mostly 0"),
-        "re4_unk60": IntProperty(name="RE4 value +0x60", default=1,
-                                 description="RE4 only. Effect unknown (maybe iterations). 1 to 16 in game files, "
-                                             "mostly 1"),
+        # RE4 header values named by guess (a cloth made from bones; Keep Structure keeps the file's)
+        "re4_unk44": IntProperty(name="Collision Iterations", default=0,
+                                 description="RE4 header +0x44. Unconfirmed: collision iterations or quality, as it "
+                                             "rises with the colliders in game files (0 to 3; 0 in 87 of 111)"),
+        "re4_unk60": IntProperty(name="Solver Iterations", default=1,
+                                 description="RE4 header +0x60. Unconfirmed: solver iterations or substeps, as main "
+                                             "outfits take 8 to 16 (1 to 16 in game files; 1 in 81 of 111)"),
         "drive_mode": EnumProperty(name="Drive", items=DRIVE_MODES, default="JOINTS", update=_redraw_any,
                                    description="What the cloth moves in game"),
         "drive_distance": FloatProperty(
@@ -314,11 +315,26 @@ def fill_curves(cfg, force: bool = False) -> None:
 
 from .modules import re4
 
+# RE4 Config values: (label, the game files' commonest, the guess), named in the order of Wilds' fields they line up
+# with (docs/re4-wilds-numeric-comparison); 0x30-0x38 at 0 stop the cloth moving in game
+RE4_CONFIG_FIELDS = {
+    "re4_value_24": ("Velocity Damping", 0.0, "0 to 0.4 in game files"),
+    "re4_value_28": ("Blend Translation", 0.0, "0 to 1 in game files"),
+    "re4_value_2c": ("Blend Rotation", 0.0, "0 to 1 in game files"),
+    "re4_value_30": ("Simulation Strength", 1.0, "0.8 to 1 in game files; 0 leaves the mesh unmoved"),
+    "re4_value_34": ("Blend Weight", 1.0, "0.2 to 1 in game files; 0 leaves the mesh unmoved"),
+    "re4_value_38": ("Gravity Factor", 1.0, "0.6 to 1 in game files"),
+}
+
 REE_GPUC_Config = type("REE_GPUC_Config", (bpy.types.PropertyGroup,), {
     "__doc__": "One config block of the .gpuc; Parts point at one (several may share it)",
-    "__annotations__": {**{name: (FloatProperty(name=f"RE4 value +0x{off:02X}", precision=5,
-                                               description="RE4 Config value. Effect unknown")
-                                  if fmt == "f" else IntProperty(name=f"RE4 flags +0x{off:02X}"))
+    "__annotations__": {**{name: (FloatProperty(name=RE4_CONFIG_FIELDS[name][0], default=RE4_CONFIG_FIELDS[name][1],
+                                               precision=5,
+                                               description=f"RE4 Config +0x{off:02X}. Unconfirmed: named by the "
+                                                           f"Wilds field in its place ({RE4_CONFIG_FIELDS[name][2]})")
+                                  if fmt == "f" else IntProperty(name=f"RE4 flags +0x{off:02X}",
+                                                                 description=f"RE4 Config +0x{off:02X}. Unknown: 0 "
+                                                                             f"in every game file"))
                             for name, (off, fmt) in re4.CONFIG.items()},
                         **{name: (BoolProperty(name=label, default=default,
                                                description=CONFIG_DESCRIPTIONS.get(name, "")) if kind == "?"
@@ -486,9 +502,9 @@ class REE_GPUC_Part(bpy.types.PropertyGroup):
     """A part block of the .gpuc and its particle grid's generation."""
     config: PointerProperty(name="Config", type=bpy.types.Object, poll=_poll_config, update=_part_config)
     armature: PointerProperty(name="Armature", type=bpy.types.Object)
-    re4_value_30: FloatProperty(name="RE4 value +0x30", precision=5,
-                               description="RE4 part value before the collision masks. Effect unknown; possibly "
-                                           "long-range attachment stretch")
+    re4_value_30: FloatProperty(name="Long Range Attachment Stretchiness", precision=5,
+                               description="RE4 Part +0x30. Unconfirmed: named so in RE4's PartInfo type, effect "
+                                           "not tested (0 in 161 of 162 game Parts)")
     rows: IntProperty(name="Rows")
     cols: IntProperty(name="Columns")
     sub_rows: IntProperty(name="Between bones, down")
@@ -617,6 +633,16 @@ def _field_items(self, context):
     return _RE4_FIELDS if is_re4(self.target) else _ALL_FIELDS
 
 
+_COLLIDER_KINDS = [("SPHERE", "Sphere", ""), ("CAPSULE", "Capsule", "")]
+_COLLIDER_KINDS_RE4 = _COLLIDER_KINDS + [
+    ("PLANE", "Plane", "An endless plane through the joint facing its +Y, as the game files' ground")]
+
+
+def _collider_kinds(self, context):
+    """RE4 alone has planes."""
+    return _COLLIDER_KINDS_RE4 if is_re4(self.target) else _COLLIDER_KINDS
+
+
 class REE_GPUC_Settings(bpy.types.PropertyGroup):
     """The scene's editor settings: where Generate puts parts, the particle tool, the display."""
     target: PointerProperty(name="Cloth", type=bpy.types.Collection, poll=_poll_collection,
@@ -676,7 +702,7 @@ class REE_GPUC_Settings(bpy.types.PropertyGroup):
                                 items=[("WEIGHT", "Weight Paint", "Paint a value's group with the weight brushes"),
                                        ("VIEW_3D", "3D Viewport", "Select particles in the 3D view, set a value"),
                                        ("UV", "UV Editor", "Select particles on the grid UV, set a value")])
-    collider_kind: EnumProperty(name="Collision Shape", items=[("SPHERE", "Sphere", ""), ("CAPSULE", "Capsule", "")])
+    collider_kind: EnumProperty(name="Collision Shape", items=_collider_kinds)
     test_collider_kind: EnumProperty(name="Collider", items=TEST_KINDS)
 
 
@@ -703,6 +729,24 @@ class REE_GPUC_Capsule(bpy.types.PropertyGroup):
                                     "no bone of that name (0: none)")
     hash_b: IntProperty(name="End Joint Hash", default=0,
                         description="The end joint's name hash from the imported file (0: none)")
+
+
+def _plane(self, context):
+    from . import collision
+    collision.apply_plane(self)
+    _redraw(self, context)
+
+
+class REE_GPUC_Plane(bpy.types.PropertyGroup):
+    """One of an RE4 .gpuc's own collision planes (section 11): the points p of the joint's space with
+    normal . p = distance, pushed out to the normal's side. Kept in step with its object (collision.py)."""
+    joint: StringProperty(name="Joint", update=_plane, description="The joint the plane is on")
+    normal: FloatVectorProperty(name="Normal", size=3, subtype="XYZ", default=(0.0, 1.0, 0.0), update=_plane,
+                                description="The side particles are kept on, in the joint's space (every game "
+                                            "file: 0, 1, 0)")
+    distance: FloatProperty(name="Distance", default=0.0, step=0.1, precision=4, update=_plane,
+                            description="The plane's distance from the joint along Normal (every game file: 0). "
+                                        "Unconfirmed: its sign in the game")
 
 
 COLLIDER_TYPE = "RE_GPUC_COLLIDER"
@@ -819,7 +863,7 @@ class REE_GPUC_Sim(bpy.types.PropertyGroup):
                                 description="The test collider picked in the panel's list (the active object)")
 
 
-CLASSES = (REE_GPUC_Header, REE_GPUC_Capsule, REE_GPUC_Key, REE_GPUC_Curve, REE_GPUC_Config, REE_GPUC_LinkTail, REE_GPUC_Part, REE_GPUC_Settings, REE_GPUC_Collider, REE_GPUC_Force,
+CLASSES = (REE_GPUC_Header, REE_GPUC_Capsule, REE_GPUC_Plane, REE_GPUC_Key, REE_GPUC_Curve, REE_GPUC_Config, REE_GPUC_LinkTail, REE_GPUC_Part, REE_GPUC_Settings, REE_GPUC_Collider, REE_GPUC_Force,
            REE_GPUC_Sim)
 
 
@@ -828,6 +872,7 @@ def register():
         bpy.utils.register_class(cls)
     bpy.types.Object.ree_gpuc_header = PointerProperty(type=REE_GPUC_Header)
     bpy.types.Object.ree_gpuc_capsule = PointerProperty(type=REE_GPUC_Capsule)
+    bpy.types.Object.ree_gpuc_plane = PointerProperty(type=REE_GPUC_Plane)
     bpy.types.Object.ree_gpuc_config = PointerProperty(type=REE_GPUC_Config)
     bpy.types.Object.ree_gpuc_part = PointerProperty(type=REE_GPUC_Part)
     bpy.types.Scene.ree_gpuc = PointerProperty(type=REE_GPUC_Settings)
@@ -844,6 +889,7 @@ def unregister():
     del bpy.types.Object.ree_gpuc_part
     del bpy.types.Object.ree_gpuc_config
     del bpy.types.Object.ree_gpuc_header
+    del bpy.types.Object.ree_gpuc_plane
     del bpy.types.Object.ree_gpuc_capsule
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)

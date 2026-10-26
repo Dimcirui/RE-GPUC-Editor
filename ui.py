@@ -21,7 +21,7 @@ def _collections(layout, s):
     layout.label(text="Active GPUC Collection")
     layout.prop(s, "target", text="", icon="COLLECTION_COLOR_06")
     h = props.header(s.target)
-    if h is not None:
+    if h is not None and not props.is_re4(s.target):            # RE4 has no CLSP
         layout.label(text="Reference CLSP Collection")
         layout.prop(h.ree_gpuc_header, "reference_clsp", text="", icon="OUTLINER_COLLECTION")
 
@@ -296,10 +296,12 @@ class REE_GPUC_PT_display(_Sidebar, bpy.types.Panel):
             col.active = s.show_colliders
             col.prop(s, "colliders_in_front")
         header, body = layout.panel("ree_gpuc_display_other", default_closed=True)
-        header.label(text="Curves and UV")
+        re4 = props.is_re4(s.target)              # RE4 Configs have no curves
+        header.label(text="UV" if re4 else "Curves and UV")
         if body is not None:
             col = _split(body)
-            col.prop(s, "show_curves")
+            if not re4:
+                col.prop(s, "show_curves")
             col.prop(s, "show_uv_values")
 
 
@@ -351,10 +353,8 @@ class REE_GPUC_PT_object_header(_ObjectPanel, bpy.types.Panel):
                 sub.prop(h, "drive_distance")
                 sub.prop(h, "drive_slots")
         if h.game == ".221108868" and not keep:
-            sub = col.column()
-            sub.active = False
-            sub.prop(h, "re4_unk44")
-            sub.prop(h, "re4_unk60")
+            col.prop(h, "re4_unk44")
+            col.prop(h, "re4_unk60")
         fields = gpuc_params.header_fields(h.game)
         for name, label, _, kind, known, _, _ in props.HEADER_FIELDS:
             if name not in fields:
@@ -384,9 +384,11 @@ class REE_GPUC_PT_object_config(_ObjectPanel, bpy.types.Panel):
         layout = self.layout
         if props.is_re4_object(context.object):
             from .modules import re4
-            layout.label(text="RE4 values as stored in the file. Effects unknown.", icon="INFO")
+            col = _split(layout)
             for name in re4.CONFIG:
-                _split(layout).prop(cfg, name)
+                sub = col.column()
+                sub.active = name in props.RE4_CONFIG_FIELDS          # the flags: 0 in every game file
+                sub.prop(cfg, name)
             return
         gated = ({n for _, names in CONFIG_GATES for n in names} | {g for g, _ in CONFIG_GATES}
                  | {speed for _, _, _, speed in props.CURVES})
@@ -487,20 +489,22 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
             layout.label(text="Imported with Keep Structure: values can be edited, but not regenerated",
                          icon="LOCKED")
         re4_part = props.is_re4_object(obj)
+        re4_kept = re4_part and canon.locked(obj)          # RE4 Keep Structure: Parts and Configs stay the file's
         col = _split(layout)
         identity = col.column()
-        identity.enabled = not re4_part
+        identity.enabled = not re4_kept
         identity.prop(p, "config")
         identity.prop(p, "part_name")
         identity.prop(p, "use_root_joint")
         sub = col.column()
-        sub.active = p.use_root_joint and not re4_part
+        sub.active = p.use_root_joint and not re4_kept
         if p.armature is not None and p.armature.type == "ARMATURE":
             sub.prop_search(p, "root_joint", p.armature.data, "bones", text="Joint")
         else:
             sub.prop(p, "root_joint", text="Joint")
-        _bits(col, p, "clsp_flags_a", "ree_gpuc_part.clsp_flags_a")
-        _bits(col, p, "clsp_flags_b", "ree_gpuc_part.clsp_flags_b")
+        if not re4_part:                        # RE4 has no CLSP: -1 in every game Part, written so on export
+            _bits(col, p, "clsp_flags_a", "ree_gpuc_part.clsp_flags_a")
+            _bits(col, p, "clsp_flags_b", "ree_gpuc_part.clsp_flags_b")
         for name in ("friction", "bounce", "stickiness", "surface_area"):
             if re4_part and name == "surface_area":
                 continue
@@ -535,7 +539,7 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
             row.prop(tail, "hi", text="High", slider=True)
             body.label(text=tail.summary())
 
-        if not re4_part:
+        if not re4_kept:
             layout.separator()
             layout.label(text="Export Settings")
             col = _split(layout)
@@ -576,6 +580,31 @@ class REE_GPUC_PT_object_collision(_ObjectPanel, bpy.types.Panel):
                 col.prop(c, joint)
             col.prop(c, offset)
             col.prop(c, radius)
+
+
+class REE_GPUC_PT_object_plane(_ObjectPanel, bpy.types.Panel):
+    bl_label = "GPUC Collision Plane"
+
+    @staticmethod
+    def KIND(obj):
+        from . import collision
+        return collision.is_plane(obj)
+
+    def draw(self, context):
+        obj = context.object
+        pl = obj.ree_gpuc_plane
+        con = obj.constraints.get("BoneName")
+        arm = con.target if con is not None and con.target is not None and con.target.type == "ARMATURE" else None
+        if con is None or not con.subtarget:
+            self.layout.label(text="The joint has no bone: set one, or the plane is left out of the export",
+                              icon="ERROR")
+        col = _split(self.layout)
+        if arm is not None:
+            col.prop_search(pl, "joint", arm.data, "bones")
+        else:
+            col.prop(pl, "joint")
+        col.prop(pl, "normal")
+        col.prop(pl, "distance")
 
 
 class REE_GPUC_PT_object_collider(_ObjectPanel, bpy.types.Panel):
@@ -619,7 +648,7 @@ class REE_GPUC_PT_object_force(_ObjectPanel, bpy.types.Panel):
 
 CLASSES = (REE_GPUC_PT_general, REE_GPUC_PT_pose, REE_GPUC_PT_presets, REE_GPUC_PT_clipboard, REE_GPUC_PT_particles, REE_GPUC_UL_colliders, REE_GPUC_PT_simulate,
            REE_GPUC_PT_display, REE_GPUC_PT_uv, REE_GPUC_PT_object_header, REE_GPUC_UL_keys, REE_GPUC_PT_object_config,
-           REE_GPUC_PT_object_part, REE_GPUC_PT_object_collision, REE_GPUC_PT_object_collider, REE_GPUC_PT_object_force)
+           REE_GPUC_PT_object_part, REE_GPUC_PT_object_collision, REE_GPUC_PT_object_plane, REE_GPUC_PT_object_collider, REE_GPUC_PT_object_force)
 
 
 def register():

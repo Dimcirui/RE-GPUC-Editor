@@ -160,13 +160,14 @@ def _frames_re4(pos, normals, tangent):
 
 
 def build(spec, pvalues, part_of, parts, configs, header, skin_remap, remap_len, link_tail=None, welds=None,
-          capsules=(), vertices=None, notes=None):
+          colliders=None, vertices=None, notes=None):
     """Return RE4 file bytes. ``spec`` a gpuc_build.ClothSpec (positions game space; ``outputs`` the driven joints
     with ``palette`` their place in the mesh's remap, used unless ``vertices``); ``pvalues`` (P, 5) sim weight,
     radius, inverse mass, max distance, backstop radius; ``part_of`` each particle's Part;
     ``parts`` / ``configs`` dicts (name, config, root, body10, body24 / name, body0c); ``header`` dict (max_velocity,
     h44, h60); ``skin_remap`` (P, 8) remap places and spec.skin_w their u8 weights; ``link_tail`` as gpuc_build's;
-    ``welds`` (a, b, type, tail); ``capsules`` (joint, pair joint, payload 32 B); ``vertices`` (positions (N, 3)
+    ``welds`` (a, b, type, tail); ``colliders`` {11 planes, 12 spheres, 13 capsules: [(joint, second joint or "",
+    payload: plane normal, distance / sphere offset, radius (16 B); capsule two of those (32 B))]}; ``vertices`` (positions (N, 3)
     of the LOD0 vertices to drive, their indices, slots): the 328 layout instead of joints."""
     notes = notes if notes is not None else []
     pos = np.asarray(spec.positions, np.float32).astype(np.float64)
@@ -264,7 +265,7 @@ def build(spec, pvalues, part_of, parts, configs, header, skin_remap, remap_len,
                 else:
                     recs += struct.pack("<I4f", 0xFFFFFFFF, 0.0, 0.0, 0.0, 0.0)
         outputs, out_end = bytes(recs), [0] * B
-    caps = [(a, b, pay) for a, b, pay in capsules]
+    colliders = {s: list((colliders or {}).get(s, ())) for s in (11, 12, 13)}
     m = {"flags": flags, "h34": 0, "h38": 1, "h44": int(header.get("h44", 0)) & 0xFFFFFFFF,
          "max_velocity": float(header["max_velocity"]), "h58_hi": 0x0100, "h60": int(header.get("h60", 1)) & 0xFFFFFFFF,
          "remap_len": int(remap_len), "batch_sizes": rows, "batch_f07": [0] * B, "batch_out_end": out_end,
@@ -274,6 +275,6 @@ def build(spec, pvalues, part_of, parts, configs, header, skin_remap, remap_len,
          "skin_idx": [bytes(int(x) for x in row) for row in np.asarray(skin_remap)],
          "skin_w": [bytes(int(x) for x in row) for row in np.asarray(spec.skin_w)],
          "s14": S14 * P, "tris": T_out, "links": link_ab, "link_rest": link_rest, "link_tail": link_tail_b,
-         "link_type": link_type, "edges": E_out, "outputs": outputs, "colliders": {11: [], 12: [], 13: caps},
+         "link_type": link_type, "edges": E_out, "outputs": outputs, "colliders": colliders,
          "s16": b"", "s17": b""}
     return write(m)

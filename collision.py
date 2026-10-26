@@ -5,7 +5,9 @@ Maintenance constraints:
 - A ROOT object holds the values, with a BEGIN and an END object held on their joints by a Child Of constraint
   named ``BoneName``: an end's location is its offset from the joint, its scale its radius.
 - The ends are authoritative: ``sync`` copies them into the ROOT's values; ``apply`` moves them when a value is
-  set. A sphere is a capsule whose two ends meet."""
+  set. A sphere is a capsule whose two ends meet.
+- An RE4 plane (section 11) is one object on its joint, held as a capsule end is: its +Z the normal, its location
+  on the plane (normal . p = distance in the joint's space). Its object is authoritative as the ends are."""
 import bpy
 import numpy as np
 from mathutils import Matrix, Vector
@@ -13,6 +15,7 @@ from mathutils import Matrix, Vector
 from . import props
 
 ROOT_TYPE, BEGIN_TYPE, END_TYPE = "RE_GPUC_CAPSULE_ROOT", "RE_GPUC_CAPSULE_BEGIN", "RE_GPUC_CAPSULE_END"
+PLANE_TYPE = "RE_GPUC_PLANE"
 _busy = False
 
 
@@ -29,6 +32,20 @@ def root_of(obj):
     if obj.get("TYPE") in (BEGIN_TYPE, END_TYPE) and is_root(obj.parent):
         return obj.parent
     return None
+
+
+def is_plane(obj) -> bool:
+    return obj is not None and obj.get("TYPE") == PLANE_TYPE
+
+
+def planes(scene) -> list:
+    return [o for o in scene.objects if is_plane(o)]
+
+
+def is_sphere(capsule) -> bool:
+    """Whether a capsule's ends meet (RE4 writes it to its spheres, section 12)."""
+    c = capsule
+    return c.joint_a == c.joint_b and tuple(c.offset_a) == tuple(c.offset_b) and c.radius_a == c.radius_b
 
 
 def ends(root):
@@ -125,6 +142,80 @@ def new_capsule(coll, arm, bone_a, offset_a, radius_a, bone_b, offset_b, radius_
     c = root.ree_gpuc_capsule
     c.hash_a, c.hash_b = hash_a, hash_b
     return root
+
+
+def new_plane(coll, arm, bone, normal=(0.0, 1.0, 0.0), distance=0.0):
+    """An RE4 plane on bone, facing normal (the joint's space; the game files' (0, 1, 0)), in the cloth's
+    collisions collection."""
+    from .generate import unique_name
+    sub = collection(coll)
+    obj = _end(unique_name("COL_", f"_PLANE - {bone}"), PLANE_TYPE, None, arm, bone, (0.0, 0.0, 0.0), 1.0, sub, coll)
+    obj.empty_display_type, obj.empty_display_size = "SINGLE_ARROW", 0.25
+    header = props.header(coll)
+    if header is not None:
+        props.place_under(obj, header)
+        if arm is None:
+            from . import reference
+            obj.matrix_parent_inverse = Matrix(np.linalg.inv(reference.TO_ARMATURE).tolist())
+    pl = obj.ree_gpuc_plane
+    pl.joint, pl.normal, pl.distance = bone, normal, distance      # apply places the object
+    return obj
+
+
+def plane_geometry(scene) -> list:
+    """Every visible plane as (object, a point on it, unit normal, x axis), world space."""
+    out = []
+    for obj in planes(scene):
+        if not obj.visible_get():
+            continue
+        m = np.array(obj.matrix_world, float)
+        n, x = m[:3, 2], m[:3, 0]
+        out.append((obj, m[:3, 3].copy(), n / max(np.linalg.norm(n), 1e-12), x / max(np.linalg.norm(x), 1e-12)))
+    return out
+
+
+def sync_plane(obj) -> None:
+    """The plane's values from its object."""
+    global _busy
+    pl = obj.ree_gpuc_plane
+    con = obj.constraints.get("BoneName")
+    n = obj.matrix_basis.to_3x3().normalized() @ Vector((0.0, 0.0, 1.0))
+    d = n.dot(obj.location)
+    _busy = True
+    try:
+        if con is not None and con.subtarget and pl.joint != con.subtarget:
+            pl.joint = con.subtarget
+        if (Vector(pl.normal) - n).length > 1e-6:
+            pl.normal = n
+        if abs(pl.distance - d) > 1e-6:
+            pl.distance = d
+    finally:
+        _busy = False
+
+
+def apply_plane(pl) -> None:
+    """The plane's object from its values: +Z turned to the normal, the location moved along it onto the plane."""
+    if _busy:
+        return
+    from . import generate, reference
+    obj = pl.id_data
+    n = Vector(pl.normal)
+    if n.length < 1e-9:
+        return
+    n.normalize()
+    cloth = reference.cloth_of(obj)
+    con = obj.constraints.get("BoneName")
+    if con is not None:
+        arm = generate._armature(cloth) if cloth is not None else None
+        owner = reference.bone_owner(cloth, arm, pl.joint) if cloth is not None else None
+        if owner is not None and con.target != owner:
+            con.target = owner
+        want = pl.joint if owner is not None else ""
+        if con.subtarget != want:
+            con.subtarget = want
+    obj.rotation_mode = "QUATERNION"
+    obj.rotation_quaternion = Vector((0.0, 0.0, 1.0)).rotation_difference(n)
+    obj.location = obj.location + n * (pl.distance - n.dot(obj.location))
 
 
 def bound(root) -> bool:
@@ -245,8 +336,13 @@ def _on_depsgraph(scene, depsgraph):
         return
     done = set()
     for upd in depsgraph.updates:
-        root = root_of(upd.id.original) if isinstance(upd.id.original, bpy.types.Object) else None
-        if root is not None and root.name not in done and upd.is_updated_transform:
+        if not isinstance(upd.id.original, bpy.types.Object) or not upd.is_updated_transform:
+            continue
+        if is_plane(upd.id.original):
+            sync_plane(upd.id.original)
+            continue
+        root = root_of(upd.id.original)
+        if root is not None and root.name not in done:
             done.add(root.name)
             sync(root)
 
