@@ -1,17 +1,14 @@
-"""Welds: the links a .gpuc has joining two parts (ch02/ch03_081_0005's 24, ch04_000_0071's 18): zero-length, full
-stiffness, type 4 (a label only), from the later part to the earlier. In every vanilla one both particles are
-skinned to one bone alone, the same, whose joint both drive: a weld joins two parts at the bones they share. Shown
-as the RE Chain Editor shows its chain links: in the cloth's "GPUC Welds - <cloth>" collection (white, after its
-collisions), one object per pair of welded parts, WELD_00 - <part a> > <part b>, under the header at the welded
-particles' rest centre (its transform locked). It holds the two Parts and the welds' tail; the preview holds each
-pair on one point (sim.weld), the overlay draws them yellow, the selected one's larger.
+"""Manages welds: the zero-length, full-stiffness links joining two parts at the bones they share, from the later
+part to the earlier.
 
-Parts made from bones (Weld Parts, Rebuild from Bones) weld each shared bone's lattice particle, found again from
-their bones whenever asked (a Part regenerated keeps its welds); the export writes those links (each shared bone's
-joint is driven by the particles of both, as every joint by the particles skinned to its bone), and leaves out a
-weld that cannot be written (problems), said. A Keep
-Structure cloth keeps its file's pairs (on the object) and writes them over its file: the tail is written, a weld
-cannot be added or taken out (the export refuses one the file has and the cloth no longer does)."""
+One weld object per pair of welded Parts, under the header at the welded particles' rest centre, holds the two
+Parts and the links' tail; the preview holds each pair on one point (``sim.weld``).
+
+Maintenance constraints:
+- For Parts made from bones, ``pairs`` finds each shared bone's lattice particle again on every call, so a
+  regenerated Part keeps its welds; the export leaves out and reports a weld that has ``problems``.
+- A Keep Structure cloth keeps its file's pairs under ``PAIRS_KEY``; its export writes the tail but cannot add
+  or remove a weld."""
 import bpy
 import numpy as np
 from bpy.props import FloatProperty, IntProperty, PointerProperty
@@ -37,8 +34,8 @@ def _edited(self, context):
 
 
 class REE_GPUC_Weld(bpy.types.PropertyGroup):
-    """A weld object's values: the two Parts and the tail its links share (vanilla (1, 0 or 1, 1, 16): with a rest
-    length of 0 the conditional multiplier never applies)."""
+    """A weld object's values: the two Parts and the tail their links share. With a rest length of 0 the
+    multiplier never applies"""
     part_a: PointerProperty(name="Part A", type=bpy.types.Object, poll=_poll_part)
     part_b: PointerProperty(name="Part B", type=bpy.types.Object, poll=_poll_part)
     k: FloatProperty(name="Stiffness", default=1.0, min=0.0, max=1.0, subtype="FACTOR", update=_edited,
@@ -47,15 +44,15 @@ class REE_GPUC_Weld(bpy.types.PropertyGroup):
     lo: FloatProperty(name="Range low", default=1.0, min=0.0, max=1.0, precision=4, update=_edited)
     hi: FloatProperty(name="Range high", default=props.HI_MAX, min=0.0, max=props.HI_MAX, precision=3,
                       update=_edited)
-    link_type: IntProperty(name="Link Type", default=4, description="The links' type number (vanilla welds 4; "
-                                                                     "the kernels do not read it)")
+    link_type: IntProperty(name="Link Type", default=4, description="The links' type number. Usually 4; "
+                                                                     "the simulation does not read it")
 
     def tail(self) -> tuple:
         return self.k, self.k2, self.lo, self.hi
 
 
 def node_particles(d) -> dict:
-    """A Part made from bones: each of its bones' particle (its lattice node's, as the export drives it)."""
+    """Each bone's particle on a Part made from bones: its lattice node's, the one the export uses."""
     out = {}
     for j, name in enumerate(d["nodes"]):
         r, c = divmod(j, d["node_cols"])
@@ -64,14 +61,15 @@ def node_particles(d) -> dict:
 
 
 def shared_pairs(part_a, part_b) -> list:
-    """The particles two Parts made from bones weld, as vanilla's do: for each bone both have, its particle on
-    each (skinned to it alone, on one point); (particle of a, particle of b) by bone name."""
+    """For each bone two Parts made from bones share, its particle on each: (particle of a, particle of b),
+    sorted by bone name."""
     na, nb = node_particles(_layout(part_a)), node_particles(_layout(part_b))
     return [(na[name], nb[name]) for name in sorted(set(na) & set(nb))]
 
 
 def _layout(part) -> dict:
-    """The keys of canon.load node_particles reads, without loading the rest (the overlay asks every redraw)."""
+    """The keys of ``canon.load`` that ``node_particles`` reads, without loading the rest (the overlay asks on
+    every redraw)."""
     from . import canon
     c = part[canon.KEY]
     if "nodes" not in c:                             # v0.1: one particle per bone
@@ -199,8 +197,8 @@ def _selected_parts(context) -> list:
 
 
 class REE_GPUC_OT_weld_parts(bpy.types.Operator):
-    """Weld the two selected Parts at the bones they share: each such bone's particle on both held on one point
-    (zero-length links, as vanilla's), found again whenever a Part is regenerated"""
+    """Weld the two selected Parts at the bones they share: each shared bone's particle on both Parts is held on
+    one point. The weld follows the Parts when they are regenerated"""
     bl_idname = "ree_gpuc.weld_parts"
     bl_label = "Weld Parts"
     bl_options = {"REGISTER", "UNDO"}
@@ -220,7 +218,7 @@ class REE_GPUC_OT_weld_parts(bpy.types.Operator):
             self.report({"ERROR"}, "A cloth that keeps a file's structure cannot take a new weld")
             return {"CANCELLED"}
         order = fileio.by_name(props.parts(coll))
-        later, earlier = sorted(_selected_parts(context), key=order.index, reverse=True)   # vanilla's direction
+        later, earlier = sorted(_selected_parts(context), key=order.index, reverse=True)   # links go from the later Part to the earlier
         if any({o.ree_gpuc_weld.part_a, o.ree_gpuc_weld.part_b} == {later, earlier} for o in objects(coll)):
             self.report({"ERROR"}, f"{later.name} and {earlier.name} are welded already")
             return {"CANCELLED"}

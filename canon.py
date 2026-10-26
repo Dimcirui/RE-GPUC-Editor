@@ -1,19 +1,15 @@
-"""A Part's canonical data: what Generate made, kept on the object as an ID property. The
-mesh shows it and holds the particle values: valid generated-particle rest-position changes are committed as
-offsets when leaving edit mode; changes to topology, particle IDs or grid UV are undone (`restore`). Keep
-Structure positions remain locked. The particle values are vertex groups (gpuc_sim_weight, gpuc_radius,
-gpuc_max_distance; weight 0-1 mapped onto the Part's range, not normalised, for no modifier), painted or set
-freely, and copied back here as the last good values (`sync`) whenever the structure is intact.
+"""Stores a Part's canonical data as an ID property on its object and keeps the Part's mesh consistent with it.
 
-Stored: the bone grid (node_rows x node_cols bone names, row by row, row 0 at the top) and its bones' rest heads
-(armature space); how many particles go between bones (sub_rows down, sub_cols across; 0 and 0: one particle
-per bone); the particle grid's size and whether it closes; every particle's rest position, its skin (4 bones,
-flat node indices, and their weights) and the particle values below.
-
-A locked Part (imported with Keep Structure) keeps a .gpuc part's own structure instead of a bone grid: its
-particles' rest positions, triangles and their UVs, links (each with its type, shape and own tail), skin (6 bones
-by name, u8 weights) and the file's normals; it is not regenerated. count(), faces(), face_uvs(), links() and
-particle_uv() serve both kinds."""
+Maintenance constraints:
+- The particle values live in the vertex groups ``gpuc_<field>``: weight 0-1 maps linearly onto the Part's range
+  and is not normalised. ``sync`` copies them back whenever the mesh structure is intact.
+- On a generated Part, valid rest-position edits are committed as offsets from ``base_co``; changes to topology,
+  particle IDs or grid UV, and any position change on a locked Part, are undone by ``restore``.
+- A generated Part stores its bone grid row by row (row 0 at the top) with the bones' rest heads in armature
+  space; ``sub_rows`` / ``sub_cols`` particles go between bones; each particle is skinned to 4 flat node indices.
+- A locked Part (imported with Keep Structure) stores the file's own triangles, UVs, links with their own tails,
+  6-bone skin by name and normals, and is never regenerated. ``count``, ``faces``, ``face_uvs``, ``links`` and
+  ``particle_uv`` serve both kinds."""
 import bpy
 import numpy as np
 
@@ -27,7 +23,8 @@ MAPPING_KEY = "ree_gpuc_value_mapping"
 
 
 def mapping_weights(obj, field, data):
-    """Reuse the exact painted mask, including when Min == Max; imported values stay lossless."""
+    """Group weights for ``field``: the cached painted mask while its range and values still match (exact even
+    when Min == Max), else weights mapped from the values."""
     state = obj.get(MAPPING_KEY, {}).get(field)
     if (state is not None and tuple(state["range"]) == field_range(obj, field)
             and np.array_equal(f32(state["values"]), data[field])
@@ -56,14 +53,14 @@ def remember_mapping(obj, weights=None):
 
 
 def change_range(obj, field):
-    """Keep the painted mask and update only this field's final physical values."""
+    """Recomputes ``field``'s values from the painted mask after its range changed; returns whether they did."""
     state = obj.get(MAPPING_KEY, {}).get(field)
     if state is not None and tuple(state["range"]) == field_range(obj, field):
-        return False  # Reconfirming a value must not round-trip untouched file data.
+        return False  # An unchanged range keeps the stored values exact.
     d = load(obj)
     w = group_weights(obj, count(d))[field]
     if w is None or not np.isfinite(w).all():
-        return False  # Invalid structure is restored by the existing canonical handler.
+        return False  # A mesh that no longer matches is left to ``restore``.
     obj[KEY][field] = to_value(obj, field, w).tolist()
     remember_mapping(obj, {field: w})
     from . import sim
@@ -72,7 +69,7 @@ def change_range(obj, field):
 
 
 def fit_ranges(obj, values):
-    """Import/migration only: fit mappings to exact supplied values without rescaling those values."""
+    """Widens each field's range to include the supplied values, leaving the values unchanged."""
     from . import props
     props._loading_ranges += 1
     try:
@@ -90,10 +87,10 @@ PARTICLE_FIELDS = (
     ("sim_weight", "Simulation weight", 0x00, 1.0),
     ("radius", "Collision radius", 0x04, 0.02),
     ("max_distance", "Max distance", 0x0C, 1.0),
-    ("inverse_mass", "Inverse mass", 0x08, 17.267),         # wind response only (ch03_100_1005's: these defaults)
+    ("inverse_mass", "Inverse mass", 0x08, 17.267),         # wind response only
     ("space_limit_lower", "Space limit lower", 0x10, 2.0),  # inward along the normal (Config Info State's limit)
     ("space_limit_upper", "Space limit upper", 0x14, 0.225),
-    ("backstop_radius", "Backstop radius", 0x18, 0.0),      # 0 off
+    ("backstop_radius", "Backstop radius", 0x18, 0.0),      # 0: no backstop
     ("backstop_offset", "Backstop offset", 0x1C, 0.0),
 )
 DEFAULTS = {f[0]: f[3] for f in PARTICLE_FIELDS}
@@ -194,7 +191,7 @@ _grid_links: dict = {}
 
 
 def links(d: dict) -> np.ndarray:
-    """Every link as (a, b, type, shape index into grid.SHAPES)."""
+    """Every link as (a, b, type, shape index into ``grid.SHAPES``)."""
     if d["locked"]:
         return d["links"]
     key = (d["rows"], d["cols"], d["closed"])
@@ -207,8 +204,8 @@ EDITED_KEY = "ree_gpuc_tails_edited"       # on a locked Part: the link shapes w
 
 
 def link_tails(obj, d: dict) -> np.ndarray:
-    """Each link's tail (k, k2, lo, hi): its shape's on the Part; a locked Part's links keep their own except the
-    shapes whose tail was set by hand (all their links take it)."""
+    """Each link's tail (k, k2, lo, hi) from its shape's settings on the Part; a locked Part's links keep the
+    file's tails except for the shapes listed under ``EDITED_KEY``."""
     part = obj.ree_gpuc_part
     names = [s.lower() for s in grid.SHAPES]
     shape = np.array([getattr(part, n).tail() for n in names], np.float32)
@@ -256,7 +253,7 @@ def to_value(obj, field: str, weights) -> np.ndarray:
 
 
 def set_values(obj, field: str, index, value: float) -> None:
-    """Particle values into the canonical data (the caller updates the mesh's group)."""
+    """Writes ``value`` at ``index`` into the canonical data; the caller updates the mesh's group."""
     c = obj[KEY]
     n = int(c["count"]) if c.get("locked") else int(c["rows"]) * int(c["cols"])
     vals = f32(c[field]) if field in c else np.full(n, DEFAULTS[field], np.float32)
@@ -301,9 +298,8 @@ def group_weights(obj, n: int) -> dict:
 
 
 def values(obj, d: dict | None = None) -> dict:
-    """The particle values as the groups now hold them (the canonical ones where a group or a particle's weight
-    is missing, or where the weight is still the canonical value's: that value exactly, not its round trip through
-    the range): what the display shows."""
+    """The particle values the groups now hold, as the display shows them. A particle keeps its exact canonical
+    value where its group or weight is missing or the weight still equals ``mapping_weights``."""
     d = d or load(obj)
     n = count(d)
     out = {}
@@ -317,7 +313,8 @@ def values(obj, d: dict | None = None) -> dict:
 
 
 def write_groups(obj, d: dict | None = None) -> None:
-    """Restore exact cached masks, or initialize groups from canonical values for imported/new data."""
+    """Writes every value group from ``mapping_weights``, creating missing groups; in edit mode, skipped when
+    the vertex count differs."""
     d = d or load(obj)
     n = count(d)
     if obj.mode == "EDIT":
@@ -344,9 +341,8 @@ def write_groups(obj, d: dict | None = None) -> None:
 
 
 def build_mesh(obj) -> None:
-    """The mesh (rest pose, armature space), grid UV, row / column attributes and value groups from the canonical
-    data. No bone groups, no Armature modifier: the mesh is data and stays in the rest pose (the display can
-    follow the pose)."""
+    """Rebuilds the mesh (rest pose, armature space), grid UV, attributes and value groups from the canonical
+    data. Bone groups and Armature modifiers are removed: the mesh stays in the rest pose."""
     d = load(obj)
     me = obj.data
     me.clear_geometry()
@@ -376,9 +372,8 @@ def build_mesh(obj) -> None:
 
 
 def mismatch(obj, positions=True) -> str:
-    """What differs between the mesh and the canonical data's structure ("" when nothing): vertices, faces, grid
-    UV, a value group gone or a particle missing from one. Object mode only. Group weights are not compared:
-    they are the values (sync takes them)."""
+    """The first structural difference between the mesh and the canonical data, "" when none. Object mode only;
+    group weights are values and are not compared."""
     d = load(obj)
     me = obj.data
     n = count(d)
@@ -426,7 +421,7 @@ def mismatch(obj, positions=True) -> str:
 
 
 def sync(obj) -> None:
-    """The canonical values from the groups (the last good values, for a restore and the export)."""
+    """Copies the groups' values into the canonical data as the last good values for ``restore`` and export."""
     d = load(obj)
     c = obj[KEY]
     for f, v in values(obj, d).items():
@@ -436,7 +431,8 @@ def sync(obj) -> None:
 
 
 def set_positions(obj, co) -> None:
-    """Commit rest coordinates; skin and output ownership stay attached to particle IDs."""
+    """Commits rest positions as offsets from ``base_co``; raises ``ValueError`` for a locked Part or invalid
+    geometry."""
     d = load(obj)
     if d["locked"]:
         raise ValueError("Keep Structure Parts cannot edit rest positions")
@@ -456,13 +452,14 @@ _busy = False
 
 
 def upgrade(obj) -> bool:
-    """A Part made before a particle value was added: that value at its default, its group made (no notice)."""
+    """Migrates a Part from an older version: adds rest offsets, particle IDs and missing particle values at
+    their defaults; returns whether values were added."""
     c = obj[KEY]
     if not c.get("locked") and "rest_offset" not in c:
         d = load(obj)
         c["base_co"] = d["co"].ravel().tolist()
         c["rest_offset"] = np.zeros_like(d["co"]).ravel().tolist()
-        # Only migrate old meshes. A removed ID layer on an upgraded Part is an error.
+        # Only a mesh from before rest offsets gets IDs here; on a newer Part ``mismatch`` reports a missing layer.
         me = obj.data
         if len(me.vertices) == count(d) and PARTICLE_ID not in me.attributes:
             me.attributes.new(PARTICLE_ID, "INT", "POINT").data.foreach_set("value", np.arange(count(d), dtype=np.int32))
@@ -477,8 +474,8 @@ def upgrade(obj) -> bool:
 
 
 def restore(obj) -> str:
-    """Rebuild the mesh when its structure differs from the canonical data (object mode), else take the values
-    the groups hold (object and weight paint mode); the reason for a rebuild, or ""."""
+    """Rebuilds the mesh when its structure differs from the canonical data (object mode), else commits rest
+    positions and syncs the values (object and weight paint mode); returns the rebuild reason, or ""."""
     global _busy
     if _busy or not has(obj) or obj.mode not in {"OBJECT", "WEIGHT_PAINT"}:
         return ""

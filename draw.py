@@ -1,11 +1,11 @@
-"""The particles and links in the 3D view, the particles' values on the grid UV in the UV editor.
+"""Draws the Parts' particles, links, limits, welds, colliders and forces in the 3D view, the Config curves as
+graphs, and the particle values on the grid UV in the UV editor.
 
-3D: every visible part's particles (spheres of their collision radius, or screen dots), coloured by a value as
-the groups hold it now, and links (by shape or stiffness); at the rest positions, or where the posed bones carry
-them (Follow the pose: the particles' skin, computed here; the mesh itself stays in the rest pose). In front of every
-mesh by default (as the chain editor draws its nodes through objects): the spheres then sorted back to front,
-front faces only. In edit mode the selected particles are lighter. UV editor: in edit mode, each particle of
-the parts being edited as a dot on the grid UV, coloured by the value chosen."""
+Maintenance constraints:
+- Drawing only reads data. Follow the pose computes posed positions here from the particles' skin; the mesh
+  itself stays in the rest pose.
+- Particles are drawn in front of every mesh by default without writing depth, so spheres are sorted back to
+  front and drawn with back-face culling."""
 import math
 
 import bmesh
@@ -37,7 +37,7 @@ def ramp(t) -> np.ndarray:
 
 def particle_colours(obj, d: dict, field: str) -> np.ndarray:
     """Each particle's colour by a value, as its group's weight shows in Weight Paint (the radius and the max
-    distance through the Part's range). d: the canonical data, or values() over it (the groups' values now)."""
+    distance through the Part's range). ``d``: the canonical data, or ``values()`` merged over it."""
     n = canon.count(d)
     if field not in canon.FIELD_NAMES:
         return np.tile(PLAIN_PARTICLE, (n, 1))
@@ -80,7 +80,7 @@ SPHERE_V, SPHERE_F = _unit_sphere()
 
 def spheres(centres, radii, colours, alpha, view_rot=None):
     """Triangles (positions, colours, indices) of a sphere per particle, sorted back to front along the view
-    (view_rot: the view matrix' 3x3) and shaded by the light, front faces only when culling."""
+    (``view_rot``: the view matrix' 3x3) and shaded by the light, front faces only when culling."""
     centres, radii = np.asarray(centres, float), np.asarray(radii, float)
     n, nv = len(centres), len(SPHERE_V)
     if view_rot is not None:
@@ -128,7 +128,7 @@ def world(obj, d, follow_pose: bool):
 
 
 def particle_normals(obj, d, pos) -> np.ndarray:
-    """Unit normals of the particles at pos (world), outward: the grid's (grid.normals), turned by the rest
+    """Unit normals of the particles at ``pos`` (world), outward: the grid's (``grid.normals``), turned by the rest
     pose's sign (away from the cloth's axis, or for a flat piece from its root joint) and the Part's Flip Normals."""
     part = obj.ree_gpuc_part
     if d["locked"]:
@@ -304,7 +304,7 @@ def _draw_colliders(ctx):
     gpu.state.face_culling_set("NONE")
 
 
-# the force arrows' colours (as RuriClothPhysics' wind zones): the active one, the others, the disabled ones
+# the force arrows' colours: the active one, the others, the disabled ones
 ARROW_ACTIVE, ARROW_IDLE, ARROW_OFF = (1.0, 0.62, 0.15, 1.0), (0.35, 0.75, 1.0, 0.85), (0.4, 0.4, 0.4, 0.35)
 ARROW_SCALE = 0.03            # metres of arrow per m/s²
 

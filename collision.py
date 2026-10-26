@@ -1,10 +1,11 @@
-"""The .gpuc's own collision capsules (section 16: two joints, an offset and a radius at each end), built as the
-RE Chain Editor builds a chain2 collision capsule: in the cloth's "GPUC Collisions - <cloth>" collection, a ROOT
-object (the capsule's values; under the header) with a BEGIN and an END object, each held on its joint by a Child
-Of constraint named BoneName: its location is the end's offset from the joint, its scale the end's radius. The
-ends are the truth: move or scale them in the viewport; the ROOT's values follow them (and setting the values
-moves them). A sphere is a capsule whose two ends meet. The display draws the capsules and the preview simulation
-collides with them."""
+"""Builds the .gpuc's own collision capsules (section 16: two joints, an offset and a radius at each end) as the
+RE Chain Editor builds a chain2 capsule, and keeps their objects and values in sync.
+
+Maintenance constraints:
+- A ROOT object holds the values, with a BEGIN and an END object held on their joints by a Child Of constraint
+  named ``BoneName``: an end's location is its offset from the joint, its scale its radius.
+- The ends are authoritative: ``sync`` copies them into the ROOT's values; ``apply`` moves them when a value is
+  set. A sphere is a capsule whose two ends meet."""
 import bpy
 import numpy as np
 from mathutils import Matrix, Vector
@@ -161,8 +162,8 @@ def reference_clsp(scene):
 def clsp_shapes(coll) -> list:
     """The visible shapes of a .clsp the RE Chain Editor imported, in its order (by name: COL_00, ...): (name,
     shape SPHERE or CAPSULE, begin centre, end centre, begin radius, end radius, CLSP flag A, flag B), world
-    space; its spheres (RE_CHAIN_COLLISION_SINGLE) and capsules (a ROOT with BEGIN and END objects, as ours).
-    The chain editor keeps a radius as its object's scale."""
+    space; its spheres (``RE_CHAIN_COLLISION_SINGLE``) and capsules (a ROOT with BEGIN and END objects). The
+    chain editor keeps a radius as its object's scale."""
     out = []
     if coll is None:
         return out

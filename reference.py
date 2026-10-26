@@ -1,15 +1,14 @@
-"""The reference skeleton: where the joints a cloth names but its mesh's armature lacks (the
-own capsules' ends, a Part's root joint: body bones the game finds on the character's full skeleton) sit in the
-editor. From data/skeletons.json (made from the vanilla .fbxskel files: their bone names, hashes,
-parents and rest matrices; positions only, not the files): ch03_000_9000's bones where it has them, a bone only
-another skeleton has put under its parent there by its own offset from that parent.
+"""Places the joints a cloth names but its mesh's armature lacks (own capsule ends, a Part's root joint) on a
+hidden reference skeleton built from ``data/skeletons.json``.
 
-Each cloth that needs one gets an armature of those bones (GPUC Reference Skeleton - <cloth>, hidden, in its
-Simulation Objects collection, under the mesh's armature, its data in the armature's space: the table's game
-space turned +90 degrees about X, as the RE Mesh Editor turns a mesh's armature). A bone the mesh's
-armature has copies that bone (world space), rest and pose: a bone it lacks follows its parent with the vanilla
-offset. So a mesh whose armature was re-zeroed into a T-pose carries the missing leg and arm joints into that
-pose too; a joint whose own ancestors the mesh lacks keeps the vanilla pose (said at import)."""
+Maintenance constraints:
+- The table holds bone names, hashes, parents and rest matrices in game space. ``ch03_000_9000`` is the base; a
+  bone only another skeleton has goes under its parent by its own offset from that parent.
+- The armature's data is in the mesh armature's space: game space turned +90 degrees about X (``TO_ARMATURE``),
+  as the RE Mesh Editor turns a mesh's armature.
+- A bone the mesh's armature has copies that bone's transform; a bone it lacks follows its parent with the
+  table's offset, so a re-posed armature carries the missing joints along. A joint with no such ancestor keeps
+  the table's pose."""
 import json
 import math
 import os
@@ -28,8 +27,8 @@ _bones: list = []
 
 
 def bones() -> list:
-    """[(name, hash, parent index or -1, rest 4x4)], parents first: ch03_000_9000's, then each other skeleton's
-    bones it lacks (under their parent here, by their own offset from it)."""
+    """[(name, hash, parent index or -1, rest 4x4)], parents first: the base skeleton's bones, then each other
+    skeleton's bones it lacks; cached."""
     if _bones:
         return _bones
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "skeletons.json")
@@ -59,8 +58,8 @@ def armature(coll):
 
 
 def ensure(coll, arm):
-    """The cloth's reference skeleton under arm (made when missing or on another armature). With no armature (a
-    Keep Structure import with no mesh) under the cloth's header, whose space is the game's: the vanilla pose."""
+    """The cloth's reference skeleton under ``arm``, rebuilt when missing or under another object. With no
+    armature (a Keep Structure import with no mesh) it goes under the header, in game space, in the table's pose."""
     ref = armature(coll)
     under = arm if arm is not None else props.header(coll)
     if ref is not None and ref.parent == under:
@@ -122,10 +121,9 @@ def pose_offset(arm) -> tuple:
 
 
 def resolve(coll, arm, hashes) -> tuple:
-    """Names for hashes the armature (arm, None with no mesh) lacks: ({hash: name} of the ones the reference
-    knows, notes). Makes the
-    cloth's reference skeleton when one is needed. MH Wilds cloths only: the table is Wilds' skeletons (RE9's
-    vanilla .fbxskel files hold the head and hair alone), so a RE9 cloth keeps such joints by their hashes."""
+    """Names for the ``hashes`` the armature lacks (``arm`` None with no mesh) that the table knows:
+    ``({hash: name}, notes)``; makes the reference skeleton when needed. A non-Wilds cloth gets nothing, since
+    the table holds Wilds skeletons only, and keeps such joints by their hashes."""
     head = props.header(coll)
     if head is not None and head.ree_gpuc_header.game != props.GAMES[0][0]:
         return {}, []

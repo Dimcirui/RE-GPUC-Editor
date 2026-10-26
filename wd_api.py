@@ -1,7 +1,7 @@
-"""The editor's interface for Wilds-Dynamics (that project's editor interface, item I3):
-a GPUC collection as its .gpuc bytes in memory, built as the Export operator builds it, and the file on disk it
-stands for (where the .mesh and the prefab are found beside it). Nothing here writes a file or changes the scene;
-the editor does not import Wilds-Dynamics (I5)."""
+"""Give Wilds-Dynamics a GPUC collection's .gpuc bytes, built as the Export operator builds them, and its file path.
+
+Maintenance constraints: nothing here writes a file or changes the scene; the editor never imports Wilds-Dynamics,
+which finds this module in ``sys.modules``."""
 from . import fileio, props
 
 API_VERSION = 1
@@ -13,8 +13,10 @@ class ExportError(Exception):
 
 
 def export_bytes(collection, version=None) -> bytes:
-    """The GPUC collection as a .gpuc (version: the file extension's number, e.g. 241111760; None: the cloth's own
-    game). A Keep Structure cloth over its stored file, the driven joints as imported; a cloth made from bones, joints
+    """Return the collection as .gpuc bytes; raise ``ExportError`` (message for the user) when it cannot be built.
+
+    ``version``: the file extension's number, e.g. 241111760; None for the cloth's own game. A Keep Structure cloth
+    is written over its stored file with the driven joints as imported; a cloth made from bones takes its joints
     from its mesh."""
     if not props.is_gpuc_collection(collection):
         raise ExportError(f"{getattr(collection, 'name', collection)} is not a GPUC collection")
@@ -29,8 +31,8 @@ def export_bytes(collection, version=None) -> bytes:
 
 
 def file_path(collection) -> str:
-    """The .gpuc file on disk the collection stands for: the one it was last exported to, else imported from; ""
-    for a cloth never written or read (its .mesh and prefab cannot be found then)."""
+    """Return the .gpuc path the collection stands for (last exported to, else imported from), beside which its
+    .mesh and prefab are found; "" for a cloth never written or read."""
     head = props.header(collection)
     if head is None:
         return ""

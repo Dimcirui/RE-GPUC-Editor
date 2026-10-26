@@ -1,6 +1,6 @@
-"""What the editor keeps on Blender data: a Config object's values, a Part object's values,
-the scene's tool settings. The particles' own values are not here: they live in the Part's canonical data
-(canon.py) and show on its mesh as attributes."""
+"""Define the property groups the editor stores on Blender data: header, Config, Part, scene settings.
+
+Particle values are not stored here: they live in the Part's canonical data (``canon``) and show on its mesh."""
 import bpy
 from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty, PointerProperty,
                        StringProperty)
@@ -17,51 +17,49 @@ def header(coll):
     return next((o for o in coll.all_objects if is_header(o)), None) if coll is not None else None
 
 
-# the header's values that are not derived (counts, offsets and the rest box are; the generator makes them):
-# (property, label, file offset, kind, known, default, description). Defaults: Hope's (ch03_001_0002, the
-# generator's template; Hope is that armour's name in MH Wilds). Values whose effect is not verified are drawn
-# greyed out (from a tally of the vanilla files); a 32-bit value shows as a signed integer (as the chain editor's flags: -1 all set).
+# The header's editable values; counts, offsets and the rest box are computed on export.
+# (property, label, file offset, kind, known, default, description). Defaults are ch03_001_0002's.
+# ``known`` False draws the value greyed out; 32-bit values show as signed integers (-1: all bits set).
 HEADER_FIELDS = (
     ("calculate_mode", "Calculate Mode", 0x68, "E", True, "QUALITY",
-     "Steps per frame, read only when the component's CalculateMode is Default. Vanilla Quality or 0"),
+     "Simulation steps per frame; used only when the component's CalculateMode is Default. Usually Quality or 0"),
     ("max_velocity", "Max Velocity", 0x78, "f", True, 1.0,
-     "The most a particle moves per step (m; 0.1 is 6 m/s at 60 steps a second). Vanilla 0.1 to 1"),
+     "The most a particle moves per step (m; 0.1 is 6 m/s at 60 steps a second). Usually 0.1 to 1"),
     ("kernel_flags", "Kernel Flags", 0x8C, "I", True, 12, "Which kernels the cloth runs; use the button to tick them"),
-    ("unk04", "Unkn Param 0", 0x04, "I", False, -386320729, "A different value in every vanilla file"),
-    ("unk40", "Unkn Param 1", 0x40, "I", False, 0, "0 in every vanilla file"),
-    ("unk54", "Unkn Param 2", 0x54, "I", False, 0, "0 in all but one vanilla file"),
-    ("unk5c", "Unkn Param 3", 0x5C, "I", False, 0, "0 in every vanilla file"),
-    ("unk60", "Unkn Param 4", 0x60, "I", False, 0, "Vanilla 0, 1, 65536, 131073, 196608 and others"),
+    ("unk04", "Unkn Param 0", 0x04, "I", False, -386320729, "Effect unknown. Differs from file to file"),
+    ("unk40", "Unkn Param 1", 0x40, "I", False, 0, "Effect unknown. Usually 0"),
+    ("unk54", "Unkn Param 2", 0x54, "I", False, 0, "Effect unknown. Usually 0"),
+    ("unk5c", "Unkn Param 3", 0x5C, "I", False, 0, "Effect unknown. Usually 0"),
+    ("unk60", "Unkn Param 4", 0x60, "I", False, 0, "Effect unknown. Common values: 0, 1, 65536, 131073, 196608"),
     ("friction", "Friction", 0x6C, "f", False, 0.0,
-     "The cloth's friction in the shader's static info; its effect is not verified. 0 in every vanilla file"),
-    ("unk70", "Unkn Param 6", 0x70, "I", False, 0, "0 in every vanilla file"),
-    ("unk74", "Unkn Param 7", 0x74, "I", False, 0, "0 in every vanilla file"),
-    ("unk7c", "Unkn Param 8", 0x7C, "I", False, 1, "1 in every vanilla file"),
-    ("unk80", "Unkn Param 9", 0x80, "I", False, 512, "Vanilla 256, 512 or 1024"),
-    # RE9 and Onimusha only (offsets in their 0xC0 headers; gpuc_params.header_fields places the rest there)
-    ("unk0c", "Unkn Param 12", 0x0C, "I", False, 0, "RE9 and Onimusha only. A different value in every vanilla file"),
-    ("unk10", "Unkn Param 13", 0x10, "I", False, 0, "RE9 and Onimusha only. 0 in every vanilla file"),
-    ("unk14", "Unkn Param 14", 0x14, "I", False, 0, "RE9 and Onimusha only. 0 in every vanilla file"),
-    ("unk18", "Unkn Param 15", 0x18, "I", False, 0, "RE9 and Onimusha only. 0 in every vanilla file"),
+     "The cloth's friction, passed to the cloth shader. Effect unknown. Usually 0"),
+    ("unk70", "Unkn Param 6", 0x70, "I", False, 0, "Effect unknown. Usually 0"),
+    ("unk74", "Unkn Param 7", 0x74, "I", False, 0, "Effect unknown. Usually 0"),
+    ("unk7c", "Unkn Param 8", 0x7C, "I", False, 1, "Effect unknown. Usually 1"),
+    ("unk80", "Unkn Param 9", 0x80, "I", False, 512, "Effect unknown. Usually 256, 512 or 1024"),
+    # RE9 and Onimusha only: offsets in their 0xC0 headers (gpuc_params.RE9_ONLY)
+    ("unk0c", "Unkn Param 12", 0x0C, "I", False, 0, "RE9 and Onimusha only. Effect unknown. Differs from file to file"),
+    ("unk10", "Unkn Param 13", 0x10, "I", False, 0, "RE9 and Onimusha only. Effect unknown. Usually 0"),
+    ("unk14", "Unkn Param 14", 0x14, "I", False, 0, "RE9 and Onimusha only. Effect unknown. Usually 0"),
+    ("unk18", "Unkn Param 15", 0x18, "I", False, 0, "RE9 and Onimusha only. Effect unknown. Usually 0"),
     ("unk4c", "Unkn Param 16", 0x4C, "I", False, 0,
-     "RE9 and Onimusha only. A different value in every vanilla file"),
+     "RE9 and Onimusha only. Effect unknown. Differs from file to file"),
 )
-# the games the editor writes: (file extension, name, description, number); a cloth's header keeps its own (the
-# numbers are what a saved .blend holds: a new game takes a new one)
+# The games the editor writes: (file extension, name, description, number). A saved .blend stores the number:
+# existing numbers must not change, and a new game takes an unused one.
 GAMES = [(".241111760", "MH Wilds", "Monster Hunter Wilds, .gpuc.241111760", 0),
          (".250925365", "RE9", "Resident Evil Requiem, .gpuc.250925365", 1),
          (".260209505", "Onimusha", "Onimusha: Way of the Sword, .gpuc.260209505", 3),
          (".221108868", "RE4 (Keep Structure)", "Resident Evil 4, preservation-only .gpuc.221108868", 2)]
-# a new RE9 / Onimusha header's values where they are not Hope's: the commonest of the 14 vanilla RE9 files, the
-# 21 Onimusha ones
+# A new RE9 / Onimusha header's values where that game's most common ones differ from HEADER_FIELDS' defaults
 GAME_DEFAULTS = {".250925365": {"calculate_mode": "UNSET", "max_velocity": 0.1, "kernel_flags": 4, "unk7c": 0},
                  ".260209505": {"max_velocity": 0.1, "kernel_flags": 20}}
 # via.dynamics.ClothCalculateMode (the file keeps the number)
 CALCULATE_MODES = [
-    ("UNSET", "0", "Some vanilla files have 0; the steps it gives are not verified", 0),
+    ("UNSET", "0", "Value 0. Steps per frame unknown", 0),
     ("PERFORMANCE", "Performance", "Always 1 step a frame", 1),
     ("BALANCE", "Balance", "2 steps when a frame takes over 1.5 frames' time, else 1", 2),
-    ("QUALITY", "Quality", "As Balance; how the two differ otherwise is not known", 3),
+    ("QUALITY", "Quality", "As Balance; any other difference is unknown", 3),
 ]
 
 CLSP_COLLECTION_TYPE = "RE_CLSP_COLLECTION"        # the RE Chain Editor's imported .clsp
@@ -76,7 +74,7 @@ def _poll_clsp(self, coll):
 
 
 REE_GPUC_Header = type("REE_GPUC_Header", (bpy.types.PropertyGroup,), {
-    "__doc__": "The .gpuc's own header values (the derived ones are left to the generator)",
+    "__doc__": "The .gpuc's header values (counts and offsets are written on export)",
     "__annotations__": {
         "game": EnumProperty(name="Game", items=GAMES, update=_redraw_any,
                              description="The game the .gpuc is for: which header values it has and how it is "
@@ -132,8 +130,8 @@ def _redraw(self, context):
                 area.tag_redraw()
 
 
-# the config block's fields (the names Wilds-Dynamics and physsim use): (property, label, kind, default).
-# Defaults: the vanilla mid-length skirt ch03_100_1005
+# The config block's fields: (property, label, kind, default). Labels are the names Wilds-Dynamics and physsim use;
+# defaults are the mid-length skirt ch03_100_1005's.
 CONFIG_FIELDS = (
     ("simulation_strength", "SimulationStrength", "f", 1.0), ("blend_weight", "BlendWeight", "f", 1.0),
     ("gravity_factor", "GravityFactor", "f", 0.75), ("velocity_damping", "VelocityDamping", "f", 0.16),
@@ -149,52 +147,53 @@ CONFIG_FIELDS = (
     ("translation_speed", "Translation curve speed", "f", 50.0),
     ("rotation_speed", "Rotation curve speed", "f", 720.0),
 )
-# ConfigInfoState: named bits (the bit dialog); ch03_100_1005 has 5 (SkinningCollision, SpaceLimitCylinder)
+# ConfigInfoState's named bits, for the bit dialog. The default 5 is ch03_100_1005's (SkinningCollision,
+# SpaceLimitCylinder).
 STATE_BITS = {0: "SkinningCollision", 1: "SpaceLimitSphere", 2: "SpaceLimitCylinder", 3: "LinearStrength",
               4: "HybridStrength"}
-# the config block's values with no known effect: (property, label, default, description); drawn greyed out.
-# Defaults: ch03_100_1005's
+# The config block's values with no known effect, drawn greyed out: (property, label, default, description).
+# Defaults are ch03_100_1005's.
 CONFIG_UNKNOWNS = (
-    ("unk00", "Unkn Param 0", 1277511368, "The first config's is the same in every vanilla file, the others differ"),
-    ("unk04", "Unkn Param 1", 0, "0 in every vanilla file"),
-    ("unk08", "Unkn Param 2", 0, "0 in every vanilla file"),
-    ("unk0c", "Unkn Param 3", 0, "0 in every vanilla file"),
-    ("unk10", "Unkn Param 4", 329497134, "Different in every vanilla config (Unkn Param 4 to 7 look like one ID)"),
+    ("unk00", "Unkn Param 0", 1277511368,
+     "Effect unknown. The first Config usually has 1277511368; the others differ"),
+    ("unk04", "Unkn Param 1", 0, "Effect unknown. Usually 0"),
+    ("unk08", "Unkn Param 2", 0, "Effect unknown. Usually 0"),
+    ("unk0c", "Unkn Param 3", 0, "Effect unknown. Usually 0"),
+    ("unk10", "Unkn Param 4", 329497134, "Effect unknown. Differs per Config; Unkn Param 4 to 7 may form one ID"),
     ("unk14", "Unkn Param 5", 1193019816, "See Unkn Param 4"),
     ("unk18", "Unkn Param 6", 515622574, "See Unkn Param 4"),
     ("unk1c", "Unkn Param 7", 345486607, "See Unkn Param 4"),
-    ("unk34", "Unkn Param 8", 0, "0 in every vanilla file"),
+    ("unk34", "Unkn Param 8", 0, "Effect unknown. Usually 0"),
 )
 CONFIG_DESCRIPTIONS = {
-    "simulation_strength": "The particles' weight is min(1, this x their simulation weight). Vanilla 1",
+    "simulation_strength": "The particles' weight is min(1, this x their simulation weight). Usually 1",
     "blend_weight": "The cloth bones take this share of the simulation over the animation (the preview draws the "
-                    "particles so). Vanilla skirts 1, Hope 0.6",
+                    "particles so). Usually 1 for skirts; some coats use 0.6",
     "second_damping": "Over Second damping speed a particle's velocity takes Second VelocityDamping instead",
-    "second_velocity_damping": "The damping over Second damping speed. Vanilla 0.001 to 0.19",
-    "second_damping_speed": "The speed (m/s) over which Second VelocityDamping applies. Vanilla 3 or 1.7",
-    "self_collision": "Read by the game; no effect shown yet. Off in every vanilla file",
-    "translation_speed": "The translation curve's input is min(1, the root's speed / this) (m/s). Vanilla 0.01 to 100",
-    "rotation_speed": "The rotation curve's input is min(1, the root's turn rate / this) (deg/s). Vanilla 360 or 720",
+    "second_velocity_damping": "The damping over Second damping speed. Usually 0.001 to 0.19",
+    "second_damping_speed": "The speed (m/s) over which Second VelocityDamping applies. Usually 3 or 1.7",
+    "self_collision": "Read by the game. Effect unknown. Usually off",
+    "translation_speed": "The translation curve's input is min(1, the root's speed / this) (m/s). Usually 0.01 to 100",
+    "rotation_speed": "The rotation curve's input is min(1, the root's turn rate / this) (deg/s). Usually 360 or 720",
 }
 
-# the config values' limits, from the vanilla files (89 Wilds files, 112 configs):
-# a share or a blend 0-1 hard; the others a soft range round what vanilla uses (typed values may go past it),
-# the angular speed limit (10-720 deg/s) too wide for a slider. SLIDERS: drawn as sliders.
+# Config value limits: shares and blends are hard 0-1; the others take a soft range around the values game files use
+# (typed values may go past it). SLIDERS are drawn as sliders; the angular speed limit and rotation speed are not.
 CONFIG_LIMITS = {
-    "simulation_strength": dict(min=0.0, max=1.0),            # vanilla 0.15-1, a multiplier on the 0-1 weight
-    "blend_weight": dict(min=0.0, max=1.0),                   # 0-1
-    "gravity_factor": dict(soft_min=0.0, soft_max=4.0),       # 0.06-3.5; -1 floats the cloth up
-    "velocity_damping": dict(min=0.0, max=1.0),               # 0-1
-    "second_velocity_damping": dict(min=0.0, max=1.0),        # 0-0.19
-    "second_damping_speed": dict(min=0.0, soft_max=10.0),     # 0-4
-    "blend_translation": dict(min=0.0, max=1.0),              # 0-1
-    "blend_rotation": dict(min=0.0, max=1.0),                 # 0-1
-    "speed_limit": dict(min=0.0, soft_max=30.0),              # 1 or 15
-    "angular_speed_limit": dict(min=0.0),                     # 10-720
-    "translation_speed": dict(min=0.0, soft_max=100.0),       # 0.01-100
-    "rotation_speed": dict(min=0.0),                          # 360 or 720
+    "simulation_strength": dict(min=0.0, max=1.0),
+    "blend_weight": dict(min=0.0, max=1.0),
+    "gravity_factor": dict(soft_min=0.0, soft_max=4.0),       # soft: -1 floats the cloth up
+    "velocity_damping": dict(min=0.0, max=1.0),
+    "second_velocity_damping": dict(min=0.0, max=1.0),
+    "second_damping_speed": dict(min=0.0, soft_max=10.0),
+    "blend_translation": dict(min=0.0, max=1.0),
+    "blend_rotation": dict(min=0.0, max=1.0),
+    "speed_limit": dict(min=0.0, soft_max=30.0),
+    "angular_speed_limit": dict(min=0.0),
+    "translation_speed": dict(min=0.0, soft_max=100.0),
+    "rotation_speed": dict(min=0.0),
 }
-UNVERIFIED = {"bounce", "stickiness", "self_collision"}   # values not shown to do anything yet
+UNVERIFIED = {"bounce", "stickiness", "self_collision"}   # effect unknown: drawn greyed out
 SLIDERS = ({name for name in CONFIG_LIMITS if name not in {"angular_speed_limit", "rotation_speed"}}
            | {"friction", "bounce", "stickiness"})
 
@@ -205,7 +204,7 @@ KEY_TYPES = [
     ("HERMITE", "Hermite", "A smooth curve by the tangents", 3),
     ("WEIGHTED_5", "Weighted Hermite (5)", "A smooth curve by the tangents and their weights", 5),
     ("WEIGHTED_6", "Weighted Hermite (6)", "A smooth curve by the tangents and their weights", 6),
-    ("HERMITE_0", "Hermite (0)", "Type 0, read as Hermite (some vanilla files)", 0),
+    ("HERMITE_0", "Hermite (0)", "Type 0, treated as Hermite", 0),
 ]
 HERMITE_TYPES = {"HERMITE", "WEIGHTED_5", "WEIGHTED_6", "HERMITE_0"}
 WEIGHTED_TYPES = {"WEIGHTED_5", "WEIGHTED_6"}
@@ -232,16 +231,18 @@ class REE_GPUC_Curve(bpy.types.PropertyGroup):
     active_key: IntProperty(name="Key", default=0, min=0)
     clamp_flags: IntProperty(name="Clamp Flags", default=0,
                              description="Bit 0: the value is held between Clamp Min and Clamp Max; use the button to "
-                                         "tick it. 0 in every vanilla file")
-    clamp_min: FloatProperty(name="Clamp Min", default=0.0, precision=3, description="0 in every vanilla file")
-    clamp_max: FloatProperty(name="Clamp Max", default=1.0, precision=3, description="1 in every vanilla file")
-    unk04: IntProperty(name="Unkn Param 0", default=0, description="0 in every vanilla file")
-    unk08: FloatProperty(name="Unkn Param 1", default=15000.0, description="15000 in every vanilla file")
-    unk14: IntProperty(name="Unkn Param 2", default=0, description="0 in every vanilla file")
-    unk1c: IntProperty(name="Unkn Param 3", default=0, description="0 in every vanilla file")
+                                         "tick it. Usually 0")
+    clamp_min: FloatProperty(name="Clamp Min", default=0.0, precision=3,
+                             description="The lowest value while Clamp Flags bit 0 is set. Usually 0")
+    clamp_max: FloatProperty(name="Clamp Max", default=1.0, precision=3,
+                             description="The highest value while Clamp Flags bit 0 is set. Usually 1")
+    unk04: IntProperty(name="Unkn Param 0", default=0, description="Effect unknown. Usually 0")
+    unk08: FloatProperty(name="Unkn Param 1", default=15000.0, description="Effect unknown. Usually 15000")
+    unk14: IntProperty(name="Unkn Param 2", default=0, description="Effect unknown. Usually 0")
+    unk1c: IntProperty(name="Unkn Param 3", default=0, description="Effect unknown. Usually 0")
 
     def value(self, x):
-        """The curve at x (a number or an array), modules/curve.py's approximation."""
+        """Evaluate the curve at ``x`` (a number or an array) with ``modules.curve``'s approximation."""
         from .modules import curve
         keys = [(k.time, k.value, k.bl_rna.properties["type"].enum_items[k.type].value, k.in_tangent, k.out_tangent)
                 for k in self.keys]
@@ -252,7 +253,7 @@ class REE_GPUC_Curve(bpy.types.PropertyGroup):
         return all(a <= b for a, b in zip(times, times[1:]))
 
     def set_keys(self, keys) -> None:
-        """keys: (time, value, type, in tangent, in weight, out tangent, out weight) each."""
+        """Replace the keys; each is (time, value, type, in tangent, in weight, out tangent, out weight)."""
         self.keys.clear()
         for t, v, typ, it, iw, ot, ow in keys:
             k = self.keys.add()
@@ -278,7 +279,7 @@ CURVES = (("translation_curve", "Translation Curve", "overwrite_translation", "t
 
 
 def fill_curves(cfg, force: bool = False) -> None:
-    """A config's curves to the defaults (a new config's are empty: a collection has no default)."""
+    """Set a Config's curves to ``CURVE_DEFAULTS``; without ``force`` only empty ones (a collection has no default)."""
     for name, keys in CURVE_DEFAULTS.items():
         curve = getattr(cfg, name)
         if force or not len(curve.keys):
@@ -289,7 +290,7 @@ from .modules import re4
 REE_GPUC_Config = type("REE_GPUC_Config", (bpy.types.PropertyGroup,), {
     "__doc__": "One config block of the .gpuc; Parts point at one (several may share it)",
     "__annotations__": {**{name: (FloatProperty(name=f"RE4 value +0x{off:02X}", precision=5,
-                                               description="Serialized RE4 Config value; meaning unverified")
+                                               description="RE4 Config value. Effect unknown")
                                   if fmt == "f" else IntProperty(name=f"RE4 flags +0x{off:02X}"))
                             for name, (off, fmt) in re4.CONFIG.items()},
                         **{name: (BoolProperty(name=label, default=default,
@@ -315,8 +316,8 @@ _applying = False
 
 
 def _tail_edit(self, context):
-    """A tail edited by hand: the Part's links are its own now (preset Custom). On a locked Part every link of
-    that shape takes it from now on (canon.link_tails)."""
+    """Set the Part's link preset to Custom; on a locked Part, mark the shape so ``canon.link_tails`` applies the
+    tail to every link of that shape."""
     obj = self.id_data
     if obj.get("ree_gpuc_canon", {}).get("locked"):
         shape = self.path_from_id().rsplit(".", 1)[-1]
@@ -333,7 +334,7 @@ def _tail_edit(self, context):
 class REE_GPUC_LinkTail(bpy.types.PropertyGroup):
     """A link's tail: stiffness k, the share of the length error a solve removes; with the
     conditional multiplier, k x multiplier while lo < rest length / current length < hi. Off, the file gets
-    (multiplier, lo, hi) = (1, 1, 1) as Hope has (the range never holds)."""
+    (multiplier, lo, hi) = (1, 1, 1), a range that never holds."""
     k: FloatProperty(name="Stiffness", default=1.0, min=0.0, max=1.0, subtype="FACTOR", update=_tail_edit,
                      description="The share of a link's length error each solve removes: 1 back to the rest length "
                                  "at once, 0 no pull")
@@ -362,8 +363,8 @@ class REE_GPUC_LinkTail(bpy.types.PropertyGroup):
         return f"{self.k * self.k2:.3g} while {short} to {long} rest, else {self.k:.3g}"
 
 
-# link presets: the most common tail per shape in vanilla files (k, k2, lo, hi), shape order vertical, ring,
-# shear, bend
+# Link presets: key -> (label, description, tails); tails are (k, k2, lo, hi) per shape in LINK_SHAPES order,
+# taken from the file the label names.
 LINK_PRESETS = {
     "SKIRT_1005": ("Mid-length skirt (ch03_100_1005)", "Soft round the body, stiff down it",
                    ((1.0, 1.0, 1.0, 14.403), (0.3, 0.29, 1.0, 0.8), (0.29, 0.31, 0.333, 0.8),
@@ -380,7 +381,7 @@ LINK_PRESETS = {
 
 
 def _link_preset(self, context):
-    """A preset chosen: its tails into the Part's four shapes."""
+    """Copy the chosen preset's tails into the Part's four shapes."""
     global _applying
     if self.link_preset == "CUSTOM":
         return
@@ -409,7 +410,7 @@ def _poll_config(self, obj):
 
 
 def _part_config(self, context):
-    """A Part sits under its Config (as a chain group under its chain settings): changing it moves the Part."""
+    """Parent the Part under its new Config, as a chain group sits under its chain settings."""
     obj = self.id_data
     if is_config(self.config) and obj.parent != self.config:
         place_under(obj, self.config)
@@ -452,8 +453,8 @@ class REE_GPUC_Part(bpy.types.PropertyGroup):
     config: PointerProperty(name="Config", type=bpy.types.Object, poll=_poll_config, update=_part_config)
     armature: PointerProperty(name="Armature", type=bpy.types.Object)
     re4_value_30: FloatProperty(name="RE4 value +0x30", precision=5,
-                               description="Serialized float before RE4 collision masks; likely long range "
-                                           "attachment stretchiness, not Wilds surface area")
+                               description="RE4 part value before the collision masks. Effect unknown; possibly "
+                                           "long-range attachment stretch")
     rows: IntProperty(name="Rows")
     cols: IntProperty(name="Columns")
     sub_rows: IntProperty(name="Between bones, down")
@@ -469,19 +470,18 @@ class REE_GPUC_Part(bpy.types.PropertyGroup):
                                              "Rebuild from Bones finds it; the triangles give the particles' frames "
                                              "and the collision edges")
     uv_tile: IntProperty(name="UV tile", description="The part's place on the grid UV (u from this to this + 1)")
-    # the part block (section 6, 64 bytes; the 010 template's names); its config index and name hash
-    # follow from the hierarchy and the name
-    part_name: StringProperty(name="Name", default="_p000", description="The part block's name (vanilla _p000, _p001, ...)")
+    # the part block (section 6); its config index and name hash follow from the hierarchy and the name
+    part_name: StringProperty(name="Name", default="_p000", description="The part block's name (usually _p000, _p001, ...)")
     use_root_joint: BoolProperty(name="Use Root Joint", default=True,
                                  description="The part follows its root joint for the inertia transfer (off: the cloth "
                                              "mesh's first joint)")
     root_joint: StringProperty(name="Root Joint", description="The joint the part follows")
-    # vanilla Wilds 0-0.5, Onimusha 0-100 (30 and 100 in some files)
     friction: FloatProperty(name="Friction", default=0.0, min=0.0, soft_max=1.0, precision=4,
-                            description="Some Onimusha files have 30 or 100; the preview takes at most 1")
-    bounce: FloatProperty(name="Bounce", default=0.0, min=0.0, max=1.0, precision=4)            # vanilla 0
-    stickiness: FloatProperty(name="Stickiness", default=0.0, min=0.0, max=1.0, precision=4)    # vanilla 0
-    surface_area: FloatProperty(name="Surface area", default=1.0, min=0.0, precision=4)         # vanilla 0.02-813
+                            description="Usually 0 to 0.5; some Onimusha files use 30 or 100. The preview uses at "
+                                        "most 1")
+    bounce: FloatProperty(name="Bounce", default=0.0, min=0.0, max=1.0, precision=4)
+    stickiness: FloatProperty(name="Stickiness", default=0.0, min=0.0, max=1.0, precision=4)
+    surface_area: FloatProperty(name="Surface area", default=1.0, min=0.0, precision=4)
     plane_bits: IntProperty(name="Collision Plane Bits", default=-1,
                             description="Which planes the part collides with; use the button to tick them. -1 all")
     sphere_bits: IntProperty(name="Collision Sphere Bits", default=-1,
@@ -522,8 +522,8 @@ class REE_GPUC_Part(bpy.types.PropertyGroup):
     clsp_flags_a: IntProperty(name="CLSP Flags A", default=1032193,
                               description="With CLSP Flags B, one 64-bit mask of the CLSP tag groups the part "
                                           "collides with (as a chain group's): a CLSP shape is used when its mask "
-                                          "meets this one; -1 every shape. It must take the outfit's leg shapes. "
-                                          "Default: ch03_100_1005's")
+                                          "meets this one; -1 every shape. It must include the outfit's leg "
+                                          "shapes. Default: ch03_100_1005's")
     clsp_flags_b: IntProperty(name="CLSP Flags B", default=2048,
                               description="The high half of the CLSP tag mask (see CLSP Flags A)")
     link_preset: EnumProperty(name="Links", default="CUSTOM", update=_link_preset,
@@ -558,7 +558,7 @@ TEST_KINDS = [("SPHERE", "Sphere", ""), ("CAPSULE", "Capsule", ""),
 
 
 def _field(self, context):
-    """The value chosen: its active group and the particle overlay show the same parameter."""
+    """Make the chosen value the particle colours and each Part's active vertex group."""
     self.colour_by = self.field
     for obj in parts(self.target):
         g = obj.vertex_groups.get("gpuc_" + self.field)
@@ -702,10 +702,9 @@ def is_force(obj) -> bool:
 
 
 class REE_GPUC_Force(bpy.types.PropertyGroup):
-    """A force on the preview simulation's particles, along the object's +Z (rotate the object to aim it; as
-    RuriClothPhysics' wind zones), its strength these values x the object's scale along +Z (scale the arrow to
-    scale the force): a constant acceleration (gravity by default; x the Config's GravityFactor), or a wind whose
-    acceleration swings between Low and High over Period (a sine)."""
+    """A force on the preview simulation's particles along the object's +Z (rotate the object to aim it), its
+    strength these values x the object's scale along +Z: a constant acceleration (gravity by default; x the
+    Config's GravityFactor), or a wind whose acceleration swings between Low and High over Period (a sine)."""
     kind: EnumProperty(name="Kind", items=[("CONSTANT", "Constant", "A steady acceleration (gravity)"),
                                            ("WIND", "Wind", "An acceleration swinging between Low and High")],
                        update=_redraw)
@@ -731,7 +730,7 @@ class REE_GPUC_Force(bpy.types.PropertyGroup):
 
 def _use_force(kind):
     def update(self, context):
-        """One force object of the kind, made when first turned on; off hides it (it keeps its aim)."""
+        """Show the kind's force object, adding it when first turned on; off hides it and keeps its aim."""
         from . import sim
         on = self.use_gravity if kind == "CONSTANT" else self.use_wind
         obj = sim.force_object(context.scene, kind)

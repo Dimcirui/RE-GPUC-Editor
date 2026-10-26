@@ -1,18 +1,16 @@
-"""Generate, check, regenerate: a part's particle grid from bone chains, in the armature's
-rest pose.
+"""Generates a Part's particle grid from bone chains in the armature's rest pose, checks it against the armature
+and regenerates it.
 
-The bones make a bone grid: each chain is one column, top to bottom, and the columns go round the cloth
-(modules/grid.py order_columns). A chain is either every selected bone linked by selected children (from the
-selected bones) or a selected bone and all the bones below it, one child each (from the parent bones). A particle
-sits on every bone's head; sub_rows / sub_cols more go between two bones of a chain / two neighbouring chains
-(several particles per bone), skinned to the four bones round them. Check compares the bones'
-rest heads with the ones the part was made from; Regenerate makes the particles again from them, with a new
-density or ring if asked, and keeps every value (config, part, link tails; each particle's values taken from the
-old grid at the same place on it).
+Each chain is one column of the bone grid, top to bottom, ordered round the cloth by ``grid.order_columns``. A
+particle sits on every bone's head, with ``sub_rows`` / ``sub_cols`` more between neighbouring bones, each skinned
+to the four bones round it. Regenerating keeps every Config, Part and link-tail value and resamples each
+particle's values from the old grid.
 
-The hierarchy and names follow the RE Chain Editor's (header, chain settings, chain groups): the cloth collection
-(purple, <name>.gpuc) holds GPUC_HEADER <collection> on the armature, its Configs (GPUC_CONFIG_00, ...) and under
-each its Parts (GPUC_PART_00_<bone>, ...), all at no offset: a Part's mesh is in armature space."""
+Maintenance constraints:
+- The hierarchy and names follow the RE Chain Editor's: the purple <name>.gpuc collection holds
+  ``GPUC_HEADER <collection>`` on the armature, its Configs (``GPUC_CONFIG_00``, ...) and under each its Parts
+  (``GPUC_PART_00_<bone>``, ...).
+- These objects sit at no offset: a Part's mesh is in armature space."""
 import bpy
 import numpy as np
 
@@ -20,7 +18,7 @@ from . import canon, props
 from .modules import grid
 
 COLLECTION_COLOUR = "COLOR_06"          # purple; the chain editor's chain and clsp collections are orange
-# a new part's links: the vanilla mid-length skirt's tails (props.LINK_PRESETS)
+# a new part's link tails (props.LINK_PRESETS)
 LINK_PRESET = "SKIRT_1005"
 
 
@@ -109,8 +107,7 @@ def _particles(lay: dict, node_co) -> dict:
 
 
 def unique_name(prefix: str, suffix: str = "") -> str:
-    """prefix + the first two-digit index no object's name starts with (+ suffix), as the chain editor numbers
-    its objects (COL_00_..., CHAIN_GROUP_00_...)."""
+    """``prefix`` + the first two-digit index no object name uses after ``prefix`` (+ ``suffix``)."""
     taken = {o.name[len(prefix):len(prefix) + 2] for o in bpy.data.objects if o.name.startswith(prefix)}
     k = 0
     while f"{k:02d}" in taken:
@@ -119,9 +116,9 @@ def unique_name(prefix: str, suffix: str = "") -> str:
 
 
 def new_collection(name: str, arm=None, game: str = "") -> bpy.types.Collection:
-    """The cloth: a purple <name>.gpuc collection with its header (on the armature) and one Config; inside a
-    collection named <name> when there is one (as the chain editor does), else in the scene's. game: the header's
-    (props.GAMES' extension; MH Wilds by default), a RE9 or Onimusha one with that game's vanilla header values."""
+    """Creates the cloth: a purple <name>.gpuc collection with its header (on the armature) and one Config,
+    inside the collection named <name> if there is one, else in the scene's. A non-empty ``game`` (a
+    ``props.GAMES`` extension) sets the header's game and applies its ``props.GAME_DEFAULTS``."""
     base = name[:-len(".gpuc")] if name.endswith(".gpuc") else name
     coll = bpy.data.collections.new(base + ".gpuc")
     coll["~TYPE"] = props.COLLECTION_TYPE
@@ -213,8 +210,8 @@ def new_part(coll, arm, lay: dict, config=None) -> bpy.types.Object:
 
 
 def check(obj) -> list[str]:
-    """What no longer matches the armature: missing bones, bones whose rest head moved (a locked Part: its skin
-    bones, and its driven bones against where its file binds them, fileio.locked_problems)."""
+    """What no longer matches the armature: missing bones, or bones whose rest head moved (a locked Part:
+    ``fileio.locked_problems``)."""
     if canon.locked(obj):
         from . import fileio
         return fileio.locked_problems(obj)

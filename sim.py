@@ -1,8 +1,7 @@
-"""The preview simulation: an approximation of the game's cloth on the parts' particles,
-for a feel of the values; not the game's solver (physsim and Wilds-Dynamics run that). Only the particles move:
-nothing is written to the file, the part mesh or the armature; the display draws the result.
+"""Approximate the game's cloth on the parts' particles for previewing values; this is not the game's solver.
+Only the particles move: nothing is written to the file, the part mesh or the armature; the display draws the result.
 
-Each frame is one step of 1/60 s (a timer, independent of the timeline; the game's FrameRate 60, so the header's
+Each frame is one step of 1/60 s (a timer, independent of the timeline; at the game's FrameRate 60 the header's
 Calculate Mode never splits it). The particles' weight is the effective w = min(1, Config SimulationStrength x
 the simulation weight):
   0. the root follow: the Part's root joint's move and turn since the last frame carried into the particles by
@@ -34,7 +33,7 @@ from . import canon, collision, draw, props
 from .modules import gpuc_build
 
 DT = 1.0 / 60.0
-_state: dict = {}            # part name -> {"x", "prev", "key"}
+_state: dict = {}            # part name -> {"x", "prev", "skin", "root", "shapes"}
 _batches: dict = {}          # (rows, cols, closed) -> (links (n x 4) ordered by batch, batch sizes)
 _clock = {"t": 0.0, "running": False}
 _inputs: dict = {}           # Config name -> the curves' inputs last frame (translation, rotation), for the graph
@@ -84,10 +83,10 @@ def batches(d: dict):
 def colliders(scene) -> list:
     """Every visible collider, world space, each ending in (source, index): ("SPHERE", centre, radius, ...),
     ("CAPSULE", a, b, radius at a, radius at b, ...), ("PLANE", origin, unit normal, drawn size, x axis, ...),
-    ("BOX", centre, unit axes (3 x 3, columns), half sizes, ...). source OWN for the .gpuc's own capsules
-    (collision.py; UNBOUND while an end has no bone), ("CLSP", flag A, flag B) for the Reference CLSP's shapes, TEST for the preview's test
-    colliders; index: the shape's place among its kind (the own ones first, then the CLSP's, as the game
-    orders them, then the test ones, each by name), the bit of the Part's collision bits that takes it."""
+    ("BOX", centre, unit axes (3 x 3, columns), half sizes, ...). source: OWN for the .gpuc's own capsules
+    (UNBOUND while an end has no bone), ("CLSP", flag A, flag B) for the Reference CLSP's shapes, TEST for the
+    test colliders. index: the shape's place among its kind (own first, then CLSP, as the game orders them, then
+    test, each by name), which is the bit of the Part's collision bits that takes it."""
     from . import collision
     cloth = scene.ree_gpuc.target
     out = [("CAPSULE", a, b, ra, rb, "OWN" if collision.bound(root) else "UNBOUND") for root, a, b, ra, rb in
@@ -160,7 +159,7 @@ def _units(v, *fallbacks) -> np.ndarray:
 
 
 def collide(x, radius, shapes, w, ref, before=None, normal=None, friction: float = 0.0) -> None:
-    """Push particles out of the shapes (in place), the game's Legacy collision: a particle
+    """Push particles out of the shapes in place, by the game's Legacy collision: a particle
     with w > 0 whose centre is nearer a shape than its radius goes out along the push direction, by the depth x
     w. The direction is judged from ref: the shape (a capsule's nearest axis point, a box's nearest face) towards
     ref. Skinning: ref the skinned places, against the shapes now (before None); Previous: ref the last step's
@@ -209,7 +208,7 @@ def reset(obj, scene) -> None:
     _state[obj.name] = {"x": x.copy(), "prev": x.copy(), "skin": x.copy()}
 
 
-WIND_MASS = 100.0          # the inverse mass a wind's acceleration is given for (Hope's, ch03_001_0002's, ~100)
+WIND_MASS = 100.0          # the inverse mass at which a wind's acceleration applies unscaled
 
 
 def root_matrix(obj) -> np.ndarray:
@@ -398,8 +397,8 @@ def damping(cfg, speed) -> np.ndarray:
 
 
 def previous(cfg) -> bool:
-    """Whether the Config collides by Previous (its Info State lacks SkinningCollision, bit 0, the component's
-    type left at the vanilla 1), else Skinning."""
+    """Whether the Config collides by Previous (Info State bit 0, SkinningCollision, clear), else Skinning; the
+    component's ContinuousType is taken as 1."""
     return cfg is not None and not cfg.info_state & 1
 
 

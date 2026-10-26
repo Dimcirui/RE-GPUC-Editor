@@ -1,7 +1,7 @@
-"""Build a single-part .gpuc from cloth geometry, using a template gpuc: MH Wilds .gpuc.241111760, or RE9
-.gpuc.250925365 from a RE9 template (the file takes the template's layout: its header's places, its skin encoding).
+"""Build a single-part .gpuc from cloth geometry, from a template gpuc or a blank layout; the file takes the
+template's layout (header offsets, skin encoding).
 
-What is generated (rules verified on the 89 vanilla files):
+What is generated:
   particles, triangles (with per-vertex UV), links and their types, link/edge graph colouring,
   edges and the per-particle CSR, particle frames, output joint bindings and frames, skinning
   table (sec 11), output joint table (sec 23), count sections 7/10/13, header counts and bounds.
@@ -10,7 +10,7 @@ What is copied from the template:
   (sec 16), sec 20, the per-particle material fields and sec 28 (from the template particle
   nearest in rest position), link tails (most common tail of each link type).
 Without a template (a layout instead, see blank()) none of these: the editor writes config, parts and capsules
-itself, and no shader reads sections 10, 14, 15, 20 or 28 (the game's cloth shader, checked 2026-10-25).
+itself, and the game's cloth shader reads none of sections 10, 14, 15, 20 and 28.
 
 The spec is a dict (see ClothSpec below); positions are in mesh model space.
 """
@@ -20,13 +20,12 @@ import struct
 
 import numpy as np
 
-from . import gpuc  # ree-gpuc-generator: vendored as a package (the one change to this file)
+from . import gpuc
 
 NAN = struct.unpack("<f", b"\xff\xff\xff\xff")[0]
 MIN_SLOTS = 8  # particle slots per output joint, see build()
-# sections that follow the one before unpadded in vanilla files (Wilds and RE9: their starts are 4-aligned unless the
-# one before happens to end on 16); gpuc.Gpuc reads a start on 16 as 16-aligned, so a built file used as the next
-# template would pad them
+# sections that follow the one before unpadded (4-aligned); gpuc.Gpuc reads a start on 16 as 16-aligned, so build()
+# resets them to 4 or a built file used as the next template would pad them
 PACKED = (3, 4, 5, 19, 20)
 
 
@@ -36,8 +35,7 @@ class ClothSpec:
     positions   (P, 3) rest positions
     sim_weight  (P,)   0 = follows skinning, 1 = fully simulated
     skin_bones  (P, 8) full mesh bone indices (any value where the weight is 0)
-    skin_w      (P, 8) u8 weights, each row sums to 255; at most 6 non-zero (Wilds packs 6 skin
-                indices of 10 bits, see gpuc.write_skin)
+    skin_w      (P, 8) u8 weights, each row sums to 255; at most gpuc.skin_slots(layout) non-zero
     faces       list of faces in file order; a face is a tuple of 3 or 4 particle indices.
                 A quad (a, b, c, d) is split into (a, b, c) and (a, c, d).
     face_uv     list of per-face UVs, one (u, v) per face vertex, in [0, 1]
@@ -57,8 +55,8 @@ class ClothSpec:
 
 
 def _triangles(spec):
-    # tail: u16 tangent flags (bits 0-2 flip the tangent at that corner, a mirrored UV; bit 3 no UV tangent, the
-    # face normal only; read by RecalculateControlPointNormals_Tangent alone), then three unorm16 UVs
+    # tail: u16 tangent flags (bits 0-2 flip the tangent at that corner for a mirrored UV; bit 3 no UV tangent,
+    # face normal only), then three unorm16 UVs
     tris = []  # (i, j, k, uv tail bytes)
     for f, uv in zip(spec.faces, spec.face_uv):
         q = [max(0, min(65535, int(round(c * 65535)))) for p in uv for c in p]
@@ -210,13 +208,13 @@ def _pad16(b):
     return bytes(b) + b"\0" * (-len(b) % 16)
 
 
-# a blank file's section 28 record (no shader reads the section): the commonest of the vanilla Wilds files
+# the section 28 record of every particle of a blank file (no shader reads the section)
 SEC28 = bytes.fromhex("cdcccc3d0000403f0000403fec115f3fec115f3fec115f3f")
 
 
 def blank(layout):
-    """A file of layout with every section empty, in the vanilla order (sections 9, 14, 15, 17 absent; 16 is added
-    by set_capsules; Onimusha has no slot for 18): what build() starts from without a template."""
+    """A file of layout with every section empty, in the game's section order (sections 9, 14, 15, 17 absent; 16 is
+    added by ``set_capsules``; Onimusha has no slot for 18): what build() starts from without a template."""
     g = gpuc.Gpuc.__new__(gpuc.Gpuc)
     g.layout, g.header = layout, bytearray(layout.header_size)
     g.header[:4] = b"GCLO"
@@ -236,8 +234,8 @@ def build(spec, template, skin_table, capsules=None, particle_radius=None, link_
     particle_radius: optional collision radius for every particle (particle +0x04).
     link_tail: optional function (type, a, b) -> 8-byte link tail or None; None falls back to the
     template's most common tail for (type, relation).
-    welds: optional list of (a, b, type, 8-byte tail): zero-length links after the faces' (vanilla joins
-    two parts' coincident particles with them, type 4), written a to b as given, in any order."""
+    welds: optional list of (a, b, type, 8-byte tail): zero-length links joining coincident particles of two
+    parts, written after the faces' links, a to b as given."""
     from_blank = not isinstance(template, gpuc.Gpuc)
     t = blank(template) if from_blank else template
     tp = _template_particles(t)
@@ -312,8 +310,7 @@ def build(spec, template, skin_table, capsules=None, particle_radius=None, link_
     sec26 = b"".join(np.hstack([A[i], (-A[i] @ pos[i])[:, None]]).astype("<f4").tobytes() for i in range(P))
 
     # output joints, one or more particle slots each
-    # Slots per joint (header +0x38). Always 8: a gpuc with fewer slots crashes the CPU solver
-    # (verified: Hope, ch03_001_0002, with 1 slot per joint crashes when switched to CPU mode, 8 slots does not).
+    # Slots per joint (header +0x38): at least MIN_SLOTS, since fewer crash the game's CPU solver.
     S = max(MIN_SLOTS, max(len(o["particles"]) for o in spec.outputs))
     sec24 = bytearray()
     sec25 = bytearray()
@@ -364,8 +361,8 @@ def build(spec, template, skin_table, capsules=None, particle_radius=None, link_
     struct.pack_into("<I", h, at["joint_table"], len(skin_table))
     if capsules is not None:
         struct.pack_into("<I", h, at["capsules"], len(capsules))
-        # part +0x38 is the capsule mask over the frame's collider table (own capsules first, then
-        # clsp); Hope's 0xFFFFFFE0 drops the first 5, so the built-in capsules would not collide
+        # part +0x38 is the capsule mask over the frame's collider table (own capsules first, then CLSP);
+        # all bits set so the file's own capsules collide whatever the template's mask excluded
         s6 = g.sections[6].data
         for e in range(0, len(s6) - gpuc.PART_ENTRY + 1, gpuc.PART_ENTRY):
             struct.pack_into("<I", s6, e + 0x38, 0xFFFFFFFF)
@@ -404,8 +401,7 @@ def template_faces(t):
 
 def link_tails_by_direction(t, vertical_axis=1):
     """Most common link tail per (type, direction) in a template: 'vert' (|d.y| > 0.7),
-    'horiz' (|d.y| < 0.3) or 'slant'. Vanilla skirts keep vertical links stiff and make the
-    links around the body soft (100_1005: type 0 vertical 1.0, around the body 0.3)."""
+    'horiz' (|d.y| < 0.3) or 'slant'."""
     n = t.counts()["links"]
     L, S = bytes(t.sections[2].data), bytes(t.sections[29].data)
     pos = np.array([p["pos"] for p in _template_particles(t)])

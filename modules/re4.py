@@ -1,7 +1,8 @@
-"""RE4 221108868: validated, fixed-offset reading and preservation-only editing.
+"""Read RE4 .gpuc.221108868 files at fixed offsets after validating them, and patch fixed-size values in place.
 
-Disk Config fields are deliberately named by offset; GPU ConfigInfo is a different
-structure. Never relocate sections or reinterpret unknown bytes on export.
+Maintenance constraints:
+- Disk Config fields are named by offset: the GPU's ConfigInfo is a different structure, so its names do not apply.
+- Export never relocates sections or reinterprets unknown bytes; ``patch`` and ``File.build`` keep every offset.
 """
 import collections
 import math
@@ -52,7 +53,7 @@ class File:
                 self.name_at(self.offsets[slot] + 64 * i)
         self.flags = struct.unpack_from("<I", raw, 0x6C)[0]
         if self.flags not in (0, 4):
-            raise ValueError(f"unverified RE4 output layout flags 0x{self.flags:X}")
+            raise ValueError(f"unsupported RE4 output layout flags 0x{self.flags:X}")
         self.span(self.offsets[10], self.c["outputs"] * (452 if self.flags & 4 else 328))
         for slot, key, total in ((4, "triangle_groups", "triangles"),
                                  (5, "link_groups", "links"), (6, "edge_groups", "edges")):
@@ -134,11 +135,10 @@ class File:
             raise ValueError("invalid RE4 topology indices or link types")
         q = column(76, "<u4")
         normal = np.column_stack([(q >> s & 1023) / 1023 * 2 - 1 for s in (0, 10, 20)])
-        # Shape-only import: keep actual skin and output bindings in the source bytes.
-        # No bone-index reinterpretation or synthetic posing.
+        # shape-only import: skin and output bindings stay in the source bytes, not read as bone indices
         values = {k: column(o) for k, o in PARTICLE_VALUES.items()}
         values.update({k: np.zeros(n, np.float32) for k in ("space_limit_lower", "space_limit_upper", "backstop_offset")})
-        # A unique selection grid per Part, not an interpretation of absent disk UVs.
+        # the file has no UVs: each Part gets its own selection grid
         uv = np.zeros((n, 2), float)
         for i in range(self.c["parts"]):
             sel = np.flatnonzero(part == i)
@@ -155,7 +155,7 @@ class File:
 
 
 def patch(raw, header=None, configs=None, parts=None, particles=None, link_tails=None):
-    """Fixed-size scalar edits only. Unknown bytes and every offset stay identical."""
+    """Return raw with the given fixed-size values and link tails rewritten; ValueError for anything else."""
     f = File(raw)
     out = bytearray(raw)
     def write(at, fmt, value):

@@ -10,9 +10,8 @@ File layout:
 
 Sections are addressed by their Wilds/RE9 table index in every layout ("section index"), so code
 written against Wilds indices (11 bone table, 23 weighted bones, 25 bindings, 26 frames, ...)
-reads RE9 and Onimusha files unchanged. Onimusha drops one empty slot: its table slot i holds
-section i for i < 18 and section i + 1 for 18 <= i <= 28; slot 29 is always 0. Section 18 (empty
-in nearly all Wilds and RE9 files) has no slot there.
+reads RE9 and Onimusha files unchanged. Onimusha's table slot i holds section i for i < 18 and
+section i + 1 for 18 <= i <= 28; slot 29 is always 0, and section 18 has no slot.
 
 Record sizes are the same in all three: particle 108, triangle 20, link 16, edge 8, config 192,
 key frame 16, frame (sec 26) 48 per particle, sec 28 24 per particle, sec 29 4 per link.
@@ -24,7 +23,7 @@ Cross references besides the table:
   - particle +0x5C / +0x64: skin bones (indices into section 11) and u8 weights; the index encoding
     differs by layout, see read_skin / write_skin
   - section 8 (192-byte configs) +0x70 / +0x98: via.AnimationCurve key pointers into section 12
-    (16-byte via.KeyFrame: f32 value, u16 curve type, f16 time, f16 in/out tangent)
+    (16-byte via.KeyFrame, laid out in gpuc_params)
 The header and section 6 pointers are resolved when parsing to (section, distance into it) and
 rewritten from that on build.
 
@@ -44,7 +43,7 @@ import struct
 import sys
 
 TABLE_COUNT = 30
-# Wilds values, kept for older scripts that read them; parsing uses the file's Layout
+# Wilds values for scripts that predate Layout; parsing uses the file's Layout
 HEADER_SIZE = 0xB0
 TABLE_OFFSET = 0xB0
 DATA_START = TABLE_OFFSET + TABLE_COUNT * 8
@@ -153,8 +152,8 @@ class Gpuc:
             raise ValueError("first section at 0x%X, expected 0x%X" % (order[0][0], L.data_start))
         starts = sorted(set(o for o, _ in order)) + [len(raw)]
         owner = {o: s for o, s in order}                    # last section at each start
-        # except the capsules: with a count, section 16 holds its start even when empty sections 19 and 20
-        # share it after it (ch04_000_0070, ch04_205_0000); it goes last among them, as an owner does
+        # except the capsules: with a nonzero count, section 16 owns its start even when empty sections 19 and 20
+        # share it, so it is ordered last among them
         caps = next(o for o, n in L.counts.items() if n == "capsules")
         if offsets.get(CAPSULE_SECTION) and struct.unpack_from("<I", self.header, caps)[0]:
             owner[offsets[CAPSULE_SECTION]] = CAPSULE_SECTION
@@ -190,10 +189,8 @@ class Gpuc:
         return {name: self.u32(off) for off, name in self.layout.counts.items()}
 
     def set_capsules(self, data):
-        """Section 16's bytes (the caller sets the header count). Where the file has no section 16 it is made as in
-        vanilla files that have one (Wilds, RE9, Onimusha alike): 16-aligned, after sections 19, 20 and any of 14 / 15,
-        with the empty section 18 after it. Empty data takes the section out: vanilla files without capsules have
-        none."""
+        """Set section 16's bytes; the caller sets the header count. A missing section 16 is inserted 16-aligned
+        after sections 19, 20 and any of 14 / 15, with the empty section 18 after it; empty data removes it."""
         if not data:
             if CAPSULE_SECTION in self.sections:
                 del self.sections[CAPSULE_SECTION]
@@ -251,7 +248,7 @@ class Gpuc:
                     pos = b * CONFIG_BLOCK + p
                     old = struct.unpack_from("<Q", cfg.data, pos)[0]
                     if old == 0:
-                        continue  # no curve (some mod files)
+                        continue  # no curve
                     if not keys.offset <= old <= keys.offset + len(keys.data):
                         raise ValueError(f"config {b} curve pointer +0x{p:X} = 0x{old:X} outside section 12")
                     struct.pack_into("<Q", out, new_off[CONFIG_SECTION] + pos,
@@ -264,8 +261,7 @@ SKIN_INDEX, SKIN_WEIGHT = 0x5C, 0x64   # particle record: skin bone indices, the
 
 
 def skin_slots(layout):
-    """Skin influences per particle: Wilds and Onimusha 6 (indices packed 10 bits, three per u32,
-    the game's CS_SkinningControlPoint), RE9 8 (one u8 each)."""
+    """Skin influences per particle: Wilds and Onimusha 6 (10-bit indices, three per u32), RE9 8 (one u8 each)."""
     return 8 if layout is RE9 else 6
 
 

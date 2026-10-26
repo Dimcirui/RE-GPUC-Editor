@@ -1,8 +1,8 @@
-"""The editor's panels, laid out as the RE Chain Editor's: in the 3D view's RE GPUC tab, top-level panels by what
-they do (general tools in Object Mode, the part tools in Pose Mode, the clipboard, the particles, the preview
-simulation, the display); in Properties > Object one panel per kind of object, shown only for that kind (header,
-Config, Part, test collider, force). A value that only counts while a switch is on, or whose effect is not
-verified, is greyed out."""
+"""Panels of the 3D view's RE GPUC tab and the per-object panels in Properties > Object.
+
+Panels only draw: a value that applies only while its switch is on, or whose effect is unknown
+(``props.UNVERIFIED``, the Unknown fields), is drawn inactive but stays editable.
+"""
 import bpy
 
 from . import canon, props
@@ -17,7 +17,7 @@ def _split(layout):
 
 
 def _collections(layout, s):
-    """The active cloth and the CLSP it collides with (kept on its header)."""
+    """Draw the active cloth and the Reference CLSP stored on its header."""
     layout.label(text="Active GPUC Collection")
     layout.prop(s, "target", text="", icon="COLLECTION_COLOR_06")
     h = props.header(s.target)
@@ -27,7 +27,7 @@ def _collections(layout, s):
 
 
 def _bits(layout, data, prop, target):
-    """A flag field and the button that opens its bits (as the chain editor's)."""
+    """Draw a flag field with the button that opens its bit dialog."""
     row = layout.row()
     row.prop(data, prop)
     row.operator("ree_gpuc.set_bits", text="", icon="DOWNARROW_HLT").target = target
@@ -49,7 +49,7 @@ class REE_GPUC_PT_general(_Sidebar, bpy.types.Panel):
         row = layout.row(align=True)
         row.operator("ree_gpuc.import_file", icon="IMPORT")
         row.operator("ree_gpuc.export_file", icon="EXPORT")
-        row = layout.row(align=True)              # import / create, export / check: the cloth's whole-file actions
+        row = layout.row(align=True)
         row.operator("ree_gpuc.create_header", text="Create", icon="ADD")
         row.operator("ree_gpuc.check", icon="VIEWZOOM")
         _collections(layout, s)
@@ -122,7 +122,7 @@ class REE_GPUC_PT_clipboard(_Sidebar, bpy.types.Panel):
 
 
 def _value_tool(layout, context, setting: bool, select_particles: bool = False):
-    """The value to work on, and (setting) the number to set on the selected particles."""
+    """Draw the particle value chooser and its mapping range; with ``setting``, also the value to set."""
     s = context.scene.ree_gpuc
     col = _split(layout)
     col.prop(s, "field")
@@ -183,7 +183,7 @@ class REE_GPUC_PT_simulate(_Sidebar, bpy.types.Panel):
         layout = self.layout
         st, s = context.scene.ree_gpuc_sim, context.scene.ree_gpuc
         if props.is_re4(s.target):
-            layout.label(text="RE4: shape and parameter editing only", icon="INFO")
+            layout.label(text="Preview simulation is not available for RE4 cloth", icon="INFO")
             return
         row = layout.row(align=True)
         running = sim.running()
@@ -206,7 +206,7 @@ class REE_GPUC_PT_simulate(_Sidebar, bpy.types.Panel):
                 col = _split(body)
                 col.prop(st, switch)
                 obj = sim.force_object(context.scene, kind)
-                if obj is None or not getattr(st, switch):      # an unused force's values are not shown
+                if obj is None or not getattr(st, switch):
                     continue
                 f = obj.ree_gpuc_force
                 sub = col.column(align=True)
@@ -228,7 +228,7 @@ class REE_GPUC_PT_simulate(_Sidebar, bpy.types.Panel):
 
 
 class REE_GPUC_UL_colliders(bpy.types.UIList):
-    """The active cloth's test colliders, out of the scene's objects: name, shape, shown."""
+    """Test colliders of the active cloth"""
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         row = layout.row(align=True)
@@ -264,7 +264,7 @@ class REE_GPUC_PT_display(_Sidebar, bpy.types.Panel):
         header.prop(s, "show_particles")
         if body is not None:
             col = _split(body)
-            col.prop(s, "in_front")              # also the part meshes and base positions, so not greyed
+            col.prop(s, "in_front")              # also applies to part meshes and base positions: never inactive
             col = _split(body)
             col.active = s.show_particles
             col.prop(s, "particle_style")
@@ -339,7 +339,7 @@ class REE_GPUC_PT_object_header(_ObjectPanel, bpy.types.Panel):
         h = context.object.ree_gpuc_header
         col = _split(self.layout)
         sub = col.column()
-        sub.enabled = "ree_gpuc_raw" not in context.object.keys()     # a Keep Structure cloth is its file's game
+        sub.enabled = "ree_gpuc_raw" not in context.object.keys()     # Keep Structure: the game is the file's
         sub.prop(h, "game")
         fields = gpuc_params.header_fields(h.game)
         for name, label, _, kind, known, _, _ in props.HEADER_FIELDS:
@@ -353,7 +353,7 @@ class REE_GPUC_PT_object_header(_ObjectPanel, bpy.types.Panel):
             sub.prop(h, name, text=label)
 
 
-# a config value gated by a switch: (switch, the values it gates); the rest are drawn as they are
+# (switch, the Config values that apply only while it is on)
 CONFIG_GATES = (("second_damping", ("second_velocity_damping", "second_damping_speed")),
                 ("overwrite_translation", ("blend_translation",)),
                 ("overwrite_rotation", ("blend_rotation",)),
@@ -370,7 +370,7 @@ class REE_GPUC_PT_object_config(_ObjectPanel, bpy.types.Panel):
         layout = self.layout
         if props.is_re4_object(context.object):
             from .modules import re4
-            layout.label(text="RE4 disk values; meanings unverified", icon="INFO")
+            layout.label(text="RE4 values as stored in the file. Effects unknown.", icon="INFO")
             for name in re4.CONFIG:
                 _split(layout).prop(cfg, name)
             return
@@ -409,7 +409,7 @@ class REE_GPUC_PT_object_config(_ObjectPanel, bpy.types.Panel):
 
 
 class REE_GPUC_UL_keys(bpy.types.UIList):
-    """A config curve's keys: time, value and type."""
+    """Keys of a Config curve"""
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         row = layout.row(align=True)
@@ -470,7 +470,8 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
             if text and text != "ok":
                 layout.label(text=text, icon=icon)
         if canon.locked(obj):
-            layout.label(text="Keeps its .gpuc's structure: values only, not regenerated", icon="LOCKED")
+            layout.label(text="Imported with Keep Structure: values can be edited, but not regenerated",
+                         icon="LOCKED")
         re4_part = props.is_re4_object(obj)
         col = _split(layout)
         identity = col.column()
@@ -499,7 +500,7 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
         if re4_part:
             col.prop(p, "re4_value_30")
         _split(layout).prop(p, "link_preset")
-        for name, label, _ in props.LINK_SHAPES:   # one row each, its stiffness in the header; the rest folded
+        for name, label, _ in props.LINK_SHAPES:
             tail = getattr(p, name)
             header, body = layout.panel(f"ree_gpuc_link_{name}", default_closed=True)
             row = header.row(align=True)
@@ -518,7 +519,7 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
 
         if not re4_part:
             layout.separator()
-            layout.label(text="export settings")
+            layout.label(text="Export Settings")
             col = _split(layout)
             col.prop(p, "flip_normals")
             col.prop(p, "other_diagonal")
@@ -543,9 +544,10 @@ class REE_GPUC_PT_object_collision(_ObjectPanel, bpy.types.Panel):
             targets.append(con.target if con is not None and con.target is not None
                            and con.target.type == "ARMATURE" else None)
         if not collision.bound(root):
-            self.layout.label(text="A joint is on no bone: set it, or the export keeps the file's hash", icon="ERROR")
+            self.layout.label(text="A joint has no bone. Set one, or export keeps the joint from the file",
+                              icon="ERROR")
         elif any(reference.is_reference(t) for t in targets):
-            self.layout.label(text="A joint the mesh lacks: placed by the reference skeleton", icon="INFO")
+            self.layout.label(text="A joint is missing from the mesh; placed by the reference skeleton", icon="INFO")
         col = _split(self.layout)
         for arm, (joint, offset, radius) in zip(targets, (("joint_a", "offset_a", "radius_a"),
                                                           ("joint_b", "offset_b", "radius_b"))):
@@ -566,7 +568,7 @@ class REE_GPUC_PT_object_collider(_ObjectPanel, bpy.types.Panel):
 
 
 def _collider(layout, c):
-    """A test collider's shape and its sizes."""
+    """Draw a test collider's shape and sizes."""
     col = _split(layout)
     col.prop(c, "kind")
     if c.kind in {"SPHERE", "CAPSULE"}:

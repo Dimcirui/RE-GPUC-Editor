@@ -1,24 +1,17 @@
-"""Import a .gpuc's parameters and export a cloth as a .gpuc: MH Wilds .gpuc.241111760, RE9 .gpuc.250925365 and
-Onimusha .gpuc.260209505 (the same blocks and records; the headers differ, gpuc_params.header_fields, RE9's skin
-indices, gpuc.read_skin, and Onimusha's section table, gpuc.ONIMUSHA).
-A cloth's header keeps its game (props.GAMES): an import sets it, an export writes that game's file.
+"""Import .gpuc files as cloths (parameters, Keep Structure, Rebuild from Bones, Update Existing) and export cloths
+as .gpuc.
 
-Import (parameters only; the particles stay the editor's own, made from bones): the header's values, every
-config block and its curves, and for each part block the Part of the same place (Parts by name: GPUC_PART_00,
-...): its block values, root joint, the most common link tail of each shape and, if asked, each particle
-value's median as the Part's every particle's. Into a new <file>.gpuc collection or one being merged with.
+Wilds, RE9 and Onimusha files share blocks and records; their headers (``gp.header_fields``), RE9's skin indices
+(``gpuc.read_skin``) and Onimusha's section table differ. RE4 goes through Keep Structure only. The header's
+``game`` decides which layout an export writes.
 
-Export: the cloth's Parts as one .gpuc built by gpuc_build (modules/) from a blank file of the game's layout (no
-template: what a vanilla one would lend no shader reads), then every block the editor keeps written over it: the
-header's values, the configs and their curves, the part blocks and names, every particle's values, part and config,
-each link's tail by its shape, the cloth's own capsules.
-  - positions, bind matrices: game model space = rotate -90 deg about X x the armature's matrix x armature
-    space, as the RE Mesh Editor exports the mesh;
-  - skinning: the full mesh bone index (the armature's bone order); output joints: each grid bone, driven by
-    its own particle, by its place among the mesh's weighted bones (the bones with weights in its first LOD,
-    in armature order, as the RE Mesh Editor builds its remap);
-  - faces wound so the particles' normals point out (the space limits and backstops are measured along them);
-  - the kernel flags keep MeshMultiJointDeform (bit 2): the generator lays out sections 23 to 26 that way."""
+Maintenance constraints:
+- Game model space = ``ROTATE_BACK`` (-90 deg about X) x the armature's ``matrix_world`` x armature space, as the
+  RE Mesh Editor exports the mesh.
+- Skinning holds full mesh bone indices (armature order); an output joint's index is its bone's place among the
+  mesh's weighted bones (``weighted_bones``), as the RE Mesh Editor builds its remap.
+- Generated exports wind faces so particle normals point out; space limits and backstops are measured along them.
+- Exports keep Kernel Flags bit 2 (MeshMultiJointDeform): ``gpuc_build`` lays out sections 23 to 26 for it."""
 import base64
 import collections
 import json
@@ -36,12 +29,12 @@ from .modules import gpuc, gpuc_build, gpuc_params as gp, grid, re4
 ROTATE_BACK = np.array(Matrix.Rotation(math.radians(-90.0), 4, "X"), float)
 GAMES = props.GAMES
 SOURCE_KEY = "ree_gpuc_source"           # on the header: the file last imported
-ASSET_KEY = "~ASSETPATH"                 # on the collection: its game path (Wilds-Dynamics' interface, I2)
+ASSET_KEY = "~ASSETPATH"                 # on the collection: its game path, read by Wilds-Dynamics
 
 
 def asset_path(path: str) -> str:
-    """The game path of a file under natives/<platform>/ (that prefix and the version suffix off: Art/Model/
-    Character/ch03/100/100/5/ch03_100_1005.gpuc), else ""."""
+    """Return the path below ``natives/<platform>/`` without the version suffix (``Art/.../ch03_100_1005.gpuc``),
+    else ""."""
     parts = path.replace("\\", "/").split("/")
     low = [p.lower() for p in parts]
     if "natives" not in low or low.index("natives") + 2 >= len(parts):
@@ -54,8 +47,8 @@ def asset_path(path: str) -> str:
 
 
 def set_asset_path(coll, path: str, exported: bool = False) -> None:
-    """The collection's ~ASSETPATH from a file it was imported from (under natives: set) or exported to (under
-    natives: set; elsewhere: taken off, as the chain editor keeps it); the same value is not written again."""
+    """Set ``~ASSETPATH`` from an imported or exported file under natives; an export elsewhere removes it, as the
+    chain editor does. An unchanged value is not rewritten."""
     found = asset_path(path)
     if found:
         if coll.get(ASSET_KEY) != found:
@@ -78,7 +71,7 @@ def by_name(objs) -> list:
 
 
 def _enum(prop_owner, prop: str, number: int):
-    """The enum item of a property whose file number is number, else None."""
+    """Return the identifier of the enum item whose value is ``number``, else None."""
     for item in prop_owner.bl_rna.properties[prop].enum_items:
         if item.value == number:
             return item.identifier
@@ -88,8 +81,8 @@ def _enum(prop_owner, prop: str, number: int):
 # --- import -------------------------------------------------------------------------------------------------
 
 def import_params(path: str, merge=None, arm=None, configs=True, parts=True, values=False) -> list[str]:
-    """The file's parameters into a new <file>.gpuc collection (or merge, an existing cloth); notes on what had no
-    place."""
+    """Import the file's parameters into a new <file>.gpuc collection or into ``merge``; return notes on blocks
+    with no target. Part blocks go to the Parts by name order; particles stay the editor's own."""
     if path.endswith(re4.EXT):
         raise ImportProblem("RE4 supports Keep Structure import only")
     r = gp.read(open(path, "rb").read())
@@ -124,7 +117,7 @@ def _set_header(h, values, notes) -> None:
 
 
 def _set_configs(coll, arm, configs, notes) -> list:
-    """The file's config blocks onto the cloth's Configs by place (more made as needed); the Configs in order."""
+    """Write config blocks onto the Configs by place, creating more as needed; return the Configs in order."""
     cfg_objs = by_name(props.configs(coll))
     for i, c in enumerate(configs):
         if i >= len(cfg_objs):
@@ -180,13 +173,13 @@ def _set_part(obj, p, tails, values, cfg_objs, notes) -> None:
     for shape, (k, k2, lo, hi) in tails.items():
         t = getattr(part, shape)
         t.k, t.k2, t.lo, t.hi = k, k2, lo, min(hi, props.HI_MAX)
-        t.conditional = gp.tail_bytes(k, k2, lo, hi) != gp.tail_bytes(k, 1.0, 1.0, 1.0)   # off writes (k, 1, 1, 1)
+        t.conditional = gp.tail_bytes(k, k2, lo, hi) != gp.tail_bytes(k, 1.0, 1.0, 1.0)   # off exports (k, 1, 1, 1)
     if values and canon.has(obj):
         d = canon.load(obj)
         everyone = np.arange(d["rows"] * d["cols"])
         for field in canon.FIELD_NAMES:
             v = values.get(field)
-            if v is None or field == "sim_weight":          # the pinning stays the Part's own
+            if v is None or field == "sim_weight":          # pinning stays the Part's own
                 continue
             canon.fit_ranges(obj, {field: [v]})
             canon.set_values(obj, field, everyone, v)
@@ -204,9 +197,8 @@ def mesh_collection(arm):
 
 
 def weighted_bones(arm, mesh_coll) -> list[str]:
-    """The mesh's weighted bones as the RE Mesh Editor exports them: the bones with weights in its first LOD (the
-    first "Main Mesh LOD" collection by name, else the mesh collection itself; its own mesh objects, not the
-    excluded ones), in the armature's order."""
+    """Return the bones weighted in the first "Main Mesh LOD" (else the mesh collection), excluded meshes skipped,
+    in armature order, as the RE Mesh Editor exports them; raises ``ExportError`` when none are."""
     lods = sorted((c for c in mesh_coll.children if "Main Mesh LOD" in c.name), key=lambda c: c.name)
     lod = lods[0] if lods else mesh_coll
     used = set()
@@ -227,7 +219,7 @@ def _tails_bytes(part) -> list[bytes]:
 
 
 def _outward(co, rows, cols, closed, centre, inside) -> bool:
-    """Whether the generator's normals for these quads (grid.faces' winding) point out."""
+    """Whether ``grid.faces``' winding gives outward normals for this Part."""
     tri = np.asarray(grid.faces(rows, cols, closed)[0][:3])
     n = np.cross(co[tri[1]] - co[tri[0]], co[tri[2]] - co[tri[0]])
     out = grid.normals(co, rows, cols, closed)[tri[0]] * grid.normal_sign(co, grid.normals(co, rows, cols, closed),
@@ -235,16 +227,15 @@ def _outward(co, rows, cols, closed, centre, inside) -> bool:
     return float(n @ out) > 0
 
 
-JOINT_INDICES = [("FILE", "As Imported", "The driven joints' indices as the file has them: the game uses the "
-                                         "mesh the file came with"),
-                 ("MESH", "From Mesh", "Each driven joint's index among the mesh collection's weighted bones, as the "
-                                       "RE Mesh Editor exports the mesh: for a mesh exported again")]
+JOINT_INDICES = [("FILE", "As Imported", "Keep the driven joints' indices from the imported file. Use when the "
+                                         "game keeps the mesh the file came with"),
+                 ("MESH", "From Mesh", "Index each driven joint by its bone among the mesh collection's weighted "
+                                       "bones, as the RE Mesh Editor exports them. Use after exporting the mesh again")]
 
 
 def export(coll, path: str, mesh_coll=None, joints: str = "FILE", game: str = "") -> list[str]:
-    """The cloth as a .gpuc of game (an extension; blank: the header's) at path; notes on what was left out. Raises
-    ExportError when it cannot. A Keep Structure cloth is written over its own file (the mesh only for joints From
-    Mesh)."""
+    """Write the cloth as a .gpuc of ``game`` (blank: the header's) and return notes; raises ``ExportError``.
+    A Keep Structure cloth is written over its stored file; ``mesh_coll`` then only serves From Mesh joints."""
     data, notes = build_bytes(coll, mesh_coll, joints, game)
     with open(path, "wb") as f:
         f.write(data)
@@ -262,7 +253,7 @@ def game_name(ext: str) -> str:
 
 
 def build_bytes(coll, mesh_coll=None, joints: str = "FILE", game: str = "") -> tuple:
-    """The cloth's .gpuc bytes and the notes on what was left out."""
+    """Return the cloth's .gpuc bytes and notes; raises ``ExportError`` when it cannot be exported."""
     head = props.header(coll)
     if head is None:
         raise ExportError("the cloth has no header")
@@ -377,8 +368,8 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT) -> 
         for a, b, typ, shape in grid.links(rows, cols, closed):
             shapes[(base + int(a), base + int(b), int(typ))] = tails[int(shape)]
         base += n
-    # as vanilla's: each joint driven by every particle skinned to its bone (of any Part, welded ones on both),
-    # by that skin weight; the heaviest MIN_SLOTS (ties: the lower particles), in descending particle order
+    # As in game files: each joint is driven by every particle skinned to its bone (any Part), by that skin weight;
+    # the heaviest MIN_SLOTS are kept (ties: lower particles), in descending particle order.
     for o in outputs:
         keep = sorted(skinned[o.pop("bone")], key=lambda p: (-p[1], p[0]))[:gpuc_build.MIN_SLOTS]
         keep.sort(key=lambda p: -p[0])
@@ -394,25 +385,24 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT) -> 
     out = gpuc_build.build(spec, layout, skin_table, link_tail=link_tail, welds=_weld_links(coll, starts))
 
     g = gpuc.Gpuc(out, layout)
-    for i in gpuc_build.PACKED:                               # read back 16-aligned where they happen to start on 16
+    for i in gpuc_build.PACKED:                               # parsing infers 16 from a start on 16; these pack at 4
         g.sections[i].align = 4
     _write_blocks(g, head.ree_gpuc_header, cfg_objs, part_objs, part_vals, notes, arm)
     _write_capsules(g, coll, arm, notes)
-    # one batch info, one sim LOD (the generator's); no interpolation, restriction or self-collision contact; as
-    # vanilla's, simulation deform weights 1
+    # one batch info and sim LOD (the generator's); no interpolation, restriction or self-collision contact;
+    # simulation deform weights 1, as in game files
     for name, v in (("batch_infos", 1), ("sim_lods", 1), ("sim_lod_one", 1), ("interpolations", 0),
                     ("restrictions", 0), ("sim_deform_weights", 1), ("point_triangle_contacts", 0),
                     ("edge_edge_contacts", 0)):
         struct.pack_into("<I", g.header, gp.offset_of(ext, name), v)
     data = g.build()
-    gpuc.Gpuc(data, layout)                                   # it parses back
+    gpuc.Gpuc(data, layout)                                   # raises if the output does not parse back
     return data, list(dict.fromkeys(notes))
 
 
 def _weld_links(coll, starts) -> list:
-    """The cloth's welds (weld.welds: those that can be written) as gpuc_build links (a, b, type, tail) in the
-    file's particle indices (starts: each Part's first), each weld's tail on all its links, from the later Part
-    to the earlier as vanilla's."""
+    """Return the writable welds as ``gpuc_build`` links (a, b, type, tail) in file particle indices, each weld's
+    tail on all its links, pointing from the later Part to the earlier as in game files."""
     out = []
     for obj, pa, ia, pb, ib in weld.welds(coll):
         a, b = starts[pa] + ia, starts[pb] + ib
@@ -422,8 +412,8 @@ def _weld_links(coll, starts) -> list:
 
 
 def _build_keep(coll, head, cfg_objs, part_objs, mesh_coll=None) -> tuple:
-    """A Keep Structure cloth over its own file: every value block written, the structure as it was (the driven
-    joints' indices too, unless a mesh collection is given: then each its bone's place among its weighted bones)."""
+    """Write a Keep Structure cloth's values over its stored file, the structure unchanged; with ``mesh_coll`` the
+    driven joints are re-indexed by their bones among its weighted bones."""
     notes = []
     g = gpuc.Gpuc(stored_file(coll))
     game = gp.ext_of(g.layout)
@@ -481,7 +471,7 @@ def _build_keep(coll, head, cfg_objs, part_objs, mesh_coll=None) -> tuple:
 
 
 def _re4_properties(pg):
-    """A persistent snapshot, including hidden unsupported fields (clipboard/API edits)."""
+    """Return a JSON-ready snapshot of a property group, hidden fields included, so clipboard or API edits count."""
     out = {}
     for prop in pg.bl_rna.properties:
         name = prop.identifier
@@ -525,7 +515,7 @@ def _re4_changes(obj, pg, allowed, ignored=()):
 
 def _build_re4(coll, head, cfg_objs, part_objs):
     if head.get("ree_gpuc_re4_mapping") != 2:
-        raise ExportError("RE4 collision mask mapping was corrected: reimport the original file with Keep Structure")
+        raise ExportError("an older version of the add-on imported this RE4 cloth: import the original file again with Keep Structure")
     raw = stored_file(coll)
     source = re4.File(raw)
     f = source.geometry()
@@ -554,7 +544,7 @@ def _build_re4(coll, head, cfg_objs, part_objs):
         tris = f["tris"][(f["part_of"][f["tris"]] == i).all(axis=1)] - int(sel[0])
         if (canon.count(d) != len(sel) or not np.array_equal(d["co"], f["pos"][sel].astype(np.float32))
                 or not np.array_equal(d["tris"], tris)):
-            raise ExportError(f"{obj.name}: RE4 canonical structure changed")
+            raise ExportError(f"{obj.name}: RE4 particle positions or triangles changed; import again")
         values = canon.values(obj, d)
         for name, value in values.items():
             original = f["values"][name][sel]
@@ -563,7 +553,7 @@ def _build_re4(coll, head, cfg_objs, part_objs):
                 raise ExportError(f"RE4 has no particle field {name}")
             for j in changed:
                 particle_changes.setdefault(int(sel[j]), {})[name] = float(value[j])
-    # Only explicitly edited link shapes/welds are packed; untouched tails stay byte-exact.
+    # Only edited link shapes and welds are patched; other tails stay byte-exact.
     per_part = {i: canon.link_tails(o, canon.load(o)) for i, o in part_by_index.items()}
     taken = collections.Counter()
     starts = {i: int(np.flatnonzero(f["part_of"] == i)[0]) for i in part_by_index}
@@ -605,9 +595,8 @@ def mesh_armature_or(mesh_coll, arm):
 
 
 def capsule_records(coll, arm, notes) -> list:
-    """The cloth's own capsules as section 16 records (joint hash, pair hash, offsets and radii): a joint on a bone
-    by its name's hash, else the file's hash it was imported with (said); one with neither, or a radius not over
-    0, left out (said)."""
+    """Return the cloth's capsules as section 16 records; a joint on no bone falls back to its imported hash, and a
+    capsule with neither, or a radius <= 0, is left out. Both cases add a note."""
     out = []
     for root in by_name(r for r in collision.roots(bpy.context.scene) if r.name in coll.all_objects):
         c = root.ree_gpuc_capsule
@@ -635,7 +624,7 @@ def _write_capsules(g, coll, arm, notes) -> None:
 
 
 def _contiguous(part_of) -> bool:
-    """Whether each part's particles are one run (the runs in any order: ch03_002_0002 has part 2's first)."""
+    """Whether each part's particles form one run; the runs may come in any order."""
     return all(np.ptp(idx) + 1 == len(idx) for idx in (np.where(part_of == p)[0] for p in np.unique(part_of)))
 
 
@@ -645,7 +634,7 @@ def _write_blocks(g, h, cfg_objs, part_objs, part_vals, notes, arm=None, starts=
     values = {name: getattr(h, name) for name in gp.header_fields(game)}
     values["calculate_mode"] = h.bl_rna.properties["calculate_mode"].enum_items[h.calculate_mode].value
     if not values["kernel_flags"] & 4:
-        notes.append("Kernel Flags: Mesh Multi Joint Deform kept on (the export lays out its sections)")
+        notes.append("Kernel Flags: Mesh Multi Joint Deform kept on (the exported file requires it)")
         values["kernel_flags"] |= 4
     gp.write_header(header, values, game)
     # configs and their curves' keys
@@ -666,8 +655,8 @@ def _write_blocks(g, h, cfg_objs, part_objs, part_vals, notes, arm=None, starts=
     g.sections[8].data = bytearray(blocks)
     g.sections[12].data = bytearray(keys)
     # part blocks, their names, every particle's values, part and config
-    # the names after what section 22's start holds before them: in an Onimusha file with a second section 21 block
-    # (its count at header 0x60; ch001_00_01's 423 8-byte records), that block, which has no table slot of its own
+    # Keep what precedes the names in section 22: an Onimusha file may hold a second section 21 block there (count at
+    # header 0x60), which has no table slot of its own.
     names, at = gp.names_section([o.ree_gpuc_part.part_name for o in part_objs])
     before = min((off for sec, off in g.refs.get("sec6", []) if sec == 22), default=0)
     g.sections[22].data = bytearray(bytes(g.sections[22].data[:before]) + names)
@@ -729,9 +718,8 @@ def _u32s(g, section, n) -> np.ndarray:
 
 
 def file_parts(raw: bytes) -> dict:
-    """The structure of a .gpuc, game space: particles (positions, normals, part of each, skin as full mesh
-    bone indices and u8 weights), triangles and their UVs, links (a, b, type, tail), the output joints (palette
-    index, driving particles and weights, bind offsets) and the own capsules."""
+    """Return a .gpuc's structure in game space: particles (skin as full mesh bone indices, u8 weights), triangles
+    and UVs, links (a, b, type, tail), output joints and the file's own capsules."""
     if re4.matches(raw):
         return re4.File(raw).geometry()
     g = gpuc.Gpuc(raw)
@@ -783,7 +771,7 @@ def file_parts(raw: bytes) -> dict:
 
 
 def _shape(typ, a, b, pos) -> int:
-    """A link's shape (grid.SHAPES index) by its type and, for type 0, its direction (game space, y up)."""
+    """Return a link's ``grid.SHAPES`` index from its type and, for type 0, its direction (game space, y up)."""
     if typ == 1:
         return 2
     if typ != 0:
@@ -795,15 +783,14 @@ JOINTS_KEY = "ree_gpuc_joints"           # on a Keep Structure header: each driv
 
 
 def _bind(f: dict, j: dict) -> np.ndarray:
-    """Where the file binds a driven joint (game space): its first particle plus its bind offset in that particle's
-    frame."""
+    """Return a driven joint's bind position (game space): its first particle plus the bind offset in that frame."""
     cp = j["drivers"][0][0]
     return f["pos"][cp] + f["frames"][cp][:, :3].astype(float).T @ j["offsets"][0]
 
 
 def locked_problems(obj) -> list:
-    """What no longer matches the armature for a Part keeping its file's structure: its skin bones gone, or the
-    driven joints its particles drive off the rest heads of their bones (over 1 mm, as the import finds them)."""
+    """Return problems of a Keep Structure Part against its armature: missing skin or driven bones, or driven
+    bones over 1 mm from where the file binds them (the import's tolerance); [] when none or not applicable."""
     coll = reference.cloth_of(obj)
     arm = obj.ree_gpuc_part.armature
     if coll is None or not keeps_structure(coll) or arm is None or arm.type != "ARMATURE":
@@ -838,8 +825,8 @@ def locked_problems(obj) -> list:
 
 
 def joint_bones(f: dict, arm) -> tuple:
-    """Each driven joint's bone, found by where the file binds it (its first particle plus its bind offset, in that
-    particle's frame) against the armature's bone heads: (names, "" where no head is within 1 mm; distances)."""
+    """Match each driven joint's bind position to the nearest bone head; return (names, "" where none is within
+    1 mm; distances)."""
     if not f["joints"] or f["frames"] is None:
         return [], []
     to_game = ROTATE_BACK @ np.array(arm.matrix_world, float)
@@ -859,8 +846,8 @@ def joint_bones(f: dict, arm) -> tuple:
 
 
 def check_keep(f: dict, arm, mesh_coll) -> tuple:
-    """Whether the file can go on this armature (raises ImportProblem when not): (each driven joint's bone, notes
-    on what is off)."""
+    """Return (each driven joint's bone, notes) for the file on this armature; raises ``ImportProblem`` when it
+    does not fit."""
     notes = []
     bones = [b.name for b in arm.data.bones]
     if not f["flags"] & 4:
@@ -894,10 +881,9 @@ NO_MESH = ("No mesh collection: the shape only. The skin bones go by index (no p
 
 
 def import_keep(path: str, mesh_coll=None) -> tuple:
-    """A new <file>.gpuc collection keeping the file's structure: its header, Configs and a locked Part per part
-    block, the own capsules (an unknown joint kept as its hash, the end at the armature's origin); the file
-    itself on the header for the export. Without a mesh collection the shape only, on a header turned as the
-    RE Mesh Editor turns its armature (game y up to Blender z up). Returns (collection, notes)."""
+    """Import the file as a new Keep Structure collection (locked Parts, the file stored on the header for export);
+    return (collection, notes). Without a mesh collection the header is rotated as the RE Mesh Editor rotates its
+    armature, so the shape lands where the mesh import would put it."""
     raw = open(path, "rb").read()
     is_re4 = re4.matches(raw)
     if is_re4:
@@ -927,7 +913,7 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
     head.ree_gpuc_header.game = r["ext"]
     _set_header(head.ree_gpuc_header, r["header"], notes)
     cfg_objs = _set_configs(coll, arm, r["configs"], notes)
-    if not is_re4:                                    # no mesh: the capsule ends and root joints by the table
+    if not is_re4:                                    # joints the armature lacks: named from the reference skeleton
         found, more = reference.resolve(coll, arm, _joint_hashes(f, r))
         by_hash.update(found)
         notes += more
@@ -966,17 +952,16 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
     _keep_capsules(coll, arm, f["caps"], by_hash, notes)
     _keep_welds(coll, f, notes)                       # after the collisions: the chain editor's order
     if is_re4:
-        notes = ["RE4 preservation-only: shape import; original skinning, output bindings and collisions kept in file",
-                 "RE4 Config values are named by disk offset; their meanings are not yet verified",
-                 "RE4 selection UVs are generated for editing; no UVs are written to the source file"]
+        notes = ["RE4: the original skinning, output bindings and collisions are kept from the file and not editable",
+                 "RE4 Config values are named by their offset in the file; their effects are unknown",
+                 "RE4 UVs are generated for selection only; no UVs are written to the file"]
         _snapshot_re4(coll)
     return coll, list(dict.fromkeys(notes))
 
 
 def _keep_welds(coll, f, notes) -> list:
-    """The file's links joining two parts as weld objects (weld.py), one per pair of parts in the file's direction,
-    their tail the commonest (said when they differ: a Keep Structure cloth writes each link's own until the weld's
-    is edited); the names of those that differ."""
+    """Create one weld per pair of parts the file links, with the commonest tail and type; return the names of
+    welds whose links differ. A Keep Structure cloth still exports each link's own tail until the weld is edited."""
     objs = by_name(props.parts(coll))
     start = {int(p): int(np.argmax(f["part_of"] == p)) for p in np.unique(f["part_of"])}
     groups = collections.defaultdict(list)
@@ -1029,10 +1014,8 @@ def _keep_capsules(coll, arm, caps, by_hash, notes) -> None:
 # --- Rebuild from Bones -------------------------------------------------------------------------------------
 
 def _recognise(f: dict, i: int, bones: list) -> tuple:
-    """A file part as the generator would make it, or why not: (layout, its links {(a, b, type): tail} in part
-    indices, grid.links), else (None, reason, None). The grid is the one whose links are the part's (rows,
-    columns, ring); the bones are the particles skinned to one bone alone, which must lie on a lattice of it (the
-    in-between particles' sub_rows / sub_cols)."""
+    """Return (layout, links {(a, b, type): tail}, ``grid.links``) for a file part the generator could make, else
+    (None, reason, None). Particles skinned to a single bone are the bone nodes and must lie on a sub-lattice."""
     sel = np.where(f["part_of"] == i)[0]
     base, n = int(sel[0]), len(sel)
     mine = {(min(a, b) - base, max(a, b) - base, t): tail for a, b, t, tail in f["links"]
@@ -1072,8 +1055,7 @@ def _recognise(f: dict, i: int, bones: list) -> tuple:
 
 
 def _other_diagonal(f, sel, rows, cols, closed) -> bool:
-    """Whether the file splits a part's quads at the other diagonal (each quad's second and fourth corners), as
-    every quad of ShinanoOC's ch03_032_5012 is; a part split either way, or neither, keeps the editor's."""
+    """Whether every quad of the part is split at the second-fourth corner diagonal; a mixed split returns False."""
     base, n = int(sel[0]), len(sel)
     mine = {tuple(sorted(int(v) - base for v in t)) for t in f["tris"] if base <= t[0] < base + n}
     quads = grid.faces(rows, cols, closed)
@@ -1082,7 +1064,7 @@ def _other_diagonal(f, sel, rows, cols, closed) -> bool:
 
 
 def _joint_hashes(f, r) -> list:
-    """The joints a file names by hash: its own capsules' ends and the parts' root joints."""
+    """Return the hashes of the file's capsule ends and part root joints."""
     return [h for c in f["caps"] for h in c[:2]] + [p["root_hash"] for p in r["parts"] if p["use_root_joint"]]
 
 
@@ -1099,8 +1081,7 @@ def _remove_cloth(coll) -> None:
 
 
 def _preset_of(part) -> str:
-    """The link preset whose tails the Part's are (as the file holds them, from the float32 properties a preset
-    sets), else CUSTOM."""
+    """Return the link preset whose float32 tails match the Part's as written, else CUSTOM."""
     mine = [gp.tail_bytes(*getattr(part, s).tail()) for s in gp.SHAPES]
     for key, (_, _, tails) in props.LINK_PRESETS.items():
         f32 = [[float(np.float32(x)) for x in t] for t in tails]
@@ -1111,12 +1092,11 @@ def _preset_of(part) -> str:
 
 
 def import_rebuild(path: str, mesh_coll, force: bool = False) -> tuple:
-    """A new <file>.gpuc collection of Parts made again from the mesh's bones (Regenerate works on them), each
-    file part recognised as a grid of bone chains (_recognise), every value the file's. Kept only when it gives the
-    file's structure back (the cloth's export against the file: particles, faces, links, rest positions within
-    1 mm, skin, driven joints by their bones, capsules; one tail per link shape); else the file is imported with
-    Keep Structure, said why. Force Rebuild keeps the rebuilt cloth all the same, said what changed (each shape
-    its commonest tail); a part that is no grid of bones still goes to Keep Structure. Returns (collection, notes)."""
+    """Import the file as Parts regenerated from the mesh's bones with the file's values; return (collection, notes).
+
+    The rebuild is kept only when its export matches the file's ``fingerprint`` and each link shape has one tail;
+    otherwise the file is imported with Keep Structure and the first note starts "Not rebuilt (" (parsed by
+    ``ops``). ``force`` keeps a mismatching rebuild, but a part that is no grid of bones still falls back."""
     raw = open(path, "rb").read()
     if path.endswith(re4.EXT):
         coll, notes = import_keep(path, mesh_coll)
@@ -1208,9 +1188,8 @@ def import_rebuild(path: str, mesh_coll, force: bool = False) -> tuple:
 # --- comparing structures -----------------------------------------------------------------------------------
 
 def fingerprint(raw: bytes, bones=None, weighted=None, arm=None) -> dict:
-    """What makes two .gpuc the same structure: particles per part, triangles, links (pairs and types), rest
-    positions, skin (bone names when bones are given, else indices; u8 weights), driven joints (their indices,
-    or with an armature the bones they bind to) and their particles, the own capsules' joints."""
+    """Return the structure two .gpuc must share to count as the same; skin uses bone names when ``bones`` is
+    given and driven joints use bound bones when ``arm`` is given, else indices."""
     f = file_parts(raw)
 
     def name(b):
@@ -1226,7 +1205,7 @@ def fingerprint(raw: bytes, bones=None, weighted=None, arm=None) -> dict:
 
 
 def differences(a: dict, b: dict) -> list:
-    """How fingerprint b (the file) differs from a (the cloth), first things first."""
+    """Describe how fingerprint ``b`` (the file) differs from ``a`` (the cloth), most basic first."""
     out = []
     if a["parts"] != b["parts"]:
         return [f"particles per part {a['parts']} / {b['parts']}"]
@@ -1250,10 +1229,8 @@ def differences(a: dict, b: dict) -> list:
 # --- Update Existing ----------------------------------------------------------------------------------------
 
 def update_existing(path: str, coll, mesh_coll=None) -> list:
-    """The file's values onto the cloth it was made from (or exported as): refused (ImportProblem) unless their
-    structures are the same (fingerprint): particles, triangles, links, rest positions, skinning, driven joints,
-    own capsules. Then the header, Configs (more made as needed), part blocks, every particle's values, the link
-    tails (a locked Part's each link's; a grid's per shape) and the capsules' offsets and radii."""
+    """Write the file's values onto a cloth with the same ``fingerprint``, else raise ``ImportProblem``; return notes.
+    Link tails go per link on a locked Part and per shape on a generated one."""
     if path.endswith(re4.EXT) or props.is_re4(coll):
         raise ImportProblem("RE4 currently supports Keep Structure imports; import the file as a new collection")
     raw = open(path, "rb").read()
@@ -1323,8 +1300,8 @@ def update_existing(path: str, coll, mesh_coll=None) -> list:
 
 
 def _update_welds(coll, f, part_objs, notes) -> None:
-    """Each weld's tail and type the commonest of the file's links on its pairs (the structures are the same: the
-    file has them); a Keep Structure cloth's welds back to writing each link's own."""
+    """Set each weld's tail and type to the commonest among its file links and clear its edited flag, so a Keep
+    Structure cloth exports each link's own tail again."""
     start = {obj: int(np.argmax(f["part_of"] == k)) for k, obj in enumerate(part_objs)}
     by_pair = {(a, b): (t, tail) for a, b, t, tail in f["links"]}
     for obj in weld.objects(coll):
@@ -1346,7 +1323,7 @@ def _update_welds(coll, f, part_objs, notes) -> None:
 
 
 def _tail_spread(f, sel) -> dict:
-    """How many different tails each shape's links of a part have."""
+    """Count the distinct tails per link shape within a part."""
     first, n = int(sel[0]), len(sel)
     seen = collections.defaultdict(set)
     for a, b, t, tail in f["links"]:

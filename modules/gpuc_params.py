@@ -1,14 +1,13 @@
-"""The parameters of a .gpuc (no Blender): read them from a file and pack them into its blocks, MH Wilds
-(.gpuc.241111760), RE9 (.gpuc.250925365) and Onimusha (.gpuc.260209505). Names are the editor's properties
-(props.py); offsets are the 010 template's (MHWs_gpuc_template.bt) for Wilds. RE9 and Onimusha differ in the header
-only (their 0xC0 headers: header_fields); every block and record below is the same in all three (particle 108,
-part 64, config 192 bytes).
+"""Read a .gpuc's parameters and pack them into its blocks, without Blender, for MH Wilds (.gpuc.241111760), RE9
+(.gpuc.250925365) and Onimusha (.gpuc.260209505). Names are the editor's properties (props.py); offsets are
+Wilds'. RE9 and Onimusha differ in the header only (their 0xC0 headers: ``header_fields``); every block and record
+below is the same in all three (particle 108, part 64, config 192 bytes).
 
   header       the editable values (props.HEADER_FIELDS; the counts and bounds are derived)
   config       section 8, 192 bytes each; its two curves (via.AnimationCurve, 0x28 bytes at +0x50 / +0x78) point
                at their keys in section 12 (via.KeyFrame, 16 bytes: f32 value, i16 type, f16 time, in tangent,
                in weight, out tangent, out weight)
-  part         section 6, 64 bytes each; its name in section 22 (UTF-16, each padded to 16 bytes)
+  part         section 6, 64 bytes each; its name in section 22 (see names_section)
   link tails   per part, the most common tail of each link shape: type 0 links down the cloth (vertical) and
                round it (ring), told apart by direction (game space, y up); type 1 shear, type 2 bend
   particles    per part, the median of each particle value (section 0, 108 bytes each)"""
@@ -32,14 +31,14 @@ HEADER = {"calculate_mode": (0x68, "I"), "max_velocity": (0x78, "f"), "kernel_fl
           "unk04": (0x04, "i"), "unk40": (0x40, "i"), "unk54": (0x54, "i"), "unk5c": (0x5C, "i"),
           "unk60": (0x60, "i"), "friction": (0x6C, "f"), "unk70": (0x70, "i"), "unk74": (0x74, "i"),
           "unk7c": (0x7C, "i"), "unk80": (0x80, "i")}
-# RE9 and Onimusha only: (offset, kind). 0x0C a second hash beside the first (0x08, Wilds' 0x04), 0x10 to 0x18 0
-# and 0x4C a value differing in every file, in the 14 vanilla RE9 files and the 21 Onimusha ones
+# RE9 and Onimusha only: (offset, kind). 0x0C a second hash beside the first (0x08, Wilds' 0x04), 0x10 to 0x18 0,
+# 0x4C a value that differs per file
 RE9_ONLY = {"unk0c": (0x0C, "i"), "unk10": (0x10, "i"), "unk14": (0x14, "i"), "unk18": (0x18, "i"),
             "unk4c": (0x4C, "i")}
-# the header's other values the editor writes, at their Wilds offsets: the counts (gpuc.WILDS_COUNTS) and these. Names
-# from the cloth shader's StaticClothInfo: batch_infos section 7's entries, sim_lod_one section 13's; interpolations,
-# restrictions (blend infos) and the two self-collision contact desc counts 0, simulation deform weights 1 in vanilla
-# files (the generator writes none of them)
+# the header's other values at their Wilds offsets: the counts (gpuc.WILDS_COUNTS) and these (StaticClothInfo's
+# names). batch_infos counts section 7's entries, sim_lod_one section 13's; the game's files have interpolations,
+# restrictions (blend infos) and the two self-collision contact desc counts 0, sim_deform_weights 1, and the
+# generator writes none of them
 HEADER_WILDS = {**{name: off for off, name in gpuc.WILDS_COUNTS.items()}, "batch_infos": 0x28, "configs": 0x2C,
                 "sim_lods": 0x30, "sim_lod_one": 0x44, "interpolations": 0x48, "restrictions": 0x4C,
                 "sim_deform_weights": 0x50, "point_triangle_contacts": 0x84, "edge_edge_contacts": 0x88,
@@ -47,9 +46,8 @@ HEADER_WILDS = {**{name: off for off, name in gpuc.WILDS_COUNTS.items()}, "batch
 
 
 def _re9_offset(off: int):
-    """A Wilds header offset's place in the RE9 header, None for the one RE9 lacks (Wilds 0x60): 16 bytes later,
-    and 20 for 0x3C to 0x5C (RE9 has its own value at 0x4C). An earlier RE9 port's map, and every count and constant of the
-    14 vanilla RE9 files against the 89 Wilds ones."""
+    """A Wilds header offset's place in the RE9 header, None for the one RE9 lacks (Wilds 0x60): 0x04 at 0x08,
+    0x3C to 0x5C 20 bytes later (RE9 has its own value at 0x4C), the rest 16 bytes later."""
     if off == 0x04:
         return 0x08
     if off == 0x60:
@@ -58,10 +56,8 @@ def _re9_offset(off: int):
 
 
 def _oni_offset(off: int):
-    """A Wilds header offset's place in the Onimusha header: RE9's up to Wilds 0x50, but the one it lacks is Wilds
-    0x54 (0 in all but one Wilds file), so from the joint table (0x58 -> 0x68) on everything is 16 bytes later,
-    Wilds 0x60 included (its 0x10000 / 0x20001 / 0x30000 pattern at 0x70). Every count and constant of the 21
-    vanilla Onimusha files against the 89 Wilds ones."""
+    """A Wilds header offset's place in the Onimusha header, None for the one Onimusha lacks (Wilds 0x54): RE9's
+    up to Wilds 0x50, then 16 bytes later from the joint table (0x58 -> 0x68) on, Wilds 0x60 included."""
     if off == 0x54:
         return None
     return off + 0x10 if off >= 0x58 else _re9_offset(off)
@@ -90,8 +86,8 @@ def ext_of(layout) -> str:
     """The game's extension of a parsed file's layout; ValueError for a layout the editor does not take."""
     ext = f".{layout.ext}"
     if ext not in EXTS:
-        raise ValueError(f"a {layout.name} .gpuc (.{layout.ext}): only MH Wilds, RE9, Onimusha and RE4 files are "
-                         f"taken")
+        raise ValueError(f"unsupported {layout.name} .gpuc (.{layout.ext}): only MH Wilds, RE9, Onimusha and RE4 "
+                         f"files are supported")
     return ext
 
 
@@ -256,8 +252,8 @@ def part_block(values: dict, config: int, name: str, root_joint: str | None) -> 
 
 
 def names_section(names) -> tuple[bytes, list[int]]:
-    """Section 22: the names UTF-16, null-terminated, one after another, the whole padded to 16 bytes (as vanilla
-    files have them: ch03_002_0002's four at 0, 12, 24, 36); and each one's offset."""
+    """Section 22 and each name's offset in it: the names UTF-16, null-terminated, back to back, the whole padded
+    to 16 bytes."""
     out, at = bytearray(), []
     for n in names:
         at.append(len(out))

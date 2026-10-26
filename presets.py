@@ -1,4 +1,4 @@
-"""Versioned JSON parameter presets, independent of scene references and generated geometry."""
+"""Save and apply versioned JSON parameter presets; they hold no object references or generated geometry."""
 import hashlib
 import json
 import math
@@ -14,7 +14,7 @@ from . import collision, props
 from .modules import re4
 
 VERSION = 1
-# UI identifier, label, object TYPE, property group
+# (identifier, label, object TYPE, property group)
 KINDS = (
     ("HEADER", "Header", props.HEADER_TYPE, "ree_gpuc_header"),
     ("CONFIG", "Config", props.CONFIG_TYPE, "ree_gpuc_config"),
@@ -29,7 +29,7 @@ TYPE_KIND = {typ: key for key, _, typ, _ in KINDS}
 PREVIEW = {"FORCE", "COLLIDER"}
 PART_FIELDS = {"friction", "bounce", "stickiness", "surface_area", "plane_bits", "sphere_bits", "capsule_bits",
                "obb_bits", "clsp_flags_a", "clsp_flags_b", "vertical", "ring", "shear", "bend"}
-# Keep every dynamic enum string alive until unregister, including lists from previously selected types.
+# Blender does not own dynamic enum strings: keep every list, including earlier types', alive until unregister.
 _enum_cache = {}
 
 
@@ -118,7 +118,7 @@ def snapshot(obj, scene):
 
 
 def validate(pg, values, allowed=None):
-    """Preflight the entire JSON before mutating any destination (including nested curve keys)."""
+    """Raise ValueError unless every value, nested curve keys included, fits ``pg``; changes nothing."""
     if not isinstance(values, dict):
         raise ValueError("Preset values must be an object")
     for key, value in values.items():
@@ -266,7 +266,7 @@ def follow_selection(obj, scene):
 
 
 class REE_GPUC_OT_save_preset(bpy.types.Operator):
-    """Save the active object's parameters; geometry and object references stay separate"""
+    """Save the active object's parameters as a preset; geometry and object references are not saved"""
     bl_idname = "ree_gpuc.save_preset"
     bl_label = "Save Active as Preset"
     preset_name: StringProperty(name="Name", default="New Preset")
@@ -300,7 +300,7 @@ class REE_GPUC_OT_save_preset(bpy.types.Operator):
 
 
 class REE_GPUC_OT_apply_preset(bpy.types.Operator):
-    """Apply to selected objects matching the chosen type and game"""
+    """Apply the chosen preset to the selected objects of its type and game"""
     bl_idname = "ree_gpuc.apply_preset"
     bl_label = "Apply to Selected"
     bl_options = {"REGISTER", "UNDO"}
@@ -321,7 +321,7 @@ class REE_GPUC_OT_apply_preset(bpy.types.Operator):
 
 
 class REE_GPUC_OT_open_preset_folder(bpy.types.Operator):
-    """Open the user preset directory; JSON files can be shared or removed here"""
+    """Open the folder of this type's presets; share or remove the JSON files there"""
     bl_idname = "ree_gpuc.open_preset_folder"
     bl_label = "Open Preset Folder"
 
@@ -341,7 +341,7 @@ CLASSES = (REE_GPUC_PresetSettings, REE_GPUC_OT_save_preset, REE_GPUC_OT_apply_p
 
 
 def _initial_selection():
-    """Run after registration: Blender enables add-ons inside RestrictBlend."""
+    """Match the preset type to the active object; deferred, as ``bpy.context`` is restricted while registering."""
     scene = getattr(bpy.context, "scene", None)
     if scene is not None:
         follow_selection(getattr(bpy.context, "active_object", None), scene)

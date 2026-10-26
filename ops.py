@@ -1,5 +1,5 @@
-"""The editor's operators, laid out after the RE Chain Editor's: the header and Configs in Object Mode, parts from
-bones in Pose Mode (each in a dialog), the extra and collision tools, the clipboard, the bit-flag dialogs."""
+"""Operators that import, export and edit GPUC cloth, and the msgbus hooks that make the active cloth and Config
+follow the selection."""
 import os
 import struct
 
@@ -28,8 +28,7 @@ def _select_only(context, obj) -> None:
     context.view_layer.objects.active = obj
 
 
-# --- import / export (as the chain editor's: the game by the file's extension, the armature and collections by
-# name) ------------------------------------------------------------------------------------------------------
+# --- import / export ----------------------------------------------------------------------------------------
 
 def _mesh_guess(context):
     """The mesh collection to use: the active armature's, else the last imported mesh's, else the only one."""
@@ -46,18 +45,18 @@ def _mesh_guess(context):
 
 
 IMPORT_MODES = [
-    ("UPDATE", "Update Existing", "The file's values onto the GPUC collection it was made from or exported as: "
-                                  "refused unless their structures are the same"),
-    ("KEEP", "Keep Structure", "A new GPUC collection keeping the file's particles, faces, links and skinning: "
-                               "every value editable, the structure locked"),
-    ("REBUILD", "Rebuild from Bones", "Parts made again from the mesh's bones with the file's values (they can be "
-                                      "regenerated), when that gives the file's structure back; else Keep Structure. "
-                                      "A file this editor exported always comes back whole"),
+    ("UPDATE", "Update Existing", "Write the file's values onto the GPUC collection it was imported or exported "
+                                  "from. Refused if the two structures differ"),
+    ("KEEP", "Keep Structure", "Create a new GPUC collection with the file's particles, faces, links and skinning. "
+                               "Every value can be edited; the structure cannot be regenerated"),
+    ("REBUILD", "Rebuild from Bones", "Rebuild the parts from the mesh's bones with the file's values, so they can be "
+                                      "regenerated. Uses Keep Structure if the rebuild does not reproduce the "
+                                      "file's structure. Files exported by this editor always rebuild"),
 ]
 
 
 class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
-    """Import a .gpuc: its values onto the cloth it came from, or a new cloth keeping its structure"""
+    """Import .gpuc files as new cloth, or write their values onto an existing cloth"""
     bl_idname = "ree_gpuc.import_file"
     bl_label = "Import"
     bl_options = {"PRESET", "REGISTER", "UNDO"}
@@ -66,16 +65,17 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
     files: bpy.props.CollectionProperty(type=bpy.types.OperatorFileListElement, options={"HIDDEN", "SKIP_SAVE"})
     directory: bpy.props.StringProperty(subtype="DIR_PATH", options={"HIDDEN", "SKIP_SAVE"})
     import_mode: bpy.props.EnumProperty(name="Import Mode", items=IMPORT_MODES, default="REBUILD")
-    gpuc_collection: bpy.props.StringProperty(name="", description="The GPUC collection the file's values go onto")
+    gpuc_collection: bpy.props.StringProperty(name="", description="The GPUC collection that receives the file's values")
     mesh_collection: bpy.props.StringProperty(
-        name="", description="The RE Mesh Editor collection of the mesh the .gpuc moves: its armature names the "
-                             "bones, finds the driven joints and places the capsules. Keep Structure can go without "
-                             "it: the shape only")
+        name="", description="The RE Mesh Editor collection of the mesh this cloth belongs to. Its armature is used "
+                             "to name bones, find driven joints and place capsules. Optional for Keep Structure, "
+                             "which then imports the shape only")
     force_rebuild: bpy.props.BoolProperty(
         name="Force Rebuild", default=False,
-        description="Keep the rebuilt cloth also when it does not give the file's structure back (positions, links, "
-                    "skinning or driven joints as the editor makes them, each link shape its commonest tail): what "
-                    "changed is said. A part that is no grid of bone chains still imports with Keep Structure")
+        description="Keep the rebuilt cloth even when it differs from the file's structure (positions, links, "
+                    "skinning or driven joints as the editor generates them; each link shape uses its most common "
+                    "settings). The differences are reported. Parts that are not a grid of bone chains still import "
+                    "with Keep Structure")
 
     def invoke(self, context, event):
         if not self.mesh_collection:
@@ -84,7 +84,7 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
         target = _settings(context).target
         if target is not None and not self.gpuc_collection:
             self.gpuc_collection = target.name
-        if self.directory:                                   # dropped on the 3D view: the options only
+        if self.directory:                                   # dropped on the 3D view: no file browser
             return context.window_manager.invoke_props_dialog(self, title=f"Import {len(self.paths())} .gpuc")
         return super().invoke(context, event)
 
@@ -103,11 +103,11 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
         layout.label(text="Mesh Collection:" if self.import_mode == "REBUILD" else "Mesh Collection (optional):")
         layout.prop_search(self, "mesh_collection", bpy.data, "collections")
         if self.import_mode == "KEEP" and not self.mesh_collection:
-            layout.label(text="Shape only: no posing, joints by hash", icon="INFO")
+            layout.label(text="Without a mesh: shape only, cannot be posed", icon="INFO")
         if self.import_mode == "REBUILD":
             layout.prop(self, "force_rebuild")
             if not self.mesh_collection:
-                layout.label(text="No mesh collection: Keep Structure instead", icon="INFO")
+                layout.label(text="No mesh collection: imports with Keep Structure", icon="INFO")
 
     def execute(self, context):
         paths = self.paths()
@@ -117,13 +117,13 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
             return refused(self, f"Only MH Wilds, RE9, Onimusha and RE4 .gpuc files can be "
                                  f"imported ({wrong[0]})")
         if self.import_mode == "UPDATE" and len(paths) > 1:
-            return refused(self, "Update Existing takes one file: its values go onto one GPUC collection")
+            return refused(self, "Update Existing imports one file at a time")
         mesh = bpy.data.collections.get(self.mesh_collection) if self.mesh_collection else None
         if context.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
         mode = self.import_mode
         fell_back = []                                         # (file, why) imported with Keep Structure instead
-        if mode == "REBUILD" and mesh is None:                 # the default with no mesh: the shape only
+        if mode == "REBUILD" and mesh is None:
             mode = "KEEP"
             fell_back.append(("", "no mesh collection (Rebuild from Bones needs the mesh's bones)"))
             self.report({"WARNING"}, "No mesh collection: imported with Keep Structure (Rebuild from Bones needs "
@@ -135,7 +135,7 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
                 if mode == "UPDATE":
                     coll = bpy.data.collections.get(self.gpuc_collection)
                     if coll is None or not props.is_gpuc_collection(coll):
-                        return refused(self, "Pick the GPUC collection the values go onto")
+                        return refused(self, "Choose the GPUC collection that receives the values")
                     notes = fileio.update_existing(path, coll, mesh)
                 elif mode == "REBUILD":
                     coll, notes = fileio.import_rebuild(path, mesh, self.force_rebuild)
@@ -151,7 +151,7 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
             done.append(name)
             for note in notes:
                 self.report({"WARNING"}, f"{name}: {note}" if len(paths) > 1 else note)
-                if note.startswith("Not rebuilt ("):
+                if note.startswith("Not rebuilt ("):           # note format set by fileio.import_rebuild
                     fell_back.append((name, note[len("Not rebuilt ("):note.rfind("): imported with")]))
         if fell_back and done:
             _fell_back_popup(context, fell_back)
@@ -163,8 +163,7 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
 
 
 def _fell_back_popup(context, fell_back) -> None:
-    """Say in a popup that files were imported with Keep Structure, not rebuilt, and why (a report alone is easily
-    missed among the others). Not in background Blender."""
+    """List in a popup the files imported with Keep Structure instead of rebuilt; does nothing in background mode."""
     if bpy.app.background:
         return
     import textwrap
@@ -177,16 +176,16 @@ def _fell_back_popup(context, fell_back) -> None:
             for k, line in enumerate(textwrap.wrap(why, 90)):
                 col.label(text=line, icon="BLANK1" if k or name else "INFO")
         col.separator()
-        col.label(text="Their Parts keep the file's structure (locked): values can be edited, not regenerated")
+        col.label(text="Their Parts keep the file's structure: values can be edited, but not regenerated")
     context.window_manager.popup_menu(draw, title="Imported with Keep Structure, not rebuilt", icon="ERROR")
 
 
 class REE_GPUC_FH_import(bpy.types.FileHandler):
-    """Drop a .gpuc on the 3D view: the import's options in a dialog. Blender matches the last extension only, the
-    version (shared with other formats): the import refuses anything but a .gpuc."""
+    """Import a .gpuc dropped on the 3D view"""
     bl_idname = "REE_GPUC_FH_import"
     bl_label = "RE GPUC import"
     bl_import_operator = "ree_gpuc.import_file"
+    # Blender matches only the last extension (the version, shared with other formats); the import refuses non-.gpuc.
     bl_file_extensions = ";".join(fileio.gp.EXTS)
 
     @classmethod
@@ -194,11 +193,11 @@ class REE_GPUC_FH_import(bpy.types.FileHandler):
         return context.area is not None and context.area.type == "VIEW_3D"
 
 
-EXPORT_KEY = "ree_gpuc_last_export"     # on the header (and the scene): the path last exported to
+EXPORT_KEY = "ree_gpuc_last_export"     # on the header and the scene: the path last exported to
 
 
 class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
-    """Export a GPUC collection as a .gpuc"""
+    """Export a GPUC collection as a .gpuc file"""
     bl_idname = "ree_gpuc.export_file"
     bl_label = "Export"
     bl_options = {"PRESET"}
@@ -208,12 +207,12 @@ class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
     filter_glob: bpy.props.StringProperty(default="*.gpuc*", options={"HIDDEN"})
     target_collection: bpy.props.StringProperty(name="", description="The GPUC collection to export")
     mesh_collection: bpy.props.StringProperty(
-        name="", description="The RE Mesh Editor collection of the mesh the cloth moves (its weighted bones give the "
-                             "output joints' indices). Blank: the one the armature is in")
+        name="", description="The RE Mesh Editor collection of the mesh this cloth belongs to. Its weighted bones "
+                             "give the driven joints' indices. Leave blank to use the armature's collection")
     joint_indices: bpy.props.EnumProperty(
         name="Joint Indices", items=fileio.JOINT_INDICES, default="FILE",
-        description="Set when the dialog opens: As Imported for a cloth keeping its file's structure, From Mesh for "
-                    "one made from bones (always)")
+        description="How driven joint indices are written. Cloth imported with Keep Structure defaults to As "
+                    "Imported; cloth made from bones always uses From Mesh")
 
     def invoke(self, context, event):
         coll = _settings(context).target
@@ -222,16 +221,16 @@ class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
         if coll is not None:
             head = props.header(coll)
             if head is not None:
-                self.filename_ext = head.ree_gpuc_header.game                # the cloth's game
+                self.filename_ext = head.ree_gpuc_header.game
             name = coll.name.split(".gpuc")[0] + ".gpuc" + self.filename_ext
-            # the folder: the cloth's last export, else the file it was imported from, else the last export of any
+            # folder: this cloth's last export, else its source file, else the scene's last export
             last = head.get(EXPORT_KEY, "") if head is not None else ""
             source = head.get(fileio.SOURCE_KEY, "") if head is not None else ""
             folder = os.path.dirname(last or source or context.scene.get(EXPORT_KEY, ""))
             self.filepath = os.path.join(folder, name) if folder else name
         target = bpy.data.collections.get(self.target_collection)
-        # a cloth keeping its file's structure goes with the mesh the file came with until told otherwise; one made
-        # from bones goes with a mesh exported again by the RE Mesh Editor (its bones' weights changed)
+        # A Keep Structure cloth assumes its original mesh; a cloth made from bones assumes a mesh re-exported by the
+        # RE Mesh Editor, whose bone indices follow the new weights.
         self.joint_indices = "FILE" if fileio.keeps_structure(target) else "MESH"
         return super().invoke(context, event)
 
@@ -243,21 +242,21 @@ class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
         layout.prop_search(self, "target_collection", bpy.data, "collections", icon="COLLECTION_COLOR_06")
         coll = bpy.data.collections.get(self.target_collection)
         if coll is not None and fileio.keeps_structure(coll):
-            layout.label(text="Written over its own file", icon="INFO")
+            layout.label(text="Exported with the imported file's structure", icon="INFO")
             layout.label(text="Joint Indices:")
             layout.prop(self, "joint_indices", text="")
             if self.joint_indices == "MESH":
                 layout.label(text="Mesh Collection:")
                 layout.prop_search(self, "mesh_collection", bpy.data, "collections")
             return
-        layout.label(text="Joint Indices: From Mesh (made from bones)")
+        layout.label(text="Joint Indices: From Mesh (cloth made from bones)")
         layout.label(text="Mesh Collection:")
         layout.prop_search(self, "mesh_collection", bpy.data, "collections")
 
     def execute(self, context):
         coll = bpy.data.collections.get(self.target_collection)
         if coll is None or not props.is_gpuc_collection(coll):
-            return refused(self, "Pick the GPUC collection to export")
+            return refused(self, "Choose the GPUC collection to export")
         mesh = bpy.data.collections.get(self.mesh_collection) if self.mesh_collection else None
         if context.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
@@ -276,16 +275,18 @@ class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
 # --- Object Mode --------------------------------------------------------------------------------------------
 
 def _mesh_name(coll) -> str:
-    """A RE Mesh Editor collection's file name (its name without .mesh), "" for any other collection."""
+    """Return a RE Mesh Editor collection's name without ``.mesh``, or "" for any other collection."""
     if coll is None or coll.get("~TYPE") != "RE_MESH_COLLECTION" and ".mesh" not in coll.name:
         return ""
     return coll.name.split(".mesh")[0]
 
 
 def suggest(context) -> tuple[str, str]:
-    """The cloth's name and armature, as the chain editor names a chain after the mesh: the armature's mesh
-    collection (the .gpuc goes beside the mesh of the same name), else the mesh last imported, else the
-    armature's own name; the armature is the active one, else the one in that mesh collection."""
+    """Return a default cloth name and armature name.
+
+    The name comes from the armature's mesh collection, else the last imported mesh, else the armature; the
+    armature is the active one, else the one in the last imported mesh collection.
+    """
     obj = context.active_object
     arm = obj if obj is not None and obj.type == "ARMATURE" else None
     last = bpy.data.collections.get(context.scene.get("REMeshLastImportedCollection", ""))
@@ -297,20 +298,20 @@ def suggest(context) -> tuple[str, str]:
 
 
 class REE_GPUC_OT_create_header(bpy.types.Operator):
-    """A new cloth: a <name>.gpuc collection with its header on the armature and one Config"""
+    """Create a new cloth: a .gpuc collection with a header on the armature and one Config"""
     bl_idname = "ree_gpuc.create_header"
     bl_label = "Create GPUC Header"
     bl_options = {"REGISTER", "UNDO"}
 
     name: bpy.props.StringProperty(name="Name", default="newCloth",
-                                   description="The .gpuc's name: use the mesh file's (ch03_039_0012 for "
-                                               "ch03_039_0012.mesh)")
+                                   description="The .gpuc's name. Use the mesh file's name, e.g. ch03_039_0012 "
+                                               "for ch03_039_0012.mesh")
     armature: bpy.props.StringProperty(name="Armature")
     game: bpy.props.EnumProperty(name="Game", items=props.GAMES, description="The game the .gpuc is for")
 
     def invoke(self, context, event):
         self.name, self.armature = suggest(context)
-        last = f".{context.scene.get('REEGpucLastImportedVersion', '')}"   # the game last imported, else Wilds
+        last = f".{context.scene.get('REEGpucLastImportedVersion', '')}"   # default to the last imported game
         if last in fileio.gp.EXTS:
             self.game = last
         return context.window_manager.invoke_props_dialog(self)
@@ -324,7 +325,7 @@ class REE_GPUC_OT_create_header(bpy.types.Operator):
     def execute(self, context):
         arm = bpy.data.objects.get(self.armature)
         if self.game == fileio.re4.EXT:
-            return refused(self, "RE4 supports imported Keep Structure cloth only: import an original RE4 .gpuc")
+            return refused(self, "RE4 cloth cannot be created. Import an RE4 .gpuc with Keep Structure instead")
         if arm is None or arm.type != "ARMATURE":
             self.report({"ERROR"}, "Choose the armature the cloth is on")
             return {"CANCELLED"}
@@ -333,7 +334,7 @@ class REE_GPUC_OT_create_header(bpy.types.Operator):
 
 
 class REE_GPUC_OT_new_config(bpy.types.Operator):
-    """A Config under the active cloth's header, made the current one (new parts go under it)"""
+    """Add a Config under the active cloth's header and make it current; new parts go under it"""
     bl_idname = "ree_gpuc.new_config"
     bl_label = "Create GPUC Config"
     bl_options = {"REGISTER", "UNDO"}
@@ -378,7 +379,7 @@ def _cloth_armature(context):
 
 
 class REE_GPUC_OT_switch_to_pose(bpy.types.Operator):
-    """Pose Mode on the active cloth's armature"""
+    """Switch the active cloth's armature to Pose Mode"""
     bl_idname = "ree_gpuc.switch_to_pose"
     bl_label = "Switch to Pose Mode"
 
@@ -397,7 +398,7 @@ class REE_GPUC_OT_switch_to_pose(bpy.types.Operator):
 
 
 class REE_GPUC_OT_switch_to_object(bpy.types.Operator):
-    """Back to Object Mode"""
+    """Switch back to Object Mode"""
     bl_idname = "ree_gpuc.switch_to_object"
     bl_label = "Switch to Object Mode"
 
@@ -408,18 +409,18 @@ class REE_GPUC_OT_switch_to_object(bpy.types.Operator):
 
 # --- Pose Mode: parts from bones ----------------------------------------------------------------------------
 
-RING = [("AUTO", "Auto", "Closed when the chains go all the way round"),
-        ("CLOSED", "Closed", "Join the last chain to the first (a skirt)"),
-        ("OPEN", "Open", "Open at one side (a cape, a panel)")]
+RING = [("AUTO", "Auto", "Closed if the chains go all the way around"),
+        ("CLOSED", "Closed", "Join the last chain to the first, e.g. a skirt"),
+        ("OPEN", "Open", "Leave one side open, e.g. a cape or a panel")]
 
 
 class _PartOptions:
     closed: bpy.props.EnumProperty(name="Ring", items=RING, default="AUTO")
     truncate: bpy.props.BoolProperty(name="Cut to the shortest chain")
     sub_rows: bpy.props.IntProperty(name="Between bones, down", default=0, min=0, max=8,
-                                    description="Particles between two bones of a chain (0: one per bone)")
+                                    description="Extra particles between two bones of a chain. 0: one per bone")
     sub_cols: bpy.props.IntProperty(name="Between chains, across", default=0, min=0, max=8,
-                                    description="Columns of particles between two neighbouring chains")
+                                    description="Extra columns of particles between two neighbouring chains")
 
     @classmethod
     def poll(cls, context):
@@ -439,8 +440,8 @@ class _PartOptions:
         s = _settings(context)
         arm = context.active_object
         if fileio.keeps_structure(s.target):
-            return refused(self, f"{s.target.name} keeps a .gpuc's structure (Keep Structure import): make a new "
-                                 f"GPUC collection for parts from bones")
+            return refused(self, f"{s.target.name} was imported with Keep Structure and cannot take new parts. "
+                                 f"Create a new GPUC collection for parts from bones")
         try:
             lay = generate.layout(arm, self.chains(arm), self.closed, self.truncate, self.sub_rows, self.sub_cols)
         except (generate.GenerateError, ValueError) as e:
@@ -454,7 +455,8 @@ class _PartOptions:
 
 
 class REE_GPUC_OT_part_from_parents(_PartOptions, bpy.types.Operator):
-    """A part from the first bone of each chain: every bone below it, one child each, is taken"""
+    """Create a part from the selected first bone of each chain; each chain runs down to its last bone and must
+    not branch"""
     bl_idname = "ree_gpuc.part_from_parents"
     bl_label = "Create Part From Parent Bones"
     bl_options = {"REGISTER", "UNDO"}
@@ -465,7 +467,7 @@ class REE_GPUC_OT_part_from_parents(_PartOptions, bpy.types.Operator):
 
 
 class REE_GPUC_OT_part_from_selected(_PartOptions, bpy.types.Operator):
-    """A part from the selected bones: each chain of them a column, a particle on every bone"""
+    """Create a part from the selected bones: each chain becomes a column, with a particle on every bone"""
     bl_idname = "ree_gpuc.part_from_selected"
     bl_label = "Create Part From Selected Bones"
     bl_options = {"REGISTER", "UNDO"}
@@ -490,8 +492,8 @@ def _default_part(context):
 
 
 class REE_GPUC_OT_regenerate_part(bpy.types.Operator):
-    """The part's particles laid out again from the bones it was made from, with its density or ring changed
-    if you like; every value is kept (carried over the grid when its size changes)"""
+    """Lay out the part's particles again from its bones, optionally with a new density or ring. Values are kept
+    and carried over when the grid size changes"""
     bl_idname = "ree_gpuc.regenerate_part"
     bl_label = "Regenerate Particles From Part"
     bl_options = {"REGISTER", "UNDO"}
@@ -528,7 +530,7 @@ class REE_GPUC_OT_regenerate_part(bpy.types.Operator):
             self.report({"ERROR"}, "No part to regenerate")
             return {"CANCELLED"}
         if obj.mode != "OBJECT":
-            self.report({"ERROR"}, f"{obj.name} is being edited: leave its edit mode first")
+            self.report({"ERROR"}, f"{obj.name} is in Edit Mode. Return to Object Mode first")
             return {"CANCELLED"}
         try:
             generate.regenerate(obj, self.closed == "CLOSED", self.sub_rows, self.sub_cols)
@@ -584,7 +586,7 @@ class REE_GPUC_OT_select_part_bones(bpy.types.Operator):
         return {"FINISHED"}
 
 
-# --- collision tools (preview colliders) --------------------------------------------------------------------
+# --- collision: test colliders and .gpuc collision ----------------------------------------------------------
 
 def new_collider(context, kind: str, label: str = "") -> bpy.types.Object:
     obj = bpy.data.objects.new(generate.unique_name("COL_", f"_{kind.title()}{' ' + label if label else ''}"), None)
@@ -593,12 +595,12 @@ def new_collider(context, kind: str, label: str = "") -> bpy.types.Object:
     coll = _settings(context).target
     (collision.sim_collection(coll) if coll is not None else context.scene.collection).objects.link(obj)
     obj.ree_gpuc_collider.kind = kind
-    props._collider(obj.ree_gpuc_collider, context)      # the empty's display for the kind
+    props._collider(obj.ree_gpuc_collider, context)      # sets the empty's display for the kind
     return obj
 
 
 class REE_GPUC_OT_add_collider(bpy.types.Operator):
-    """A test collider at the 3D cursor, to push the simulated particles (not written to the file)"""
+    """Add a test collider at the 3D cursor. It affects only the preview simulation and is not exported"""
     bl_idname = "ree_gpuc.add_collider"
     bl_label = "Add Collider"
     bl_options = {"REGISTER", "UNDO"}
@@ -630,8 +632,8 @@ class REE_GPUC_OT_remove_collider(bpy.types.Operator):
 
 
 class REE_GPUC_OT_collider_from_bones(bpy.types.Operator):
-    """The .gpuc's own collision on the selected bones (as the chain editor's Collision From Bone): a sphere on
-    each bone's head; a capsule along one bone, or between the heads of two"""
+    """Add .gpuc collision on the selected bones: a sphere on each bone's head, or a capsule between the heads of
+    two bones"""
     bl_idname = "ree_gpuc.collider_from_bones"
     bl_label = "Collision From Bones"
     bl_options = {"REGISTER", "UNDO"}
@@ -652,7 +654,7 @@ class REE_GPUC_OT_collider_from_bones(bpy.types.Operator):
             self.report({"ERROR"}, "Select a bone")
             return {"CANCELLED"}
         if s.collider_kind == "CAPSULE" and len(sel) > 2:
-            self.report({"ERROR"}, "A capsule takes one bone or two")
+            self.report({"ERROR"}, "Select one or two bones for a capsule")
             return {"CANCELLED"}
         if s.target is None:
             s.target = generate.new_collection(arm.name, arm)
@@ -671,7 +673,7 @@ class REE_GPUC_OT_collider_from_bones(bpy.types.Operator):
 
 # --- clipboard ----------------------------------------------------------------------------------------------
 
-# what Copy takes from each kind of object (the structure a Part was made with stays its own)
+# The property group Copy reads per object type; CLIP_SKIP keeps names, links and a Part's grid out of the clipboard.
 CLIP_GROUPS = {props.HEADER_TYPE: "ree_gpuc_header", props.CONFIG_TYPE: "ree_gpuc_config",
                props.PART_TYPE: "ree_gpuc_part"}
 CLIP_SKIP = {"rna_type", "name", "config", "armature", "rows", "cols", "sub_rows", "sub_cols", "closed", "uv_tile",
@@ -700,7 +702,7 @@ def _from_dict(pg, values: dict) -> None:
     later = []
     for key, value in values.items():
         if key == "link_preset":
-            later.append((key, value))              # after the tails, so the preset is not turned to Custom
+            later.append((key, value))              # after the tails: editing a tail sets the preset to Custom
         elif isinstance(value, dict):
             _from_dict(getattr(pg, key), value)
         elif isinstance(value, list) and isinstance(getattr(pg, key), bpy.types.bpy_prop_collection):
@@ -715,7 +717,7 @@ def _from_dict(pg, values: dict) -> None:
 
 
 class REE_GPUC_OT_copy(bpy.types.Operator):
-    """Copy the active header's, Config's or Part's values"""
+    """Copy the values of the active header, Config or Part"""
     bl_idname = "ree_gpuc.copy"
     bl_label = "Copy"
 
@@ -756,21 +758,23 @@ class REE_GPUC_OT_paste(bpy.types.Operator):
 
 # --- bit flags ----------------------------------------------------------------------------------------------
 
-# the bits of the full body CLSP the chain editor's Create Full Body CLSP makes (its FULL_BODY_CLSP_NAMES)
+# Bit names of the full-body CLSP made by the RE Chain Editor's Create Full Body CLSP (its FULL_BODY_CLSP_NAMES).
 FULL_BODY_CLSP = {0: "Hip_HJ_00", 1: "Spine_0", 2: "Spine_1", 3: "Spine_2", 4: "Neck_0 > L_UpperArm",
                   5: "Neck_0 > R_UpperArm", 6: "L_UpperArm > L_Forearm", 7: "R_UpperArm > R_Forearm",
                   8: "L_Forearm > L_Hand", 9: "R_Forearm > R_Hand", 10: "L_Hand > L_MiddleF1", 11: "R_Hand > R_MiddleF1",
                   12: "Neck_0 > Head", 13: "Head", 14: "L_Thigh > L_Knee", 15: "R_Thigh > R_Knee",
                   16: "L_Shin > L_Foot", 17: "R_Shin > R_Foot", 18: "L_Foot > L_Toe", 19: "R_Foot > R_Toe",
                   23: "Hip_HJ_00 (second shape)"}
-KERNEL_FLAGS = {1: "Joint Deform Info (not confirmed)", 2: "Mesh Multi Joint Deform", 3: "Solve Constraint Legacy",
+KERNEL_FLAGS = {1: "Joint Deform Info (uncertain)", 2: "Mesh Multi Joint Deform", 3: "Solve Constraint Legacy",
                 4: "Tangent Passes"}
 
 
 def _bit_names(context, target) -> dict:
-    """Names of the known bits of a field (the rest are listed by number): the CLSP Flags' from the cloth's
-    Reference CLSP (each bit by the shapes that set it; else the full body CLSP's), the sphere and capsule bits'
-    from the shapes in the game's order (the .gpuc's own, then the Reference CLSP's)."""
+    """Return {bit: name} for the known bits of a flag field; other bits are listed by number.
+
+    CLSP flags are named by the Reference CLSP shapes that set them; sphere and capsule bits follow the shape order
+    (the cloth's own capsules, then the Reference CLSP's).
+    """
     from . import collision
     clsp = collision.clsp_shapes(collision.reference_clsp(context.scene))
     if target in ("ree_gpuc_part.clsp_flags_a", "ree_gpuc_part.clsp_flags_b") and clsp:
@@ -800,7 +804,7 @@ def _bit_names(context, target) -> dict:
 
 
 def _short(name: str) -> str:
-    """A chain editor's collision name without its COL_NN_ prefix: the joints."""
+    """Return the joint part of a RE Chain Editor collision name, without its ``COL_NN_`` prefix."""
     return name.split(" - ", 1)[1] if " - " in name else name.split(" ", 1)[-1]
 
 
@@ -811,7 +815,7 @@ BIT_FIELDS = ("ree_gpuc_part.clsp_flags_a", "ree_gpuc_part.clsp_flags_b", "ree_g
 
 
 class REE_GPUC_OT_set_bits(bpy.types.Operator):
-    """Tick the bits of this flag field"""
+    """Set the individual bits of this flag field"""
     bl_idname = "ree_gpuc.set_bits"
     bl_label = "Set Flags"
     bl_options = {"REGISTER", "UNDO", "INTERNAL"}
@@ -836,7 +840,7 @@ class REE_GPUC_OT_set_bits(bpy.types.Operator):
 
     def draw(self, context):
         names = _bit_names(context, self.target)
-        listed = max(names) + 1 if names else 0          # one list in bit order up to the last named bit
+        listed = max(names) + 1 if names else 0          # a list up to the last named bit, then a grid
         col = self.layout.column()
         for i in range(listed):
             col.prop(self, f"bit{i}", text=names.get(i, f"bit{i}"))
@@ -921,7 +925,7 @@ class REE_GPUC_OT_curve_sort(bpy.types.Operator):
 
 
 class REE_GPUC_OT_curve_reset(bpy.types.Operator):
-    """The curve's keys back to the default (ch03_100_1005's)"""
+    """Reset the curve's keys to the default"""
     bl_idname = "ree_gpuc.curve_reset"
     bl_label = "Reset Curve"
     bl_options = {"REGISTER", "UNDO", "INTERNAL"}
@@ -938,7 +942,7 @@ class REE_GPUC_OT_curve_reset(bpy.types.Operator):
 # --- particles ----------------------------------------------------------------------------------------------
 
 class REE_GPUC_OT_edit_particles(bpy.types.Operator):
-    """Edit mode on the cloth's parts, to select particles in the 3D view or on the grid UV"""
+    """Enter Edit Mode on the cloth's visible parts to select particles in the 3D view or the UV Editor"""
     bl_idname = "ree_gpuc.edit_particles"
     bl_label = "Select Particles"
     bl_options = {"REGISTER", "UNDO"}
@@ -966,7 +970,7 @@ class REE_GPUC_OT_edit_particles(bpy.types.Operator):
 
 
 class REE_GPUC_OT_reset_rest_offsets(bpy.types.Operator):
-    """Restore generated particles to the positions generated from the current rest bones"""
+    """Move particles back to the positions generated from the current rest bones"""
     bl_idname = "ree_gpuc.reset_rest_offsets"
     bl_label = "Reset Rest Offsets"
     bl_options = {"REGISTER", "UNDO"}
@@ -987,13 +991,13 @@ class REE_GPUC_OT_reset_rest_offsets(bpy.types.Operator):
                 bm = bmesh.from_edit_mesh(obj.data)
                 layer = bm.verts.layers.int.get(canon.PARTICLE_ID)
                 if layer is None or len(bm.verts) != canon.count(d):
-                    return refused(self, "Particle structure changed: leave Edit Mode to restore it first")
+                    return refused(self, "The particle mesh was changed. Leave Edit Mode to restore it first")
                 for v in bm.verts:
                     if self.selected_only and not v.select:
                         continue
                     k = v[layer]
                     if k < 0 or k >= len(d["base_co"]):
-                        return refused(self, "Invalid particle ID")
+                        return refused(self, "A particle has an invalid ID. Leave Edit Mode to restore the mesh")
                     v.co = d["base_co"][k]
                 bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
             else:
@@ -1048,15 +1052,15 @@ class REE_GPUC_OT_set_value(bpy.types.Operator):
             canon.set_values(obj, s.field, index, float(canon.to_value(obj, s.field, [weight])[0]))
             count += len(index)
         if clipped:
-            self.report({"WARNING"}, f"{count} particles; outside the range of {', '.join(clipped)}: clipped "
-                                     "(widen the Part's range)")
+            self.report({"WARNING"}, f"{count} particles; clipped to the mapping range of {', '.join(clipped)}. "
+                                     "Widen the Part's range to allow this value")
         else:
             self.report({"INFO"}, f"{count} particles")
         return {"FINISHED"}
 
 
 class REE_GPUC_OT_paint(bpy.types.Operator):
-    """Weight Paint the chosen value's group on the active part (or the cloth's first part)"""
+    """Weight Paint the chosen value on the active part, or on the cloth's first part"""
     bl_idname = "ree_gpuc.paint"
     bl_label = "Paint"
     bl_options = {"REGISTER", "UNDO"}
@@ -1106,7 +1110,7 @@ class REE_GPUC_OT_simulate(bpy.types.Operator):
 
 
 class REE_GPUC_OT_sim_reset(bpy.types.Operator):
-    """Put the simulated particles back on their skinned places"""
+    """Move the simulated particles back to their skinned positions"""
     bl_idname = "ree_gpuc.sim_reset"
     bl_label = "Reset"
 
@@ -1123,8 +1127,7 @@ class REE_GPUC_OT_sim_reset(bpy.types.Operator):
 # --- the current Config follows the selection ---------------------------------------------------------------
 
 def follow_selection(obj, scene) -> None:
-    """The cloth and current Config follow the active object: a Config is made current, a Part makes its
-    Config current (what new parts go under); a header makes its cloth active."""
+    """Make the active object's cloth and Config current: a Config itself, a Part's Config, or a header's cloth."""
     s = scene.ree_gpuc
     from . import presets
     presets.follow_selection(obj, scene)
@@ -1149,7 +1152,7 @@ def _active_changed():
 
 
 def _collection_changed():
-    """A cloth's collection (or one inside it) clicked in the Outliner makes that cloth active."""
+    """Make a cloth active when its collection, or one inside it, becomes the active layer collection."""
     ctx = bpy.context
     lc = ctx.view_layer.active_layer_collection if ctx.view_layer is not None else None
     if lc is None:
@@ -1162,7 +1165,7 @@ def _collection_changed():
 
 
 @bpy.app.handlers.persistent
-def _subscribe(*_):
+def _subscribe(*_):          # loading a file clears msgbus subscriptions, so load_post subscribes again
     bpy.msgbus.clear_by_owner(_owner)
     bpy.msgbus.subscribe_rna(key=(bpy.types.LayerObjects, "active"), owner=_owner, args=(),
                              notify=_active_changed)

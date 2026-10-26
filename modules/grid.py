@@ -1,13 +1,12 @@
-"""A cloth part's particle grid, Blender-free: columns of particles (one per bone, 1:1 layout), rows from the
-top (row 0) down, joined into quads; the grid UV the editor selects on; the distance links and their shapes.
+"""Lay out a cloth part's particle grid without Blender: columns of particles (one per bone at 1:1), rows from
+the top (row 0) down, joined into quads; the grid UV the editor selects on; the distance links and their shapes.
 
 Particle i is row i // cols, column i % cols. A closed grid (a skirt ring) joins the last column to the
-first; an open one (a cape, a front panel) does not. The links follow the generator's rules exactly
-(gpuc_build._relations and LINK_TYPES): a quad edge gives a structural link (type 0), a quad diagonal a shear
-(1) and a bend (2) link, two steps straight along quad edges a bend link (2). The type number is only a label
-(the kernels never read it, measured on the game's GPU solver); what a link does is its tail (k, k2, lo, hi), set
-per shape: VERTICAL and RING (the quad edges down a column and across a row), SHEAR (the diagonals' type 1),
-BEND (the diagonals' type 2 and the two-step links)."""
+first; an open one (a cape, a front panel) does not. The links follow ``gpuc_build._relations`` and
+``LINK_TYPES``: a quad edge gives a structural link (type 0), a quad diagonal a shear (1) and a bend (2) link,
+two steps straight along quad edges a bend link (2). The game's solver does not read the type number; what a link
+does is its tail (k, k2, lo, hi), set per shape: VERTICAL and RING (the quad edges down a column and across a
+row), SHEAR (the diagonals' type 1), BEND (the diagonals' type 2 and the two-step links)."""
 from __future__ import annotations
 
 import math
