@@ -65,6 +65,10 @@ class ExportError(Exception):
     pass
 
 
+class Info(str):
+    """A note that only says what an export did (the export operator reports it as info, the others as warnings)."""
+
+
 def file_stem(path: str) -> str:
     name = os.path.basename(path)
     return name.split(".gpuc")[0] if ".gpuc" in name else os.path.splitext(name)[0]
@@ -253,8 +257,10 @@ def companion_mesh(gpuc_path: str) -> tuple:
 
 
 def find_mesh(coll, mesh_file: str = "", gpuc_path: str = "", last: bool = True) -> tuple:
-    """Return (the .mesh to take joint indices from, else "", why none): ``mesh_file``, else the one beside
-    ``gpuc_path`` (blank: the cloth's last export or import), else (``last``) the one the last export used."""
+    """Return (the .mesh to take joint indices from, else "", why none): ``mesh_file``, else the reference mesh's
+    (``reference_mesh_file``), else the one beside ``gpuc_path`` (blank: the cloth's last export or import), else
+    (``last``) the one the last export used."""
+    mesh_file = mesh_file or reference_mesh_file(coll)
     if mesh_file:
         path = bpy.path.abspath(mesh_file)
         return (path, "") if os.path.isfile(path) else ("", f"Mesh File {path} does not exist")
@@ -265,6 +271,15 @@ def find_mesh(coll, mesh_file: str = "", gpuc_path: str = "", last: bool = True)
     if not path and used and os.path.isfile(used):
         return used, ""
     return path, why
+
+
+def reference_mesh_file(coll) -> str:
+    """The .mesh a cloth's reference mesh was imported from when it drives vertices picked on it, else ""."""
+    head = props.header(coll) if coll is not None else None
+    h = head.ree_gpuc_header if head is not None else None
+    if h is None or h.drive_mode != "VERTICES" or h.drive_selection != "REFERENCE" or keeps_structure(coll):
+        return ""
+    return str(h.drive_reference[REFERENCE_KEY]) if is_reference(h.drive_reference) else ""
 
 
 def matching_meshes(folder: str, arm) -> list:
@@ -376,9 +391,10 @@ def mesh_file_bones(path: str) -> tuple:
     return names, [names[i] for i in remap]
 
 
-def mesh_file_vertices(path: str) -> tuple:
-    """Return (every LOD's vertices in the .mesh's vertex-buffer order (V, 3) in game space, each vertex's LOD, the
-    LOD count); raises ``ExportError``. Reads the whole mesh with RE Mesh Editor (its streaming half too)."""
+def mesh_file_submeshes(path: str) -> list:
+    """Return the .mesh's submeshes as (LOD, group, submesh number, first vertex in its vertex buffer, vertices (n, 3)
+    in game space), every LOD, a reused submesh once; raises ``ExportError``. Reads the whole mesh with RE Mesh Editor
+    (its streaming half too)."""
     m = _mesh_reader()
     if m is None:
         raise ExportError("RE Mesh Editor is not enabled to read the .mesh")
@@ -390,69 +406,258 @@ def mesh_file_vertices(path: str) -> tuple:
                                   "importBlendShapes": False})
     except Exception as e:
         raise ExportError(f"{os.path.basename(path)} cannot be read ({e})") from e
-    runs = {}
+    out, seen = [], set()
     for li, lod in enumerate(parsed.mainMeshLODList):
         for group in lod.visconGroupList:
             for sub in group.subMeshList:
-                if sub.isReusedMesh or int(sub.meshVertexOffset) in runs:
+                if sub.isReusedMesh or int(sub.meshVertexOffset) in seen:
                     continue
-                runs[int(sub.meshVertexOffset)] = (li, np.asarray(sub.vertexPosList, float).reshape(-1, 3))
-    count = max((off + len(v) for off, (_, v) in runs.items()), default=0)
+                seen.add(int(sub.meshVertexOffset))
+                out.append((li, int(group.visconGroupNum), int(sub.subMeshIndex), int(sub.meshVertexOffset),
+                            np.asarray(sub.vertexPosList, float).reshape(-1, 3)))
+    return out
+
+
+def mesh_file_vertices(path: str) -> tuple:
+    """Return (every LOD's vertices in the .mesh's vertex-buffer order (V, 3) in game space, each vertex's LOD, the
+    LOD count); raises ``ExportError``."""
+    runs = mesh_file_submeshes(path)
+    count = max((off + len(v) for *_, off, v in runs), default=0)
     if not count:
         raise ExportError(f"{os.path.basename(path)} has no vertices")
     pos, lod_of, seen = np.zeros((count, 3)), np.zeros(count, np.int64), np.zeros(count, bool)
-    for off, (li, v) in runs.items():
+    for li, _, _, off, v in runs:
         pos[off:off + len(v)], lod_of[off:off + len(v)], seen[off:off + len(v)] = v, li, True
     if not seen.all():
         raise ExportError(f"{os.path.basename(path)}: {int((~seen).sum())} vertices belong to no submesh")
-    return pos, lod_of, len(parsed.mainMeshLODList)
+    return pos, lod_of, max(li for li, *_ in runs) + 1
 
 
-DRIVE_GROUPS = ("GPUC_Drive", "GPUC_NoDrive")     # vertex groups forcing mesh vertices in / out of a vertex drive
+# --- reference mesh: the exported .mesh imported as it is, its driven vertices picked on it ------------------
+# A cloth that drives mesh vertices by Reference Mesh has one (the header's drive_reference); its mesh objects keep
+# their submesh's place in the .mesh, so a vertex's index there is that place plus its own index.
+
+REFERENCE_KEY = "ree_gpuc_reference"     # on a reference mesh collection: the .mesh it was imported from
+SUBMESH_KEY = "ree_gpuc_submesh"         # on its mesh objects: (LOD, first vertex in the .mesh, vertex count)
+DRIVE_GROUP = "GPUC_Drive"               # the reference mesh's vertex group of driven vertices
+MATCH = 1e-4                             # how near (m) a reference vertex sits to its .mesh vertex
 
 
-def drive_overrides(mesh_coll, arm, pos, lod_of) -> tuple:
-    """Return (forced in, forced out masks over the .mesh's vertices, the number in the scene's LODs without a
-    match, the .mesh's LODs the scene lacks): each vertex takes the DRIVE_GROUPS of the scene vertices of its LOD at
-    the same game-space place (within 0.1 mm). A mesh collection without "Main Mesh LOD"
-    children is LOD0 alone (the RE Mesh Editor's default import). Without a mesh collection nothing is forced."""
-    on, off = np.zeros(len(pos), bool), np.zeros(len(pos), bool)
-    if mesh_coll is None:
-        return on, off, None, []
-    from mathutils import kdtree
-    lods = sorted((c for c in mesh_coll.children if "Main Mesh LOD" in c.name), key=lambda c: c.name) or [mesh_coll]
-    to_game = ROTATE_BACK
-    unmatched = np.zeros(len(pos), bool)
-    missing = [li for li in range(len(lods), int(lod_of.max()) + 1)]
-    for li, lod in enumerate(lods):
-        sel = np.flatnonzero(lod_of == li)
-        if not len(sel):
+def is_reference(coll) -> bool:
+    return coll is not None and REFERENCE_KEY in coll.keys()
+
+
+def reference_objects(coll) -> list:
+    return by_name(o for o in coll.all_objects if o.type == "MESH" and SUBMESH_KEY in o.keys())
+
+
+def reference_of(obj):
+    """The reference mesh collection a mesh object belongs to, else None."""
+    if obj is None or SUBMESH_KEY not in obj.keys():
+        return None
+    return next((c for c in bpy.data.collections if is_reference(c) and obj.name in c.all_objects), None)
+
+
+def game_vertices(obj) -> np.ndarray:
+    """A mesh object's vertices in game space (as the RE Mesh Editor exports them)."""
+    co = np.empty(len(obj.data.vertices) * 3)
+    obj.data.vertices.foreach_get("co", co)
+    mat = ROTATE_BACK @ np.array(obj.matrix_world, float)
+    return co.reshape(-1, 3) @ mat[:3, :3].T + mat[:3, 3]
+
+
+def _remove_collection(coll, made=()) -> None:
+    for o in list(coll.all_objects):
+        bpy.data.objects.remove(o)
+    for c in [coll, *made]:
+        if c.name in bpy.data.collections:
+            bpy.data.collections.remove(c)
+
+
+def import_reference(path: str) -> tuple:
+    """Import ``path`` with RE Mesh Editor as a reference mesh (every LOD, groups not merged) and tie each mesh
+    object to its submesh, checking every vertex is the file's, in its order; return (collection, notes). Raises
+    ``ExportError`` (the import removed) when it is not lossless."""
+    import re
+    path = bpy.path.abspath(path)
+    if not os.path.isfile(path):
+        raise ExportError(f"{path} does not exist")
+    runs = {(li, g, k): (off, v) for li, g, k, off, v in mesh_file_submeshes(path)}
+    before = set(bpy.data.collections)
+    try:
+        bpy.ops.re_mesh.importfile(filepath=path, files=[{"name": os.path.basename(path)}],
+                                   directory=os.path.dirname(path) + os.sep, importAllLODs=True, mergeGroups=False,
+                                   rotate90=True)
+    except Exception as e:
+        raise ExportError(f"RE Mesh Editor could not import {os.path.basename(path)} ({e})") from e
+    made = [c for c in bpy.data.collections if c not in before]
+    coll = next((c for c in made if c.get("~TYPE") == "RE_MESH_COLLECTION"), None)
+    if coll is None:
+        raise ExportError(f"RE Mesh Editor made no mesh collection for {os.path.basename(path)}")
+    tied, why = set(), ""
+    for obj in coll.all_objects:
+        m = re.match(r"(?:LOD_(\d+)_)?Group_(\d+)_Sub_(\d+)__", obj.name) if obj.type == "MESH" else None
+        key = (int(m.group(1) or 0), int(m.group(2)), int(m.group(3))) if m else None
+        if key not in runs:
             continue
-        entries = []
-        for obj in lod.objects:
-            if obj.type != "MESH" or obj.get("MeshExportExclude"):
-                continue
-            groups = {g.index: g.name for g in obj.vertex_groups if g.name in DRIVE_GROUPS}
-            mat = to_game @ np.array(obj.matrix_world, float)
-            for v in obj.data.vertices:
-                names = {groups[ge.group] for ge in v.groups if ge.group in groups and ge.weight > 0}
-                entries.append(((mat @ np.r_[v.co, 1.0])[:3], names))
-        if not entries:
-            unmatched[sel] = True
+        off, v = runs[key]
+        co = game_vertices(obj)
+        if len(co) != len(v) or np.abs(co - v).max(initial=0.0) > MATCH:
+            why = f"{obj.name} has {len(co)} vertices, the file's submesh {len(v)}, or not in its order"
+            break
+        obj[SUBMESH_KEY] = [key[0], off, len(v)]
+        tied.add(key)
+    if not why and tied != set(runs):
+        why = f"{len(set(runs) - tied)} of its submeshes have no object"
+    if why:
+        _remove_collection(coll, made)
+        raise ExportError(f"the reference import of {os.path.basename(path)} is not lossless: {why}")
+    coll[REFERENCE_KEY] = path
+    coll.name = f"{os.path.basename(path).split('.mesh')[0]} (GPUC reference)"
+    return coll, [f"Imported {os.path.basename(path)} as the reference mesh: {len(runs)} submeshes, "
+                  f"{len({k[0] for k in runs})} LODs"]
+
+
+def check_reference(coll, path: str) -> list:
+    """Return [(LOD, first vertex, object)] of each of the .mesh's submeshes when the reference mesh ``coll`` is
+    still that file vertex for vertex; raises ``ExportError`` otherwise."""
+    name = os.path.basename(path)
+    if os.path.normcase(bpy.path.abspath(coll[REFERENCE_KEY])) != os.path.normcase(bpy.path.abspath(path)):
+        raise ExportError(f"the reference mesh {coll.name} is of {os.path.basename(coll[REFERENCE_KEY])}, not {name}")
+    objs = {int(o[SUBMESH_KEY][1]): o for o in reference_objects(coll)}
+    out = []
+    for li, g, k, off, v in mesh_file_submeshes(path):
+        obj = objs.get(off)
+        if obj is None:
+            raise ExportError(f"the reference mesh {coll.name} lacks LOD{li} group {g} submesh {k} of {name}: "
+                              f"import the reference again")
+        co = game_vertices(obj)
+        if len(co) != len(v) or np.abs(co - v).max(initial=0.0) > MATCH:
+            raise ExportError(f"{obj.name} no longer matches {name} (its vertices were edited, or the .mesh was "
+                              f"exported again): import the reference again, which carries the selection over")
+        out.append((li, off, obj))
+    return out
+
+
+def group_members(obj, group: str = DRIVE_GROUP) -> np.ndarray:
+    """The indices of ``obj``'s vertices in vertex group ``group`` (weight over 0)."""
+    vg = obj.vertex_groups.get(group)
+    if vg is None:
+        return np.zeros(0, np.int64)
+    k = vg.index
+    return np.array([v.index for v in obj.data.vertices if any(ge.group == k and ge.weight > 0 for ge in v.groups)],
+                    np.int64)
+
+
+def carry_selection(old, new) -> int:
+    """Give reference mesh ``new`` the DRIVE_GROUP of ``old``: a submesh with the same vertices takes it vertex for
+    vertex; any other vertex is driven when an old driven vertex of its LOD sits at its place (within MATCH, so a
+    seam's copies go together). Return how many old driven vertices found no new one."""
+    from mathutils import kdtree
+    same, olds = {}, collections.defaultdict(list)
+    for o in reference_objects(old):
+        same[tuple(o[SUBMESH_KEY])] = o
+        olds[int(o[SUBMESH_KEY][0])].append(o)
+    lost, rest = 0, collections.defaultdict(list)
+    for o in reference_objects(new):
+        twin = same.get(tuple(o[SUBMESH_KEY]))
+        if twin is not None and np.abs(game_vertices(twin) - game_vertices(o)).max(initial=0.0) <= MATCH:
+            idx = group_members(twin).tolist()
+            if idx:
+                (o.vertex_groups.get(DRIVE_GROUP) or o.vertex_groups.new(name=DRIVE_GROUP)).add(idx, 1.0, "REPLACE")
+            same.pop(tuple(o[SUBMESH_KEY]))
+        else:
+            rest[int(o[SUBMESH_KEY][0])].append(o)
+    for li, objs in rest.items():
+        pts = [game_vertices(o)[group_members(o)] for o in olds.get(li, []) if tuple(o[SUBMESH_KEY]) in same]
+        pts = np.concatenate(pts) if pts else np.zeros((0, 3))
+        entries = [(o, i, co) for o in objs for i, co in enumerate(game_vertices(o))]
+        if not len(pts) or not entries:
+            lost += len(pts)
             continue
         tree = kdtree.KDTree(len(entries))
-        for k, (co, _) in enumerate(entries):
+        for k, (_, _, co) in enumerate(entries):
             tree.insert(co, k)
         tree.balance()
-        for i in sel:
-            found = tree.find_range(pos[i], 1e-4)        # every scene vertex there: a seam's copies share a place
-            if not found:
-                unmatched[i] = True
-                continue
-            names = set().union(*(entries[k][1] for _, k, _ in found))
-            on[i] = DRIVE_GROUPS[0] in names
-            off[i] = DRIVE_GROUPS[1] in names
-    return on, off, int(unmatched.sum()), missing
+        picks = collections.defaultdict(list)
+        for p in pts:
+            found = tree.find_range(p, MATCH)
+            lost += not found
+            for _, k, _ in found:
+                picks[entries[k][0]].append(entries[k][1])
+        for o, idx in picks.items():
+            (o.vertex_groups.get(DRIVE_GROUP) or o.vertex_groups.new(name=DRIVE_GROUP)).add(idx, 1.0, "REPLACE")
+    return lost
+
+
+def cloth_surface(coll) -> tuple:
+    """The cloth's Parts as world-space (vertices (n, 3), triangles (m, 3))."""
+    pts, tris, base = [], [], 0
+    for obj in props.parts(coll):
+        me = obj.data
+        me.calc_loop_triangles()
+        mat = np.array(obj.matrix_world, float)
+        co = np.array([v.co for v in me.vertices], float).reshape(-1, 3)
+        pts.append(co @ mat[:3, :3].T + mat[:3, 3])
+        tris += [[base + i for i in t.vertices] for t in me.loop_triangles]
+        base += len(co)
+    if not tris:
+        raise ExportError("the cloth has no Part to measure from")
+    return np.concatenate(pts), np.array(tris, np.int64)
+
+
+def spread_lods(coll) -> dict:
+    """Give every later LOD of reference mesh ``coll`` the DRIVE_GROUP of LOD0: a vertex is driven when the LOD0
+    vertex nearest it is; return {LOD: driven vertices}."""
+    from mathutils import kdtree
+    lod0 = [o for o in reference_objects(coll) if int(o[SUBMESH_KEY][0]) == 0]
+    entries = [(co, i in members) for o in lod0 for members in [set(group_members(o).tolist())]
+               for i, co in enumerate(game_vertices(o))]
+    if not any(on for _, on in entries):
+        raise ExportError(f"LOD0 of {coll.name} has no vertex in {DRIVE_GROUP}")
+    tree = kdtree.KDTree(len(entries))
+    for k, (co, _) in enumerate(entries):
+        tree.insert(co, k)
+    tree.balance()
+    out = collections.Counter()
+    for o in reference_objects(coll):
+        li = int(o[SUBMESH_KEY][0])
+        if li == 0:
+            continue
+        vg = o.vertex_groups.get(DRIVE_GROUP) or o.vertex_groups.new(name=DRIVE_GROUP)
+        vg.remove(list(range(len(o.data.vertices))))
+        on = [i for i, co in enumerate(game_vertices(o)) if entries[tree.find(co)[1]][1]]
+        if on:
+            vg.add(on, 1.0, "REPLACE")
+        out[li] += len(on)
+    return dict(out)
+
+
+def reference_driven(head, path: str) -> np.ndarray:
+    """The driven vertices' indices in the .mesh, from the cloth's reference mesh."""
+    ref = head.ree_gpuc_header.drive_reference
+    if not is_reference(ref):
+        raise ExportError("Vertex Selection is Reference Mesh, but the cloth has no reference mesh: import one")
+    driven = [off + group_members(obj) for _, off, obj in check_reference(ref, path)]
+    return np.unique(np.concatenate(driven)) if driven else np.zeros(0, np.int64)
+
+
+def driven_vertices(head, mesh_path, pos, ppos, tris) -> np.ndarray:
+    """The .mesh's vertices a cloth drives, by its Vertex Selection: its reference mesh's DRIVE_GROUP, or Drive
+    Distance from the cloth's rest triangles (``ppos``, ``tris``); raises ``ExportError`` when there are none."""
+    h = head.ree_gpuc_header
+    if h.drive_selection == "REFERENCE":
+        driven = reference_driven(head, mesh_path)
+        if not len(driven):
+            raise ExportError(f"{DRIVE_GROUP} on {h.drive_reference.name} holds no vertex: pick the driven vertices "
+                              f"in Edit Mode")
+        return driven
+    near = vertex_drive.distances(pos, vertex_drive.tri_frames(ppos, tris)).min(1)
+    driven = np.flatnonzero(near < h.drive_distance)
+    if not len(driven):
+        raise ExportError(f"no vertex of {os.path.basename(mesh_path)} lies within {h.drive_distance * 100:.1f} cm "
+                          f"of the cloth: raise Drive Distance, or pick the vertices on a reference mesh")
+    return driven
 
 
 def vertex_drive_info(raw: bytes):
@@ -478,14 +683,8 @@ def _drive_vertices(g, head, coll, arm, mesh_coll, mesh_path, notes) -> None:
                           "File or the .gpuc beside it")
     pos, lod_of, lods = mesh_file_vertices(mesh_path)
     ppos, tris = vertex_drive.particles_and_triangles(g)
-    near = vertex_drive.distances(pos, vertex_drive.tri_frames(ppos, tris)).min(1)
-    on, off, unmatched, missing = drive_overrides(mesh_coll or (mesh_collection(arm) if arm else None), arm, pos,
-                                                  lod_of)
-    driven = np.flatnonzero(((near < h.drive_distance) | on) & ~off)
+    driven = driven_vertices(head, mesh_path, pos, ppos, tris)
     name = os.path.basename(mesh_path)
-    if not len(driven):
-        raise ExportError(f"no vertex of {name} lies within {h.drive_distance * 100:.1f} cm of the cloth: raise "
-                          f"Drive Distance or add vertices to the GPUC_Drive group")
     tri, u, v, hh, w = vertex_drive.bind(pos[driven], ppos, tris, h.drive_slots)
     ext = gp.ext_of(g.layout)
     vertex_drive.apply(g, len(pos), lods, driven, (tri, u, v, hh, w), gp.offset_of(ext, "drive_vertices"),
@@ -493,15 +692,7 @@ def _drive_vertices(g, head, coll, arm, mesh_coll, mesh_path, notes) -> None:
     q = vertex_drive.decode(g.sections[24].data, len(driven), h.drive_slots)
     err = np.linalg.norm(vertex_drive.evaluate(ppos, tris, *q) - pos[driven], axis=1)
     per_lod = ", ".join(f"LOD{k} {int((lod_of[driven] == k).sum())}/{int((lod_of == k).sum())}" for k in range(lods))
-    notes.append(f"Drives {len(driven)} vertices of {name} ({per_lod})")
-    if unmatched is None:
-        notes.append("No mesh collection: the vertex groups GPUC_Drive / GPUC_NoDrive were not read")
-    elif unmatched:
-        notes.append(f"{unmatched} vertices of {name} match no scene vertex: their vertex groups are not read (is "
-                     f"the scene's mesh the one exported?)")
-    if missing and (on.any() or off.any()):
-        notes.append(f"LOD{', LOD'.join(map(str, missing))} not in the scene: their vertices go by Drive Distance "
-                     f"alone (import the mesh with all LODs to use the vertex groups there)")
+    notes.append(Info(f"Drives {len(driven)} vertices of {name} ({per_lod})"))
     if err.max() > 1e-3:
         notes.append(f"{int((err > 1e-3).sum())} driven vertices sit up to {err.max() * 1000:.1f} mm off after "
                      f"packing (far from the cloth?)")
@@ -539,6 +730,10 @@ def export(coll, path: str, mesh_coll=None, joints: str = "FILE", game: str = ""
     then taken from the scene's weights. A Keep Structure cloth As Imported needs none. The .mesh found is
     remembered for later exports and Wilds-Dynamics."""
     notes = []
+    ref = reference_mesh_file(coll)
+    if ref and mesh_file and os.path.normcase(bpy.path.abspath(mesh_file)) != os.path.normcase(bpy.path.abspath(ref)):
+        raise ExportError(f"Mesh File is {os.path.basename(mesh_file)}, but the vertices are picked on the reference "
+                          f"mesh of {os.path.basename(ref)}: clear Mesh File, or import that .mesh as the reference")
     if keeps_structure(coll) and joints != "MESH":
         found = ""
     elif force or _cloth_armature(coll) is None:          # no armature: build_bytes says why it cannot export
@@ -782,19 +977,17 @@ def _build_generated_re4(coll, head, arm, cfg_objs, part_objs, part_vals, spec, 
             raise ExportError("Drive Mesh Vertices needs the exported .mesh: export the mesh, then put its path in "
                               "Mesh File or the .gpuc beside it")
         pos, lod_of, _ = mesh_file_vertices(mesh_path)
-        frames = vertex_drive.tri_frames(spec.positions, [t[:3] for t in gpuc_build._triangles(spec)])
-        near = vertex_drive.distances(pos, frames).min(1)
-        on, off, unmatched, missing = drive_overrides(mesh_coll or mesh_collection(arm), arm, pos, lod_of)
-        driven = np.flatnonzero(((near < h.drive_distance) | on) & ~off & (lod_of == 0))
+        tris = [t[:3] for t in gpuc_build._triangles(spec)]
+        driven = driven_vertices(head, mesh_path, pos, spec.positions, tris)
+        later = int((lod_of[driven] > 0).sum())
+        driven = driven[lod_of[driven] == 0]
         if not len(driven):
-            raise ExportError(f"no LOD0 vertex of {os.path.basename(mesh_path)} lies within "
-                              f"{h.drive_distance * 100:.1f} cm of the cloth: raise Drive Distance or add vertices "
-                              f"to the GPUC_Drive group")
+            raise ExportError("no LOD0 vertex is driven: RE4 drives LOD0 alone")
         drive = (pos[driven], driven, h.drive_slots)
-        notes.append(f"Drives {len(driven)} of {int((lod_of == 0).sum())} LOD0 vertices of "
-                     f"{os.path.basename(mesh_path)} (RE4 drives LOD0 alone)")
-        if unmatched:
-            notes.append(f"{unmatched} vertices match no scene vertex: their vertex groups are not read")
+        notes.append(Info(f"Drives {len(driven)} of {int((lod_of == 0).sum())} LOD0 vertices of "
+                          f"{os.path.basename(mesh_path)}"))
+        if later:
+            notes.append(f"{later} vertices picked in later LODs left out: RE4 drives LOD0 alone")
     try:
         return re4_build.build(spec, pvalues, part_of, parts, configs,
                                {"max_velocity": h.max_velocity, "h44": h.re4_unk44, "h60": h.re4_unk60},
@@ -1652,8 +1845,8 @@ def _rebuild_drive(h, f, path, notes) -> None:
         h.drive_distance = float(min((inside + outside) / 2, inside + 0.01))
     else:
         notes.append(f"No one Drive Distance gives the file's driven vertices ({int(drv.sum())}): its vertices "
-                     f"{inside * 100:.2f} cm and {outside * 100:.2f} cm from the cloth differ in it; use the vertex "
-                     f"groups GPUC_Drive / GPUC_NoDrive")
+                     f"{inside * 100:.2f} cm and {outside * 100:.2f} cm from the cloth differ in it; pick them on a "
+                     f"reference mesh (Vertex Selection: Reference Mesh)")
         h.drive_distance = float(inside + 1e-4)
 
 

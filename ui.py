@@ -3,6 +3,8 @@
 Panels only draw: a value that applies only while its switch is on, or whose effect is unknown
 (``props.UNVERIFIED``, the Unknown fields), is drawn inactive but stays editable.
 """
+import os
+
 import bpy
 
 from . import canon, props
@@ -347,11 +349,8 @@ class REE_GPUC_PT_object_header(_ObjectPanel, bpy.types.Panel):
         if h.game in props.VERTEX_DRIVE_GAMES and not keep:
             sub = col.column()
             sub.prop(h, "drive_mode")
-            if h.drive_mode == "VERTICES":
-                if h.game in props.EXPERIMENTAL_DRIVE:
-                    sub.label(text="Experimental", icon="EXPERIMENTAL")
-                sub.prop(h, "drive_distance")
-                sub.prop(h, "drive_slots")
+            if h.drive_mode == "VERTICES" and h.game in props.EXPERIMENTAL_DRIVE:
+                sub.label(text="Experimental", icon="EXPERIMENTAL")
         if h.game == ".221108868" and not keep:
             col.prop(h, "re4_unk44")
             col.prop(h, "re4_unk60")
@@ -365,6 +364,58 @@ class REE_GPUC_PT_object_header(_ObjectPanel, bpy.types.Panel):
             sub = col.column()
             sub.active = known
             sub.prop(h, name, text=label)
+        if h.drive_mode == "VERTICES" and h.game in props.VERTEX_DRIVE_GAMES and not keep:
+            self.layout.separator()
+            self.layout.label(text="Export Settings")
+            col = _split(self.layout)
+            col.prop(h, "drive_selection")
+            if h.drive_selection == "DISTANCE":
+                col.prop(h, "drive_distance")
+            else:
+                col.prop(h, "drive_reference")
+                col.operator("ree_gpuc.import_reference",
+                             text="Import Reference Mesh Again" if h.drive_reference else "Import Reference Mesh",
+                             icon="IMPORT")
+            col.prop(h, "drive_slots")
+
+
+class REE_GPUC_PT_driven_vertices(_Sidebar, bpy.types.Panel):
+    """The reference mesh's driven vertices (a cloth that drives mesh vertices picks them here)"""
+    bl_label = "GPUC: Driven Vertices"
+
+    @classmethod
+    def poll(cls, context):
+        from . import fileio
+        return fileio.reference_of(context.object) is not None
+
+    def draw(self, context):
+        from . import fileio
+        layout = self.layout
+        ref = fileio.reference_of(context.object)
+        heads = [o for o in bpy.data.objects if props.is_header(o) and o.ree_gpuc_header.drive_reference == ref]
+        layout.label(text=f"Reference of {os.path.basename(str(ref[fileio.REFERENCE_KEY]))}", icon="MESH_DATA")
+        layout.label(text="Cloth: " + (", ".join(h.users_collection[0].name for h in heads if h.users_collection)
+                                       or "none uses it"))
+        counts = {}
+        for obj in fileio.reference_objects(ref):
+            li = int(obj[fileio.SUBMESH_KEY][0])
+            counts[li] = counts.get(li, 0) + len(fileio.group_members(obj))
+        layout.label(text="Driven: " + ", ".join(f"LOD{k} {n}" for k, n in sorted(counts.items())))
+        if context.mode == "EDIT_MESH":
+            # selecting changes no driven vertex; Add / Remove Selected then change GPUC_Drive
+            layout.label(text="Select:")
+            row = layout.row(align=True)
+            op = row.operator("ree_gpuc.drive_select_near", text="Near the Cloth", icon="RESTRICT_SELECT_OFF")
+            if heads:
+                op.distance = heads[0].ree_gpuc_header.drive_distance
+            row.operator("ree_gpuc.drive_vertices", text="Driven", icon="RESTRICT_SELECT_OFF").action = "SELECT"
+            layout.label(text="Change:")
+            row = layout.row(align=True)
+            row.operator("ree_gpuc.drive_vertices", text="Add Selected", icon="ADD").action = "ADD"
+            row.operator("ree_gpuc.drive_vertices", text="Remove Selected", icon="REMOVE").action = "REMOVE"
+        else:
+            layout.label(text="Edit Mode: pick the driven vertices", icon="INFO")
+        layout.operator("ree_gpuc.drive_spread_lods", icon="MOD_DECIM")
 
 
 # (switch, the Config values that apply only while it is on)
@@ -646,7 +697,7 @@ class REE_GPUC_PT_object_force(_ObjectPanel, bpy.types.Panel):
         sub.label(text=f"Scale x {sim.gain(obj):.3g}")
 
 
-CLASSES = (REE_GPUC_PT_general, REE_GPUC_PT_pose, REE_GPUC_PT_presets, REE_GPUC_PT_clipboard, REE_GPUC_PT_particles, REE_GPUC_UL_colliders, REE_GPUC_PT_simulate,
+CLASSES = (REE_GPUC_PT_driven_vertices, REE_GPUC_PT_general, REE_GPUC_PT_pose, REE_GPUC_PT_presets, REE_GPUC_PT_clipboard, REE_GPUC_PT_particles, REE_GPUC_UL_colliders, REE_GPUC_PT_simulate,
            REE_GPUC_PT_display, REE_GPUC_PT_uv, REE_GPUC_PT_object_header, REE_GPUC_UL_keys, REE_GPUC_PT_object_config,
            REE_GPUC_PT_object_part, REE_GPUC_PT_object_collision, REE_GPUC_PT_object_plane, REE_GPUC_PT_object_collider, REE_GPUC_PT_object_force)
 

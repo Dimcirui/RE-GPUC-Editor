@@ -70,6 +70,17 @@ DRIVE_MODES = [
      "The cloth moves the mesh's vertices near it directly, in every LOD. The export reads them from the exported "
      ".mesh, so export the mesh first and the .gpuc again after each mesh export"),
 ]
+VERTEX_SELECTIONS = [
+    ("DISTANCE", "By Distance", "The vertices of the exported .mesh within Drive Distance of the cloth"),
+    ("REFERENCE", "Reference Mesh", "The vertices picked on the reference mesh (the exported .mesh imported as it "
+                                    "is), in its GPUC_Drive vertex group"),
+]
+
+
+def _poll_reference(self, coll):
+    return coll.get("ree_gpuc_reference") is not None
+
+
 VERTEX_DRIVE_GAMES = {".241111760", ".250925365", ".260209505", ".221108868"}
 EXPERIMENTAL_DRIVE = {".241111760", ".250925365"}       # Wilds and RE9: no game file of theirs drives vertices
 
@@ -104,10 +115,17 @@ REE_GPUC_Header = type("REE_GPUC_Header", (bpy.types.PropertyGroup,), {
                                              "outfits take 8 to 16 (1 to 16 in game files; 1 in 81 of 111)"),
         "drive_mode": EnumProperty(name="Drive", items=DRIVE_MODES, default="JOINTS", update=_redraw_any,
                                    description="What the cloth moves in game"),
+        # export settings of a cloth that drives mesh vertices (written to no file: how the export picks and binds)
+        "drive_selection": EnumProperty(
+            name="Vertex Selection", items=VERTEX_SELECTIONS, default="DISTANCE", update=_redraw_any,
+            description="How the export picks the mesh vertices the cloth drives"),
+        "drive_reference": PointerProperty(
+            name="Reference Mesh", type=bpy.types.Collection, poll=_poll_reference, update=_redraw_any,
+            description="The exported .mesh imported as it is (Import Reference Mesh): its GPUC_Drive vertex group "
+                        "holds the driven vertices, and the export checks the cloth against its .mesh"),
         "drive_distance": FloatProperty(
             name="Drive Distance", default=0.02, min=0.0, soft_max=0.1, precision=3, unit="LENGTH",
-            description="Mesh vertices closer than this to the cloth's rest surface are driven. The mesh's vertex "
-                        "groups GPUC_Drive and GPUC_NoDrive force vertices in or out"),
+            description="Mesh vertices closer than this to the cloth's rest surface are driven"),
         "drive_slots": IntProperty(
             name="Triangles per Vertex", default=4, min=1, max=8,
             description="How many nearby cloth triangles each driven vertex follows, the nearest weighted most. 1 "

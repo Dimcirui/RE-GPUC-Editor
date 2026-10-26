@@ -207,10 +207,9 @@ class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
     filter_glob: bpy.props.StringProperty(default="*.gpuc*", options={"HIDDEN"})
     target_collection: bpy.props.StringProperty(name="", description="The GPUC collection to export")
     mesh_collection: bpy.props.StringProperty(
-        name="", description="The RE Mesh Editor collection of the mesh this cloth belongs to: its vertex groups "
-                             "GPUC_Drive / GPUC_NoDrive for a cloth that drives mesh vertices, and with Force "
-                             "Export and no matching .mesh, its weighted bones give the driven joints' indices. "
-                             "Leave blank to use the armature's collection")
+        name="", description="The RE Mesh Editor collection of the mesh this cloth belongs to: with Force Export and "
+                             "no matching .mesh, its weighted bones give the driven joints' indices. Leave blank to "
+                             "use the armature's collection")
     mesh_file: bpy.props.StringProperty(
         name="Mesh File", description="The exported .mesh whose weighted bones give the driven joints' indices "
                                       "(paste its full path). Blank: the same-name .mesh beside the .gpuc, else the "
@@ -287,7 +286,7 @@ class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
         except fileio.ExportError as e:
             return refused(self, f"Not exported: {e}")
         for note in notes:
-            self.report({"WARNING"}, note)
+            self.report({"INFO"} if isinstance(note, fileio.Info) else {"WARNING"}, note)
         written = props.header(coll).get(fileio.EXPORTED_KEY, self.filepath)    # renamed after a matching .mesh
         props.header(coll)[EXPORT_KEY] = written
         context.scene[EXPORT_KEY] = written
@@ -1210,6 +1209,175 @@ def _subscribe(*_):          # loading a file clears msgbus subscriptions, so lo
                              notify=_collection_changed)
 
 
+# --- reference mesh: the exported .mesh imported as it is, its driven vertices picked on it --------------------
+
+def _cloth_head(context):
+    """The header of the cloth an operator acts for: the active object's when it is one, else the sidebar's."""
+    obj = context.object
+    return obj if props.is_header(obj) else props.header(_settings(context).target)
+
+
+def _cloth_of_head(head):
+    return next((c for c in bpy.data.collections if props.is_gpuc_collection(c) and head.name in c.objects), None)
+
+
+class REE_GPUC_OT_import_reference(bpy.types.Operator, ImportHelper):
+    """Import the exported .mesh as it is (every LOD) as the cloth's reference mesh, to pick the vertices it drives.
+    When the cloth has a reference already, its picked vertices carry over by place"""
+    bl_idname = "ree_gpuc.import_reference"
+    bl_label = "Import Reference Mesh"
+    bl_options = {"REGISTER", "UNDO"}
+
+    filter_glob: bpy.props.StringProperty(default="*.mesh.*", options={"HIDDEN"})
+
+    def invoke(self, context, event):
+        head = _cloth_head(context)
+        if head is None:
+            return refused(self, "Choose a cloth first")
+        coll = _cloth_of_head(head)
+        found = fileio.find_mesh(coll)[0] if coll is not None else ""
+        if found:
+            self.filepath = found
+        return super().invoke(context, event)
+
+    def execute(self, context):
+        head = _cloth_head(context)
+        if head is None:
+            return refused(self, "Choose a cloth first")
+        if context.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        h = head.ree_gpuc_header
+        old = h.drive_reference if fileio.is_reference(h.drive_reference) else None
+        try:
+            ref, notes = fileio.import_reference(self.filepath)
+        except fileio.ExportError as e:
+            return refused(self, f"Not imported: {e}")
+        if old is not None:
+            lost = fileio.carry_selection(old, ref)
+            notes.append(f"Picked vertices carried over from {old.name}"
+                         + (f"; {lost} found no vertex at their place: pick them again" if lost else "")
+                         + f". {old.name} is kept: delete it when done")
+        h.drive_reference = ref
+        h.drive_mode, h.drive_selection = "VERTICES", "REFERENCE"
+        for note in notes:
+            self.report({"INFO"}, note)
+        return {"FINISHED"}
+
+
+def _reference_edit_objects(context) -> list:
+    return [o for o in context.objects_in_mode_unique_data if fileio.SUBMESH_KEY in o.keys()]
+
+
+DRIVE_ACTIONS = [("ADD", "Add Selected", "Put the selected vertices in GPUC_Drive: the cloth drives them"),
+                 ("REMOVE", "Remove Selected", "Take the selected vertices out of GPUC_Drive"),
+                 ("SELECT", "Select Driven", "Select the vertices in GPUC_Drive (the selection only)")]
+
+
+class REE_GPUC_OT_drive_vertices(bpy.types.Operator):
+    """Add or remove the selected reference mesh vertices as driven, or select the driven ones"""
+    bl_idname = "ree_gpuc.drive_vertices"
+    bl_label = "Driven Vertices"
+    bl_options = {"REGISTER", "UNDO"}
+
+    action: bpy.props.EnumProperty(items=DRIVE_ACTIONS, default="ADD")
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == "EDIT_MESH" and bool(_reference_edit_objects(context))
+
+    def execute(self, context):
+        total = 0
+        for obj in _reference_edit_objects(context):
+            bm = bmesh.from_edit_mesh(obj.data)
+            vg = obj.vertex_groups.get(fileio.DRIVE_GROUP) or obj.vertex_groups.new(name=fileio.DRIVE_GROUP)
+            layer = bm.verts.layers.deform.verify()
+            k = vg.index
+            for v in bm.verts:
+                dv = v[layer]
+                if self.action == "SELECT":
+                    v.select_set(dv.get(k, 0.0) > 0)
+                elif v.select and self.action == "ADD":
+                    dv[k] = 1.0
+                elif v.select and k in dv:
+                    del dv[k]
+                total += dv.get(k, 0.0) > 0
+            bm.select_flush_mode()
+            bmesh.update_edit_mesh(obj.data)
+        self.report({"INFO"}, f"{total} driven vertices in the edited meshes")
+        return {"FINISHED"}
+
+
+class REE_GPUC_OT_drive_select_near(bpy.types.Operator):
+    """Select the reference mesh vertices within a distance of the cloth's rest surface. Only the selection changes:
+    adjust it, then Add Selected"""
+    bl_idname = "ree_gpuc.drive_select_near"
+    bl_label = "Select Near the Cloth"
+    bl_options = {"REGISTER", "UNDO"}
+
+    distance: bpy.props.FloatProperty(name="Distance", default=0.02, min=0.0, soft_max=0.1, precision=3,
+                                      unit="LENGTH")
+    extend: bpy.props.BoolProperty(name="Extend", default=False, description="Keep the selection there is")
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == "EDIT_MESH" and bool(_reference_edit_objects(context))
+
+    def execute(self, context):
+        from .modules import vertex_drive
+        objs = _reference_edit_objects(context)
+        ref = fileio.reference_of(objs[0])
+        head = next((o for o in bpy.data.objects if props.is_header(o) and o.ree_gpuc_header.drive_reference == ref),
+                    None) or _cloth_head(context)
+        coll = _cloth_of_head(head) if head is not None else None
+        if coll is None:
+            return refused(self, "No cloth uses this reference mesh")
+        try:
+            pts, tris = fileio.cloth_surface(coll)
+        except fileio.ExportError as e:
+            return refused(self, str(e))
+        frames = vertex_drive.tri_frames(pts, tris)
+        picked = 0
+        for obj in objs:
+            bm = bmesh.from_edit_mesh(obj.data)
+            mat = np.array(obj.matrix_world, float)
+            co = np.array([v.co for v in bm.verts], float).reshape(-1, 3) @ mat[:3, :3].T + mat[:3, 3]
+            near = vertex_drive.distances(co, frames).min(1) < self.distance if len(co) else []
+            for v, on in zip(bm.verts, near):
+                v.select_set(bool(on) or (self.extend and v.select))
+                picked += bool(on)
+            bm.select_flush_mode()
+            bmesh.update_edit_mesh(obj.data)
+        self.report({"INFO"}, f"{picked} vertices within {self.distance * 100:.1f} cm of {coll.name} selected")
+        return {"FINISHED"}
+
+
+class REE_GPUC_OT_drive_spread_lods(bpy.types.Operator):
+    """Give the reference mesh's later LODs the driven vertices of LOD0: a vertex is driven when the LOD0 vertex
+    nearest it is"""
+    bl_idname = "ree_gpuc.drive_spread_lods"
+    bl_label = "LOD0 to Later LODs"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return fileio.reference_of(context.object) is not None
+
+    def execute(self, context):
+        ref = fileio.reference_of(context.object)
+        mode = context.mode
+        if mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        try:
+            done = fileio.spread_lods(ref)
+        except fileio.ExportError as e:
+            return refused(self, str(e))
+        finally:
+            if mode == "EDIT_MESH":
+                bpy.ops.object.mode_set(mode="EDIT")
+        self.report({"INFO"}, ", ".join(f"LOD{k} {n}" for k, n in sorted(done.items())) or "No later LOD")
+        return {"FINISHED"}
+
+
 CLASSES = (REE_GPUC_OT_import, REE_GPUC_FH_import, REE_GPUC_OT_export, REE_GPUC_OT_create_header, REE_GPUC_OT_new_config,
            REE_GPUC_OT_check, REE_GPUC_OT_switch_to_pose, REE_GPUC_OT_switch_to_object, REE_GPUC_OT_part_from_parents,
            REE_GPUC_OT_part_from_selected, REE_GPUC_OT_regenerate_part, REE_GPUC_OT_select_part_bones,
@@ -1217,7 +1385,8 @@ CLASSES = (REE_GPUC_OT_import, REE_GPUC_FH_import, REE_GPUC_OT_export, REE_GPUC_
            REE_GPUC_OT_set_bits, REE_GPUC_OT_curve_key_add, REE_GPUC_OT_curve_key_remove, REE_GPUC_OT_curve_sort,
            REE_GPUC_OT_curve_reset, REE_GPUC_OT_edit_particles,
            REE_GPUC_OT_reset_rest_offsets, REE_GPUC_OT_set_value, REE_GPUC_OT_paint,
-           REE_GPUC_OT_simulate, REE_GPUC_OT_sim_reset)
+           REE_GPUC_OT_simulate, REE_GPUC_OT_sim_reset, REE_GPUC_OT_import_reference,
+           REE_GPUC_OT_drive_vertices, REE_GPUC_OT_drive_select_near, REE_GPUC_OT_drive_spread_lods)
 
 
 def register():

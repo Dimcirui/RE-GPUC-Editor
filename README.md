@@ -62,12 +62,16 @@ A cloth generated from bones or imported with Rebuild from Bones can be converte
 <details>
   <summary>Driving mesh vertices (experimental)</summary>
 
-By default the cloth moves the bones its Parts are made from. With Drive set to Mesh Vertices in the Header, it moves the mesh's vertices near it directly, in every LOD, as some Onimusha files do. It is experimental for Wilds and RE9, where no game file does this.
+By default the cloth moves the bones its Parts are made from. With Drive set to Mesh Vertices in the Header, it moves the mesh's vertices near it directly, in every LOD (RE4: LOD0), as some Onimusha and RE4 files do. It is experimental for Wilds and RE9, where no game file does this.
 
-* The export reads the vertices from the exported `.mesh` (Mesh File, else the same-name `.mesh` beside the `.gpuc`), so export the mesh first, and the `.gpuc` again after every mesh export. Without the `.mesh` the export is refused.
-* Vertices closer than Drive Distance to the cloth's rest surface are driven. Vertex groups on the mesh force vertices in (`GPUC_Drive`) or out (`GPUC_NoDrive`); only the LODs imported into the scene can use them.
-* Each driven vertex follows up to Triangles per Vertex nearby cloth triangles, the nearest weighted most.
-* Onimusha files that drive vertices import with Keep Structure. Rebuild from Bones sets Drive and its values from the file.
+The vertices are those of the exported `.mesh`, so export the mesh first, and the `.gpuc` again after every mesh export. Which of them the cloth drives is an export setting (Header > Export Settings, Vertex Selection); the file keeps only the result:
+
+* **By Distance**: the `.mesh`'s vertices within Drive Distance of the cloth's rest surface. Quick, but it takes everything that close, such as a body layer under the cloth. The `.mesh` comes from Mesh File, else the same-name `.mesh` beside the `.gpuc`.
+* **Reference Mesh**: the vertices you pick. "Import Reference Mesh" imports the exported `.mesh` as it is (every LOD, groups not merged) and checks every vertex is the file's, in its order. In its Edit Mode, the GPUC: Driven Vertices panel adds the selected vertices to its `GPUC_Drive` vertex group, removes them or selects the driven ones; "Select Near the Cloth" selects by distance as a start, and "LOD0 to Later LODs" gives the later LODs LOD0's choice. The export checks the cloth against that `.mesh` (Mesh File must be blank or the same) and refuses when the reference no longer matches it. After exporting the mesh again, import the reference again: the picked vertices carry over (vertex for vertex where a submesh is unchanged, else by place) and the export says how many found no place.
+
+Triangles per Vertex (Export Settings) sets how many nearby cloth triangles each driven vertex follows, the nearest weighted most.
+
+Onimusha files that drive vertices import with Keep Structure. Rebuild from Bones sets Drive and its values from the file.
 
 </details>
 
