@@ -9,6 +9,8 @@ What is copied from the template:
   config (sec 8) and its curves (sec 12), part table (sec 6/22), built-in collision capsules
   (sec 16), sec 20, the per-particle material fields and sec 28 (from the template particle
   nearest in rest position), link tails (most common tail of each link type).
+Without a template (a layout instead, see blank()) none of these: the editor writes config, parts and capsules
+itself, and no shader reads sections 10, 14, 15, 20 or 28 (the game's cloth shader, checked 2026-10-25).
 
 The spec is a dict (see ClothSpec below); positions are in mesh model space.
 """
@@ -55,6 +57,8 @@ class ClothSpec:
 
 
 def _triangles(spec):
+    # tail: u16 tangent flags (bits 0-2 flip the tangent at that corner, a mirrored UV; bit 3 no UV tangent, the
+    # face normal only; read by RecalculateControlPointNormals_Tangent alone), then three unorm16 UVs
     tris = []  # (i, j, k, uv tail bytes)
     for f, uv in zip(spec.faces, spec.face_uv):
         q = [max(0, min(65535, int(round(c * 65535)))) for p in uv for c in p]
@@ -206,15 +210,36 @@ def _pad16(b):
     return bytes(b) + b"\0" * (-len(b) % 16)
 
 
+# a blank file's section 28 record (no shader reads the section): the commonest of the vanilla Wilds files
+SEC28 = bytes.fromhex("cdcccc3d0000403f0000403fec115f3fec115f3fec115f3f")
+
+
+def blank(layout):
+    """A file of layout with every section empty, in the vanilla order (sections 9, 14, 15, 17 absent; 16 is added
+    by set_capsules; Onimusha has no slot for 18): what build() starts from without a template."""
+    g = gpuc.Gpuc.__new__(gpuc.Gpuc)
+    g.layout, g.header = layout, bytearray(layout.header_size)
+    g.header[:4] = b"GCLO"
+    order = [6, 7, 8, 10, 11, 12, 13, 0, 2, 1, 3, 4, 5, 19, 20] + ([18] if 18 in layout.slot_of else []) \
+        + list(range(21, 30))
+    g.sections = {s: gpuc.Section(s, 0, bytearray(), 4 if s in PACKED else 16) for s in order}
+    g.order, g.present = order, [s in g.sections for s in range(gpuc.TABLE_COUNT)]
+    g.refs, g.tail = {"header": (26, 0), "sec6": []}, b""
+    return g
+
+
 def build(spec, template, skin_table, capsules=None, particle_radius=None, link_tail=None, welds=None):
-    """skin_table: list of full mesh bone indices referenced by spec.skin_bones (sec 11).
+    """template: a gpuc.Gpuc, or a gpuc.Layout to start from blank(layout) (zero particle fields, SEC28 for every
+    particle, link tails ffffffffffffff0f where link_tail gives none, no config, part or capsule).
+    skin_table: list of full mesh bone indices referenced by spec.skin_bones (sec 11).
     capsules: optional list for section 16 (see capsule_bytes); default copies the template's.
     particle_radius: optional collision radius for every particle (particle +0x04).
     link_tail: optional function (type, a, b) -> 8-byte link tail or None; None falls back to the
     template's most common tail for (type, relation).
     welds: optional list of (a, b, type, 8-byte tail): zero-length links after the faces' (vanilla joins
     two parts' coincident particles with them, type 4), written a to b as given, in any order."""
-    t = template
+    from_blank = not isinstance(template, gpuc.Gpuc)
+    t = blank(template) if from_blank else template
     tp = _template_particles(t)
     pos = spec.positions
     P = len(pos)
@@ -239,11 +264,14 @@ def build(spec, template, skin_table, capsules=None, particle_radius=None, link_
     tangent = [adj[i][0] for i in range(P)]
     A, normals = _frames(pos, tris, tangent)
 
-    # template material fields per particle: nearest template particle
-    tpos = np.array([p["pos"] for p in tp])
-    near = [int(np.argmin(np.linalg.norm(tpos - p, axis=1))) for p in pos]
-    traw = bytes(t.sections[0].data)
-    t28 = bytes(t.sections[28].data)
+    # template material fields per particle: nearest template particle (a blank one: zeros, SEC28)
+    if not from_blank:
+        tpos = np.array([p["pos"] for p in tp])
+        near = [int(np.argmin(np.linalg.norm(tpos - p, axis=1))) for p in pos]
+        traw = bytes(t.sections[0].data)
+        t28 = bytes(t.sections[28].data)
+    else:
+        near, traw, t28 = [0] * P, bytes(108), SEC28
 
     skin_index = {b: k for k, b in enumerate(skin_table)}
     sec0 = bytearray()
@@ -255,7 +283,7 @@ def build(spec, template, skin_table, capsules=None, particle_radius=None, link_
             struct.pack_into("<f", r, 0x04, float(particle_radius))
         struct.pack_into("<II", r, 0x20, start[i], len(adj[i]))
         struct.pack_into("<II", r, 0x28, 0, 0)
-        struct.pack_into("<ff4I", r, 0x30, NAN, NAN, 0, 0, 0, 0)
+        struct.pack_into("<ff4I", r, 0x30, NAN, NAN, 0, 0, 0, 0)   # controlPointIndices none, initialDistances
         struct.pack_into("<3f", r, 0x48, *pos[i])
         struct.pack_into("<II", r, 0x54, _pack_normal(normals[i]), tangent[i])
         idx = [skin_index[b] if w else 0 for b, w in zip(spec.skin_bones[i], spec.skin_w[i])]
@@ -309,6 +337,10 @@ def build(spec, template, skin_table, capsules=None, particle_radius=None, link_
     nb1, nb2 = len(link_batches), len(edge_batches)
     sec4 = b"".join(struct.pack("<I", n) for n in link_batches)
     sec5 = b"".join(struct.pack("<I", n) for n in edge_batches)
+    # sec 7 one BatchInfo: 9 counts (particles, triangles, links, edges, link / edge groups, deform infos, point-
+    # triangle / edge-edge contact descs), the same 9 offsets, 2 padding; sec 10 a CPU-side tally no shader reads;
+    # sec 13 one SimulationLodInfo: (offset, count) of particles, triangles, links, edges and the two contact descs,
+    # 2 padding, deform infos, interpolation / restriction offsets, batch info offset / count (0 runs no constraint)
     sec7 = struct.pack("<20I", P, T, L, E, nb1, nb2, J, *([0] * 13))
     sec10 = struct.pack("<24I", 0, P, T, L, E, 0, J, *([0] * 17))
     sec13 = struct.pack("<20I", 0, P, 0, T, 0, L, 0, E, 0, 0, 0, 0, 0, 0, 0, J, 0, 0, 0, 1)
@@ -317,10 +349,12 @@ def build(spec, template, skin_table, capsules=None, particle_radius=None, link_
            23: sec23, 24: sec24, 25: sec25, 26: sec26, 28: sec28, 29: sec29}
     if capsules is not None:
         new[16] = capsule_bytes(capsules)
-    g = gpuc.Gpuc(t.build(), t.layout)
+    g = t if from_blank else gpuc.Gpuc(t.build(), t.layout)    # a blank file does not parse (nothing in it)
     for i in PACKED:
         if i in g.sections:
             g.sections[i].align = 4
+    if 16 in new:
+        g.set_capsules(new.pop(16))
     for i, data in new.items():
         g.sections[i].data = bytearray(_pad16(data) if g.sections[i].align == 16 else data)
     h = g.header

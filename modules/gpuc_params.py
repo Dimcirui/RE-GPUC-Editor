@@ -30,15 +30,20 @@ CONFIG_SIZE, PART_SIZE, KEY_SIZE, PARTICLE = 192, 64, 16, 108
 CURVES = {"translation_curve": 0x50, "rotation_curve": 0x78}
 HEADER = {"calculate_mode": (0x68, "I"), "max_velocity": (0x78, "f"), "kernel_flags": (0x8C, "i"),
           "unk04": (0x04, "i"), "unk40": (0x40, "i"), "unk54": (0x54, "i"), "unk5c": (0x5C, "i"),
-          "unk60": (0x60, "i"), "unk6c": (0x6C, "f"), "unk70": (0x70, "i"), "unk74": (0x74, "i"),
-          "unk7c": (0x7C, "i"), "unk80": (0x80, "i"), "unk84": (0x84, "i"), "unk88": (0x88, "i")}
+          "unk60": (0x60, "i"), "friction": (0x6C, "f"), "unk70": (0x70, "i"), "unk74": (0x74, "i"),
+          "unk7c": (0x7C, "i"), "unk80": (0x80, "i")}
 # RE9 and Onimusha only: (offset, kind). 0x0C a second hash beside the first (0x08, Wilds' 0x04), 0x10 to 0x18 0
 # and 0x4C a value differing in every file, in the 14 vanilla RE9 files and the 21 Onimusha ones
 RE9_ONLY = {"unk0c": (0x0C, "i"), "unk10": (0x10, "i"), "unk14": (0x14, "i"), "unk18": (0x18, "i"),
             "unk4c": (0x4C, "i")}
-# the header's other values the editor writes, at their Wilds offsets: the counts (gpuc.WILDS_COUNTS) and these
+# the header's other values the editor writes, at their Wilds offsets: the counts (gpuc.WILDS_COUNTS) and these. Names
+# from the cloth shader's StaticClothInfo: batch_infos section 7's entries, sim_lod_one section 13's; interpolations,
+# restrictions (blend infos) and the two self-collision contact desc counts 0, simulation deform weights 1 in vanilla
+# files (the generator writes none of them)
 HEADER_WILDS = {**{name: off for off, name in gpuc.WILDS_COUNTS.items()}, "batch_infos": 0x28, "configs": 0x2C,
-                "sim_lods": 0x30, "sim_lod_one": 0x44, "bounds": 0x90}
+                "sim_lods": 0x30, "sim_lod_one": 0x44, "interpolations": 0x48, "restrictions": 0x4C,
+                "sim_deform_weights": 0x50, "point_triangle_contacts": 0x84, "edge_edge_contacts": 0x88,
+                "bounds": 0x90}
 
 
 def _re9_offset(off: int):

@@ -189,6 +189,27 @@ class Gpuc:
     def counts(self):
         return {name: self.u32(off) for off, name in self.layout.counts.items()}
 
+    def set_capsules(self, data):
+        """Section 16's bytes (the caller sets the header count). Where the file has no section 16 it is made as in
+        vanilla files that have one (Wilds, RE9, Onimusha alike): 16-aligned, after sections 19, 20 and any of 14 / 15,
+        with the empty section 18 after it. Empty data takes the section out: vanilla files without capsules have
+        none."""
+        if not data:
+            if CAPSULE_SECTION in self.sections:
+                del self.sections[CAPSULE_SECTION]
+                self.order.remove(CAPSULE_SECTION)
+                self.present[CAPSULE_SECTION] = False
+            return
+        if CAPSULE_SECTION not in self.sections:
+            if 18 in self.order:
+                self.order.remove(18)
+            after = [k for k, s in enumerate(self.order) if s in (14, 15, 19, 20)]
+            at = after[-1] + 1 if after else self.order.index(21)
+            self.order[at:at] = [CAPSULE_SECTION] + ([18] if 18 in self.sections else [])
+            self.sections[CAPSULE_SECTION] = Section(CAPSULE_SECTION, 0, bytearray(), 16)
+            self.present[CAPSULE_SECTION] = True
+        self.sections[CAPSULE_SECTION].data = bytearray(data)
+
     # ---- writer --------------------------------------------------------------------------
     def build(self):
         L = self.layout

@@ -8,10 +8,10 @@ config block and its curves, and for each part block the Part of the same place 
 ...): its block values, root joint, the most common link tail of each shape and, if asked, each particle
 value's median as the Part's every particle's. Into a new <file>.gpuc collection or one being merged with.
 
-Export: the cloth's Parts as one .gpuc built by gpuc_build (modules/) from a template .gpuc (any vanilla file of
-the game: it lends what the editor does not make, the debug section and the like), then every block the editor
-keeps written over it: the header's values, the configs and their curves, the part blocks and names, every
-particle's values, part and config, each link's tail by its shape, the cloth's own capsules.
+Export: the cloth's Parts as one .gpuc built by gpuc_build (modules/) from a blank file of the game's layout (no
+template: what a vanilla one would lend no shader reads), then every block the editor keeps written over it: the
+header's values, the configs and their curves, the part blocks and names, every particle's values, part and config,
+each link's tail by its shape, the cloth's own capsules.
   - positions, bind matrices: game model space = rotate -90 deg about X x the armature's matrix x armature
     space, as the RE Mesh Editor exports the mesh;
   - skinning: the full mesh bone index (the armature's bone order); output joints: each grid bone, driven by
@@ -35,7 +35,7 @@ from .modules import gpuc, gpuc_build, gpuc_params as gp, grid, re4
 
 ROTATE_BACK = np.array(Matrix.Rotation(math.radians(-90.0), 4, "X"), float)
 GAMES = props.GAMES
-SOURCE_KEY = "ree_gpuc_source"           # on the header: the file last imported (the export's default template)
+SOURCE_KEY = "ree_gpuc_source"           # on the header: the file last imported
 ASSET_KEY = "~ASSETPATH"                 # on the collection: its game path (Wilds-Dynamics' interface, I2)
 
 
@@ -241,30 +241,27 @@ JOINT_INDICES = [("FILE", "As Imported", "The driven joints' indices as the file
                                        "RE Mesh Editor exports the mesh: for a mesh exported again")]
 
 
-def export(coll, path: str, template: str = "", mesh_coll=None, joints: str = "FILE", game: str = "") -> list[str]:
+def export(coll, path: str, mesh_coll=None, joints: str = "FILE", game: str = "") -> list[str]:
     """The cloth as a .gpuc of game (an extension; blank: the header's) at path; notes on what was left out. Raises
-    ExportError when it cannot. A Keep Structure cloth is written over its own file (no template; the mesh only for
-    joints From Mesh)."""
-    data, notes = build_bytes(coll, template, mesh_coll, joints, game)
+    ExportError when it cannot. A Keep Structure cloth is written over its own file (the mesh only for joints From
+    Mesh)."""
+    data, notes = build_bytes(coll, mesh_coll, joints, game)
     with open(path, "wb") as f:
         f.write(data)
     head = props.header(coll)
     set_asset_path(coll, path, exported=True)
-    head[EXPORTED_KEY] = path                                  # wd_api: the file it stands for, and how it builds
-    if template and not keeps_structure(coll):
-        head[TEMPLATE_KEY] = template
+    head[EXPORTED_KEY] = path                                  # wd_api: the file it stands for
     return notes
 
 
 EXPORTED_KEY = "ree_gpuc_exported"      # on the header: the file last exported (wd_api.file_path)
-TEMPLATE_KEY = "ree_gpuc_template"      # on the header: the template the last export built from (wd_api)
 
 
 def game_name(ext: str) -> str:
     return next((g[1] for g in GAMES if g[0] == ext), ext)
 
 
-def build_bytes(coll, template: str = "", mesh_coll=None, joints: str = "FILE", game: str = "") -> tuple:
+def build_bytes(coll, mesh_coll=None, joints: str = "FILE", game: str = "") -> tuple:
     """The cloth's .gpuc bytes and the notes on what was left out."""
     head = props.header(coll)
     if head is None:
@@ -290,20 +287,12 @@ def build_bytes(coll, template: str = "", mesh_coll=None, joints: str = "FILE", 
         return _build_keep(coll, head, cfg_objs, part_objs, mesh_coll if joints == "MESH" else None)
     if game == re4.EXT:
         raise ExportError("RE4 supports Keep Structure imports only; new cloth generation is not supported")
-    return _build_generated(coll, head, cfg_objs, part_objs, template, mesh_coll, game)
+    return _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, game)
 
 
-def _build_generated(coll, head, cfg_objs, part_objs, template, mesh_coll, ext=gp.EXT) -> tuple:
+def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT) -> tuple:
     notes = []
-    if not os.path.isfile(template):
-        raise ExportError(f"pick a template .gpuc (any vanilla {game_name(ext)} one)")
-    t = gpuc.load(template)
-    try:
-        t_game = gp.ext_of(t.layout)
-    except ValueError as e:
-        raise ExportError(f"the template is {e}") from e
-    if t_game != ext:
-        raise ExportError(f"the template is a {game_name(t_game)} .gpuc: pick a {game_name(ext)} one")
+    layout = gpuc.LAYOUTS[int(ext[1:])]
     arm = generate._armature(coll)
     if arm is None or arm.type != "ARMATURE":
         raise ExportError("the cloth has no armature")
@@ -402,15 +391,21 @@ def _build_generated(coll, head, cfg_objs, part_objs, template, mesh_coll, ext=g
                                 outputs)
     skin_table = sorted({b for row, w in zip(skin_bones, skin_w) for b, x in zip(row, w) if x})
     link_tail = lambda typ, a, b: shapes.get((min(a, b), max(a, b), typ))  # noqa: E731
-    out = gpuc_build.build(spec, t, skin_table, link_tail=link_tail, welds=_weld_links(coll, starts))
+    out = gpuc_build.build(spec, layout, skin_table, link_tail=link_tail, welds=_weld_links(coll, starts))
 
-    g = gpuc.Gpuc(out, t.layout)
+    g = gpuc.Gpuc(out, layout)
+    for i in gpuc_build.PACKED:                               # read back 16-aligned where they happen to start on 16
+        g.sections[i].align = 4
     _write_blocks(g, head.ree_gpuc_header, cfg_objs, part_objs, part_vals, notes, arm)
     _write_capsules(g, coll, arm, notes)
-    for name in ("batch_infos", "sim_lods", "sim_lod_one"):    # one batch info, one sim LOD (the generator's)
-        struct.pack_into("<I", g.header, gp.offset_of(ext, name), 1)
+    # one batch info, one sim LOD (the generator's); no interpolation, restriction or self-collision contact; as
+    # vanilla's, simulation deform weights 1
+    for name, v in (("batch_infos", 1), ("sim_lods", 1), ("sim_lod_one", 1), ("interpolations", 0),
+                    ("restrictions", 0), ("sim_deform_weights", 1), ("point_triangle_contacts", 0),
+                    ("edge_edge_contacts", 0)):
+        struct.pack_into("<I", g.header, gp.offset_of(ext, name), v)
     data = g.build()
-    gpuc.Gpuc(data, t.layout)                                 # it parses back
+    gpuc.Gpuc(data, layout)                                   # it parses back
     return data, list(dict.fromkeys(notes))
 
 
@@ -635,13 +630,7 @@ def capsule_records(coll, arm, notes) -> list:
 
 def _write_capsules(g, coll, arm, notes) -> None:
     caps = capsule_records(coll, arm, notes)
-    if 16 not in g.sections:
-        if caps:
-            notes.append(f"{len(caps)} own capsules left out: this file has no capsule section to put them in "
-                         f"(a template that has own capsules keeps them; Keep Structure cannot add the section)")
-        return
-    g.sections[16].data = bytearray(b"".join(struct.pack("<II8x3ff3ff", ha, hb, *oa, ra, *ob, rb)
-                                             for ha, hb, oa, ra, ob, rb in caps))
+    g.set_capsules(b"".join(struct.pack("<II8x3ff3ff", ha, hb, *oa, ra, *ob, rb) for ha, hb, oa, ra, ob, rb in caps))
     struct.pack_into("<I", g.header, gp.offset_of(gp.ext_of(g.layout), "capsules"), len(caps))
 
 
@@ -1203,7 +1192,7 @@ def import_rebuild(path: str, mesh_coll, force: bool = False) -> tuple:
         if set(weld.pairs(obj)) != set(zip(flat[0::2], flat[1::2])):
             changed.append(f"{obj.name}: its particles are not the ones of the bones its Parts share")
     try:
-        mine, _ = build_bytes(coll, path, mesh_coll)
+        mine, _ = build_bytes(coll, mesh_coll)
         changed += differences(fingerprint(mine, bones, arm=arm), fingerprint(raw, bones, arm=arm))
     except ExportError as e:
         changed.append(f"the rebuilt cloth does not export: {e}")
@@ -1286,7 +1275,7 @@ def update_existing(path: str, coll, mesh_coll=None) -> list:
         if weighted is None:
             raise ImportProblem("pick the mesh collection: comparing a cloth made from bones needs its weighted bones")
         try:
-            mine, _ = build_bytes(coll, path, mesh_coll)
+            mine, _ = build_bytes(coll, mesh_coll)
         except ExportError as e:
             raise ImportProblem(f"the cloth cannot be compared: {e}") from e
     diff = differences(fingerprint(mine, bones, weighted), fingerprint(raw, bones, weighted))

@@ -14,20 +14,15 @@ class ExportError(Exception):
 
 def export_bytes(collection, version=None) -> bytes:
     """The GPUC collection as a .gpuc (version: the file extension's number, e.g. 241111760; None: the cloth's own
-    game). A Keep Structure cloth over its stored file, the driven joints as imported; a cloth made from bones from
-    its template (the last export's, else the file it was imported from), joints from its mesh."""
+    game). A Keep Structure cloth over its stored file, the driven joints as imported; a cloth made from bones, joints
+    from its mesh."""
     if not props.is_gpuc_collection(collection):
         raise ExportError(f"{getattr(collection, 'name', collection)} is not a GPUC collection")
-    head = props.header(collection)
-    if head is None:
+    if props.header(collection) is None:
         raise ExportError(f"{collection.name} has no header")
-    template = str(head.get(fileio.TEMPLATE_KEY, "") or head.get(fileio.SOURCE_KEY, ""))
-    if not template and not fileio.keeps_structure(collection):
-        raise ExportError(f"{collection.name}: export it once from the RE GPUC Editor first (a cloth made from bones "
-                          f"builds from a template .gpuc, and is found beside its .mesh by that file)")
     game = f".{version}" if version is not None else ""
     try:
-        data, _ = fileio.build_bytes(collection, template, None, "FILE", game)
+        data, _ = fileio.build_bytes(collection, None, "FILE", game)
     except fileio.ExportError as e:
         raise ExportError(f"{collection.name}: {e}") from e
     return data

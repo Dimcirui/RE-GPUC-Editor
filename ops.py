@@ -198,7 +198,7 @@ EXPORT_KEY = "ree_gpuc_last_export"     # on the header (and the scene): the pat
 
 
 class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
-    """Export a GPUC collection as a .gpuc (built from a template .gpuc, any vanilla one of the game)"""
+    """Export a GPUC collection as a .gpuc"""
     bl_idname = "ree_gpuc.export_file"
     bl_label = "Export"
     bl_options = {"PRESET"}
@@ -210,9 +210,6 @@ class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
     mesh_collection: bpy.props.StringProperty(
         name="", description="The RE Mesh Editor collection of the mesh the cloth moves (its weighted bones give the "
                              "output joints' indices). Blank: the one the armature is in")
-    template: bpy.props.StringProperty(
-        name="", subtype="FILE_PATH",
-        description="A vanilla .gpuc of the game the build starts from (the last imported file by default)")
     joint_indices: bpy.props.EnumProperty(
         name="Joint Indices", items=fileio.JOINT_INDICES, default="FILE",
         description="Set when the dialog opens: As Imported for a cloth keeping its file's structure, From Mesh for "
@@ -232,8 +229,6 @@ class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
             source = head.get(fileio.SOURCE_KEY, "") if head is not None else ""
             folder = os.path.dirname(last or source or context.scene.get(EXPORT_KEY, ""))
             self.filepath = os.path.join(folder, name) if folder else name
-            if head is not None and not self.template:
-                self.template = head.get(fileio.SOURCE_KEY, "")
         target = bpy.data.collections.get(self.target_collection)
         # a cloth keeping its file's structure goes with the mesh the file came with until told otherwise; one made
         # from bones goes with a mesh exported again by the RE Mesh Editor (its bones' weights changed)
@@ -258,8 +253,6 @@ class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
         layout.label(text="Joint Indices: From Mesh (made from bones)")
         layout.label(text="Mesh Collection:")
         layout.prop_search(self, "mesh_collection", bpy.data, "collections")
-        layout.label(text="Template .gpuc:")
-        layout.prop(self, "template")
 
     def execute(self, context):
         coll = bpy.data.collections.get(self.target_collection)
@@ -269,8 +262,7 @@ class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
         if context.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
         try:
-            notes = fileio.export(coll, self.filepath, bpy.path.abspath(self.template), mesh, self.joint_indices,
-                                  self.filename_ext)
+            notes = fileio.export(coll, self.filepath, mesh, self.joint_indices, self.filename_ext)
         except fileio.ExportError as e:
             return refused(self, f"Not exported: {e}")
         for note in notes:

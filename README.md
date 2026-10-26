@@ -30,7 +30,7 @@ Blender 插件：为 RE Engine 游戏的 GPU 布料（`.gpuc`）从骨链生成�
 3. **设置粒子参数**：每个粒子参数对应一个顶点组，如 `gpuc_radius`、`gpuc_max_distance`。可以在 Particles 面板选好参数后点 Paint 直接刷权重；也可以点 Select Particles 选中粒子后，用 Set on Selected 设精确值。权重 0～1 映射到该 Part 的 Mapping Range（Min / Max）。
 4. **检查与重新生成**：修改骨骼静止位置并退出骨架编辑模式后，对应 Part 会自动重建。**Check** 检查活动 GPUC 的所有 Part 并报告问题。选中一个可重建的 Part 时，会出现 Regenerate Particles From Part，可以修改闭合和密度。
 5. **预览**：GPUC: Preview Simulation → Simulate。重力和风各用一支箭头表示，旋转箭头改方向，缩放改强度。Collider 行可以添加可拖动的球或胶囊。
-6. **导出**：General Tools → **Export**。从骨骼生成的布料需要一个同游戏的原版 `.gpuc` 作为模板，用来补上编辑器不生成的数据段。
+6. **导出**：General Tools → **Export**。不需要原版文件作模板。
 
 Config、Part、碰撞体、力的参数都在 Properties → Object 里。
 
@@ -40,7 +40,7 @@ Config、Part、碰撞体、力的参数都在 Properties → Object 里。
 - **Keep Structure**：保留原文件的粒子、约束和蒙皮结构，只编辑数值。没有改动时，导出结果和原文件逐字节相同。只能导出为原文件所属的游戏。
 - **Update Existing**：把文件里的参数套到已有的 GPUC 集合上。
 
-同一种格式的布料可以通过修改 Header 的 Game 在 Wilds、RE9、鬼武者之间转换，前提是这块布料是从骨骼生成或用 Rebuild from Bones 导入的。导出时要换用目标游戏的模板。
+同一种格式的布料可以通过修改 Header 的 Game 在 Wilds、RE9、鬼武者之间转换，前提是这块布料是从骨骼生成或用 Rebuild from Bones 导入的。
 
 ## 移动粒子
 
@@ -68,7 +68,7 @@ RE4 只支持 Keep Structure：导入时自动使用这种模式，不需要 Mes
 - 可以修改粒子的 Simulation weight、Collision radius、Inverse mass、Max distance、Backstop radius，以及约束参数、Part 的摩擦、反弹、粘性和碰撞掩码，还有 Header 的 Max Velocity。
 - Config 里的字段按文件偏移命名（如 `RE4 value +0x24`），含义尚未确认，不能当作 Wilds 的同名参数。
 - 名字、Part 和 Config 的数量、骨骼绑定、碰撞体不能修改；不能预览模拟。
-- 导出时选 RE4，Joint Indices 用 As Imported，不需要模板。
+- 导出时选 RE4，Joint Indices 用 As Imported。
 
 ## 许可证与来源
 
