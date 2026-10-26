@@ -1316,7 +1316,7 @@ class REE_GPUC_OT_drive_select_near(bpy.types.Operator):
 
     distance: bpy.props.FloatProperty(name="Distance", default=0.02, min=0.0, soft_max=0.1, precision=3,
                                       unit="LENGTH")
-    extend: bpy.props.BoolProperty(name="Extend", default=False, description="Keep the selection there is")
+    extend: bpy.props.BoolProperty(name="Extend", default=False, description="Add to the current selection")
 
     @classmethod
     def poll(cls, context):

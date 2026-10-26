@@ -477,7 +477,7 @@ def _remove_collection(coll, made=()) -> None:
 def import_reference(path: str) -> tuple:
     """Import ``path`` with RE Mesh Editor as a reference mesh (every LOD, groups not merged) and tie each mesh
     object to its submesh, checking every vertex is the file's, in its order; return (collection, notes). Raises
-    ``ExportError`` (the import removed) when it is not lossless."""
+    ``ExportError`` (the import removed) when an object differs from its submesh."""
     import re
     path = bpy.path.abspath(path)
     if not os.path.isfile(path):
@@ -511,7 +511,7 @@ def import_reference(path: str) -> tuple:
         why = f"{len(set(runs) - tied)} of its submeshes have no object"
     if why:
         _remove_collection(coll, made)
-        raise ExportError(f"the reference import of {os.path.basename(path)} is not lossless: {why}")
+        raise ExportError(f"{os.path.basename(path)} did not import vertex for vertex: {why}")
     coll[REFERENCE_KEY] = path
     coll.name = f"{os.path.basename(path).split('.mesh')[0]} (GPUC reference)"
     return coll, [f"Imported {os.path.basename(path)} as the reference mesh: {len(runs)} submeshes, "
@@ -697,7 +697,7 @@ def _drive_vertices(g, head, coll, arm, mesh_coll, mesh_path, notes) -> None:
         notes.append(f"{int((err > 1e-3).sum())} driven vertices sit up to {err.max() * 1000:.1f} mm off after "
                      f"packing (far from the cloth?)")
     if ext != gp.ONI_EXT:
-        notes.append(f"Drive Mesh Vertices is experimental for {game_name(ext)}: no game file of it drives vertices")
+        notes.append(f"Drive Mesh Vertices is experimental for {game_name(ext)}")
 
 
 def export_weighted(coll, arm, mesh_coll, mesh_file, gpuc_path, notes) -> list[str]:
@@ -957,7 +957,7 @@ def _build_generated_re4(coll, head, arm, cfg_objs, part_objs, part_vals, spec, 
     for root in by_name(r for r in collision.roots(bpy.context.scene) if r.name in coll.all_objects):
         c = root.ree_gpuc_capsule
         if any(reference.bone_owner(coll, arm, j) is None for j in (c.joint_a, c.joint_b))                 or c.radius_a <= 0 or c.radius_b <= 0:
-            notes.append(f"{root.name}: left out (RE4 names a capsule's joints: both must be bones; radii over 0)")
+            notes.append(f"{root.name}: left out (both its joints must be bones, its radii over 0)")
             continue
         if collision.is_sphere(c):          # a sphere names its joint and ""
             spheres.append((c.joint_a, "", struct.pack("<3ff", *c.offset_a, c.radius_a)))

@@ -108,11 +108,11 @@ REE_GPUC_Header = type("REE_GPUC_Header", (bpy.types.PropertyGroup,), {
                         "(not written to the .gpuc)"),
         # RE4 header values named by guess (a cloth made from bones; Keep Structure keeps the file's)
         "re4_unk44": IntProperty(name="Collision Iterations", default=0,
-                                 description="RE4 header +0x44. Unconfirmed: collision iterations or quality, as it "
-                                             "rises with the colliders in game files (0 to 3; 0 in 87 of 111)"),
+                                 description="RE4 only. Effect unknown; may set the collision iterations. "
+                                             "Usually 0 (0 to 3); higher with more colliders"),
         "re4_unk60": IntProperty(name="Solver Iterations", default=1,
-                                 description="RE4 header +0x60. Unconfirmed: solver iterations or substeps, as main "
-                                             "outfits take 8 to 16 (1 to 16 in game files; 1 in 81 of 111)"),
+                                 description="RE4 only. Effect unknown; may set the solver iterations. Usually 1; "
+                                             "main outfits use 8 to 16"),
         "drive_mode": EnumProperty(name="Drive", items=DRIVE_MODES, default="JOINTS", update=_redraw_any,
                                    description="What the cloth moves in game"),
         # export settings of a cloth that drives mesh vertices (written to no file: how the export picks and binds)
@@ -129,7 +129,7 @@ REE_GPUC_Header = type("REE_GPUC_Header", (bpy.types.PropertyGroup,), {
         "drive_slots": IntProperty(
             name="Triangles per Vertex", default=4, min=1, max=8,
             description="How many nearby cloth triangles each driven vertex follows, the nearest weighted most. 1 "
-                        "follows the nearest alone (creases may show where triangles meet); game files use 1 to 5"),
+                        "follows the nearest alone (creases may show where triangles meet). Common values: 1 to 5"),
         **{name: (FloatProperty(name=label, default=default, precision=4, min=0.0, description=desc) if kind == "f"
                   else EnumProperty(name=label, items=CALCULATE_MODES, default=default, description=desc)
                   if kind == "E" else IntProperty(name=label, default=default, description=desc))
@@ -336,23 +336,23 @@ from .modules import re4
 # RE4 Config values: (label, default, tooltip note), named in the order of Wilds' fields they line up
 # with (docs/re4-wilds-numeric-comparison); 0x30-0x38 at 0 stop the cloth moving in game
 RE4_CONFIG_FIELDS = {
-    "re4_value_24": ("Velocity Damping", 0.0, "0 to 0.4 in game files"),
-    "re4_value_28": ("Blend Translation", 0.0, "0 to 1 in game files"),
-    "re4_value_2c": ("Blend Rotation", 0.0, "0 to 1 in game files"),
-    "re4_value_30": ("Simulation Strength", 1.0, "0.8 to 1 in game files; 0 leaves the mesh unmoved"),
-    "re4_value_34": ("Blend Weight", 1.0, "0.2 to 1 in game files; 0 leaves the mesh unmoved"),
-    "re4_value_38": ("Gravity Factor", 1.0, "0.6 to 1 in game files"),
+    "re4_value_24": ("Velocity Damping", 0.0, "Usually 0 to 0.4"),
+    "re4_value_28": ("Blend Translation", 0.0, "Usually 0 to 1"),
+    "re4_value_2c": ("Blend Rotation", 0.0, "Usually 0 to 1"),
+    "re4_value_30": ("Simulation Strength", 1.0, "Usually 0.8 to 1. At 0 the cloth does not move the mesh"),
+    "re4_value_34": ("Blend Weight", 1.0, "Usually 0.2 to 1. At 0 the cloth does not move the mesh"),
+    "re4_value_38": ("Gravity Factor", 1.0, "Usually 0.6 to 1"),
 }
 
 REE_GPUC_Config = type("REE_GPUC_Config", (bpy.types.PropertyGroup,), {
     "__doc__": "One config block of the .gpuc; Parts point at one (several may share it)",
     "__annotations__": {**{name: (FloatProperty(name=RE4_CONFIG_FIELDS[name][0], default=RE4_CONFIG_FIELDS[name][1],
                                                precision=5,
-                                               description=f"RE4 Config +0x{off:02X}. Unconfirmed: named by the "
-                                                           f"Wilds field in its place ({RE4_CONFIG_FIELDS[name][2]})")
+                                               description=f"RE4 only. Effect unknown; may act as the field "
+                                                           f"of this name. {RE4_CONFIG_FIELDS[name][2]}")
                                   if fmt == "f" else IntProperty(name=f"RE4 flags +0x{off:02X}",
-                                                                 description=f"RE4 Config +0x{off:02X}. Unknown: 0 "
-                                                                             f"in every game file"))
+                                                                 description="RE4 only. Effect unknown. "
+                                                                             "Usually 0"))
                             for name, (off, fmt) in re4.CONFIG.items()},
                         **{name: (BoolProperty(name=label, default=default,
                                                description=CONFIG_DESCRIPTIONS.get(name, "")) if kind == "?"
@@ -521,8 +521,7 @@ class REE_GPUC_Part(bpy.types.PropertyGroup):
     config: PointerProperty(name="Config", type=bpy.types.Object, poll=_poll_config, update=_part_config)
     armature: PointerProperty(name="Armature", type=bpy.types.Object)
     re4_value_30: FloatProperty(name="Long Range Attachment Stretchiness", precision=5,
-                               description="RE4 Part +0x30. Unconfirmed: named so in RE4's PartInfo type, effect "
-                                           "not tested (0 in 161 of 162 game Parts)")
+                               description="RE4 only. Effect unknown. Usually 0")
     rows: IntProperty(name="Rows")
     cols: IntProperty(name="Columns")
     sub_rows: IntProperty(name="Between bones, down")
@@ -653,7 +652,7 @@ def _field_items(self, context):
 
 _COLLIDER_KINDS = [("SPHERE", "Sphere", ""), ("CAPSULE", "Capsule", "")]
 _COLLIDER_KINDS_RE4 = _COLLIDER_KINDS + [
-    ("PLANE", "Plane", "An endless plane through the joint facing its +Y, as the game files' ground")]
+    ("PLANE", "Plane", "An endless plane through the joint facing its +Y, such as a ground")]
 
 
 def _collider_kinds(self, context):
@@ -760,11 +759,11 @@ class REE_GPUC_Plane(bpy.types.PropertyGroup):
     normal . p = distance, pushed out to the normal's side. Kept in step with its object (collision.py)."""
     joint: StringProperty(name="Joint", update=_plane, description="The joint the plane is on")
     normal: FloatVectorProperty(name="Normal", size=3, subtype="XYZ", default=(0.0, 1.0, 0.0), update=_plane,
-                                description="The side particles are kept on, in the joint's space (every game "
-                                            "file: 0, 1, 0)")
+                                description="The side particles are kept on, in the joint's space. Usually "
+                                            "(0, 1, 0)")
     distance: FloatProperty(name="Distance", default=0.0, step=0.1, precision=4, update=_plane,
-                            description="The plane's distance from the joint along Normal (every game file: 0). "
-                                        "Unconfirmed: its sign in the game")
+                            description="The plane's distance from the joint along Normal. Usually 0. Which "
+                                        "way a positive distance moves the plane in game is unknown")
 
 
 COLLIDER_TYPE = "RE_GPUC_COLLIDER"

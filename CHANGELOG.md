@@ -3,16 +3,17 @@
 ## Unreleased
 
 ### New
-- **Drive Mesh Vertices** — a Header setting: the cloth moves the mesh's vertices near it directly, in every LOD, instead of its bones, as some Onimusha files do. Experimental for Wilds and RE9. The export reads the vertices from the exported `.mesh` and is refused without it. Which vertices is an export setting (Vertex Selection): By Distance, or Reference Mesh, the vertices picked on the exported `.mesh` imported as it is ("Import Reference Mesh", checked vertex for vertex; Edit Mode tools in GPUC: Driven Vertices; the picks carry over to a new import). Triangles per Vertex sets how many cloth triangles each one follows.
-
-- **Force Export** — in the export dialog, off by default. See below.
-- **RE4 cloth from bones** — a cloth created for RE4 now exports as a whole RE4 file, its particles skinned by the exported `.mesh`'s weighted bones, driving joints or (Drive Mesh Vertices) LOD0's vertices. Its colliders are capsules, spheres and planes (below). The Header shows RE4's `+0x44` and `+0x60` as Collision Iterations and Solver Iterations, the Configs' values as Velocity Damping, Blend Translation, Blend Rotation, Simulation Strength, Blend Weight and Gravity Factor, the Part's `+0x30` as Long Range Attachment Stretchiness: all named by guess, Unconfirmed in their tooltips. A new Config starts at the game files' commonest values (0, 0, 0, 1, 1, 1): at 0 the cloth did not move the mesh. A Part made from bones keeps its name, Config, root joint and export settings editable; CLSP flags and curves are hidden. The game list names it RE4 instead of RE4 (Keep Structure).
-- **RE4 collision planes and spheres** — Collision From Bones adds a Plane for RE4: an endless plane through the joint facing its +Y (as the game files' ground on `VirtualGround`), with Normal and Distance in the joint's space; it is drawn in the 3D view and written to RE4's planes. An RE4 sphere (a capsule whose two ends meet) is now written as a sphere instead of a capsule; Sphere and Plane Bits name the cloth's own.
+- **Drive Mesh Vertices** — a Header setting: the cloth moves the mesh's vertices near it directly instead of its bones. Experimental for Wilds and RE9.
+- **Reference Mesh** — pick the vertices the cloth drives on the exported `.mesh`, imported as it is ("Import Reference Mesh", GPUC: Driven Vertices panel); the picks carry over when it is imported again.
+- **RE4 cloth from bones** — a cloth created for RE4 now exports for RE4, driving joints or LOD0's vertices.
+- **RE4 collision planes** — Collision From Bones adds a Plane for RE4 cloth; spheres are written as spheres.
+- **Force Export** — in the export dialog: exports without a matching `.mesh`, the joints taken from the scene's weights.
 
 ### Changed
-- **Export needs the exported `.mesh`** — a cloth made from bones, and From Mesh joints, are checked against the exported `.mesh`: the one in Mesh File, else the same-name `.mesh` beside the `.gpuc`, else the one other `.mesh` there with the cloth's skeleton (the `.gpuc` then takes its name, and the export says so). Without one, or with one of another skeleton, the export is refused; Force Export exports anyway with the scene's weights, as before. The `.mesh` the last export used is no longer taken for a new export. Keep Structure exported As Imported needs no `.mesh`.
-- **Rebuild from Bones** — a part that is no bone grid now says so plainly (for example Onimusha `ch001_20_01`'s cloak, a free-form mesh).
-- **Onimusha files that drive mesh vertices** (`ch001_20_01`, `it442_0131_00`, `it442_0135_00`) now import with Keep Structure, and export back byte for byte, instead of being refused. Rebuild from Bones sets Drive Mesh Vertices from the file.
+- **Export needs the exported `.mesh`** — a cloth made from bones, and From Mesh joints, are checked against it: Mesh File, else the same-name `.mesh` beside the `.gpuc`, else the one other `.mesh` there with the cloth's skeleton, whose name the `.gpuc` then takes. Without one the export is refused unless Force Export is on.
+- **RE4 Header, Config and Part values** — named by what they may do; their tooltips say their effect is unknown. A new RE4 Config starts at values that move the cloth.
+- **Onimusha files that drive mesh vertices** — now import with Keep Structure instead of being refused.
+- **Rebuild from Bones** — says plainly when a part is no bone grid.
 
 ## 0.4.1
 

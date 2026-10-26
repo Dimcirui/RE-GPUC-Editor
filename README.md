@@ -62,7 +62,7 @@ A cloth generated from bones or imported with Rebuild from Bones can be converte
 <details>
   <summary>Driving mesh vertices (experimental)</summary>
 
-By default the cloth moves the bones its Parts are made from. With Drive set to Mesh Vertices in the Header, it moves the mesh's vertices near it directly, in every LOD (RE4: LOD0), as some Onimusha and RE4 files do. It is experimental for Wilds and RE9, where no game file does this.
+By default the cloth moves the bones its Parts are made from. With Drive set to Mesh Vertices in the Header, it moves the mesh's vertices near it directly, in every LOD (RE4: LOD0), as some Onimusha and RE4 files do. It is experimental for Wilds and RE9.
 
 The vertices are those of the exported `.mesh`, so export the mesh first, and the `.gpuc` again after every mesh export. Which of them the cloth drives is an export setting (Header > Export Settings, Vertex Selection); the file keeps only the result:
 
@@ -106,8 +106,8 @@ The GPUC: Presets panel saves Header, Config, Part, Collision, Weld and preview 
 **New cloth.** Create a cloth with the game RE4 and make Parts from bones as for the other games. The export writes a whole RE4 file: the particles are skinned by the exported `.mesh`'s weighted bones, so a matching `.mesh` is needed (or Force Export, which takes the scene's weights). Drive Mesh Vertices drives LOD0's vertices, as RE4's own files do.
 
 * Each Part's particle values (Simulation weight, Collision radius, Inverse mass, Max distance, Backstop radius), link settings, friction, bounce, stickiness and collision masks, the Configs' RE4 values and the Header's Max Velocity are written.
-* The Config values, the Header's Collision Iterations (`+0x44`) and Solver Iterations (`+0x60`) and the Part's Long Range Attachment Stretchiness (`+0x30`) are named by guess: each tooltip gives the offset and says Unconfirmed. A new Config starts at the game files' commonest values; Simulation Strength or Blend Weight at 0 leaves the mesh unmoved in game. Things RE4 has no field for (CLSP flags, curves, OBB) are hidden.
-* Capsules, spheres and planes are written as colliders, each joint by its bone's name. A plane (Collision From Bones with Plane) is endless, through its joint facing the Normal in the joint's space (+Y, as the game files' ground); the sign of its Distance in the game is a guess. RE4 has no CLSP: CLSP Flags A / B stay -1. The simulation cannot be previewed.
+* The Config values, the Header's Collision Iterations and Solver Iterations and the Part's Long Range Attachment Stretchiness are named by what they may do; their effects are unknown. Simulation Strength or Blend Weight at 0 leaves the mesh unmoved. Fields RE4 does not have (CLSP flags, curves, OBB) are hidden.
+* Capsules, spheres and planes are written as colliders, each joint by its bone's name. A plane (Collision From Bones with Plane) is endless, through its joint facing its Normal (+Y by default). The simulation cannot be previewed.
 
 **Imported files** use Keep Structure automatically and need no Mesh Collection.
 
