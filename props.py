@@ -27,7 +27,8 @@ HEADER_FIELDS = (
      "The most a particle moves per step (m; 0.1 is 6 m/s at 60 steps a second). Usually 0.1 to 1"),
     ("kernel_flags", "Kernel Flags", 0x8C, "I", True, 12, "Which kernels the cloth runs; use the button to tick them"),
     ("unk04", "Unkn Param 0", 0x04, "I", False, -386320729, "Effect unknown. Differs from file to file"),
-    ("unk40", "Unkn Param 1", 0x40, "I", False, 0, "Effect unknown. Usually 0"),
+    ("unk40", "Unkn Param 1", 0x40, "I", False, 0,
+     "Effect unknown. Usually 0. A cloth that drives mesh vertices writes the mesh's LOD count here instead"),
     ("unk54", "Unkn Param 2", 0x54, "I", False, 0, "Effect unknown. Usually 0"),
     ("unk5c", "Unkn Param 3", 0x5C, "I", False, 0, "Effect unknown. Usually 0"),
     ("unk60", "Unkn Param 4", 0x60, "I", False, 0, "Effect unknown. Common values: 0, 1, 65536, 131073, 196608"),
@@ -62,6 +63,15 @@ CALCULATE_MODES = [
     ("QUALITY", "Quality", "As Balance; any other difference is unknown", 3),
 ]
 
+# What the cloth moves in game (Kernel Flags bit 2 on for joints, off for mesh vertices; see modules/vertex_drive)
+DRIVE_MODES = [
+    ("JOINTS", "Joints", "The cloth moves the bones its Parts are made from; the mesh follows them by its weights"),
+    ("VERTICES", "Mesh Vertices",
+     "The cloth moves the mesh's vertices near it directly, in every LOD. The export reads them from the exported "
+     ".mesh, so export the mesh first and the .gpuc again after each mesh export"),
+]
+VERTEX_DRIVE_GAMES = {".241111760", ".250925365", ".260209505"}   # Wilds and RE9 experimental: no game file does it
+
 CLSP_COLLECTION_TYPE = "RE_CLSP_COLLECTION"        # the RE Chain Editor's imported .clsp
 
 
@@ -84,6 +94,16 @@ REE_GPUC_Header = type("REE_GPUC_Header", (bpy.types.PropertyGroup,), {
             description="A .clsp the RE Chain Editor imported, which the cloth will collide with in game: its "
                         "shapes name the CLSP Flags' bits and the preview collides with the ones a Part takes "
                         "(not written to the .gpuc)"),
+        "drive_mode": EnumProperty(name="Drive", items=DRIVE_MODES, default="JOINTS", update=_redraw_any,
+                                   description="What the cloth moves in game"),
+        "drive_distance": FloatProperty(
+            name="Drive Distance", default=0.02, min=0.0, soft_max=0.1, precision=3, unit="LENGTH",
+            description="Mesh vertices closer than this to the cloth's rest surface are driven. The mesh's vertex "
+                        "groups GPUC_Drive and GPUC_NoDrive force vertices in or out"),
+        "drive_slots": IntProperty(
+            name="Triangles per Vertex", default=4, min=1, max=8,
+            description="How many nearby cloth triangles each driven vertex follows, the nearest weighted most. 1 "
+                        "follows the nearest alone (creases may show where triangles meet); game files use 1 to 5"),
         **{name: (FloatProperty(name=label, default=default, precision=4, min=0.0, description=desc) if kind == "f"
                   else EnumProperty(name=label, items=CALCULATE_MODES, default=default, description=desc)
                   if kind == "E" else IntProperty(name=label, default=default, description=desc))

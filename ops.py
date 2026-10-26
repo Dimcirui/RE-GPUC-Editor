@@ -207,9 +207,10 @@ class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
     filter_glob: bpy.props.StringProperty(default="*.gpuc*", options={"HIDDEN"})
     target_collection: bpy.props.StringProperty(name="", description="The GPUC collection to export")
     mesh_collection: bpy.props.StringProperty(
-        name="", description="The RE Mesh Editor collection of the mesh this cloth belongs to. Its weighted bones "
-                             "give the driven joints' indices when no matching exported .mesh is found. Leave "
-                             "blank to use the armature's collection")
+        name="", description="The RE Mesh Editor collection of the mesh this cloth belongs to: its vertex groups "
+                             "GPUC_Drive / GPUC_NoDrive for a cloth that drives mesh vertices, and with Force "
+                             "Export and no matching .mesh, its weighted bones give the driven joints' indices. "
+                             "Leave blank to use the armature's collection")
     mesh_file: bpy.props.StringProperty(
         name="Mesh File", description="The exported .mesh whose weighted bones give the driven joints' indices "
                                       "(paste its full path). Blank: the same-name .mesh beside the .gpuc, else the "
@@ -218,6 +219,11 @@ class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
         name="Joint Indices", items=fileio.JOINT_INDICES, default="FILE",
         description="How driven joint indices are written. Cloth imported with Keep Structure defaults to As "
                     "Imported; cloth made from bones always uses From Mesh")
+    force_export: bpy.props.BoolProperty(
+        name="Force Export", default=False, options={"SKIP_SAVE"},
+        description="Export without an exported .mesh to check the cloth against: the driven joints' indices then "
+                    "come from the scene's weights, and a mesh that does not match makes the cloth behave wrongly "
+                    "in game. A cloth that drives mesh vertices still needs the .mesh")
 
     def invoke(self, context, event):
         coll = _settings(context).target
@@ -253,14 +259,19 @@ class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
             if self.joint_indices == "MESH":
                 self._draw_mesh(layout)
             return
-        layout.label(text="Joint Indices: From Mesh (cloth made from bones)")
+        head = props.header(coll) if coll is not None else None
+        if head is not None and head.ree_gpuc_header.drive_mode == "VERTICES":
+            layout.label(text="Drives mesh vertices: read from the exported .mesh", icon="INFO")
+        else:
+            layout.label(text="Joint Indices: From Mesh (cloth made from bones)")
         self._draw_mesh(layout)
 
     def _draw_mesh(self, layout):
         # a text field: a file path button would open a second file browser inside this one
         layout.label(text="Mesh File (blank: same name beside):")
         layout.prop(self, "mesh_file", text="")
-        layout.label(text="Mesh Collection (no matching .mesh):")
+        layout.prop(self, "force_export")
+        layout.label(text="Mesh Collection (blank: the armature's):")
         layout.prop_search(self, "mesh_collection", bpy.data, "collections")
 
     def execute(self, context):
@@ -271,14 +282,16 @@ class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
         if context.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
         try:
-            notes = fileio.export(coll, self.filepath, mesh, self.joint_indices, self.filename_ext, self.mesh_file)
+            notes = fileio.export(coll, self.filepath, mesh, self.joint_indices, self.filename_ext, self.mesh_file,
+                                  self.force_export)
         except fileio.ExportError as e:
             return refused(self, f"Not exported: {e}")
         for note in notes:
             self.report({"WARNING"}, note)
-        props.header(coll)[EXPORT_KEY] = self.filepath
-        context.scene[EXPORT_KEY] = self.filepath
-        self.report({"INFO"}, f"Exported {os.path.basename(self.filepath)}")
+        written = props.header(coll).get(fileio.EXPORTED_KEY, self.filepath)    # renamed after a matching .mesh
+        props.header(coll)[EXPORT_KEY] = written
+        context.scene[EXPORT_KEY] = written
+        self.report({"INFO"}, f"Exported {os.path.basename(written)}")
         return {"FINISHED"}
 
 

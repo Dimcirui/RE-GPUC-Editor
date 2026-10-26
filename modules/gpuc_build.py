@@ -316,7 +316,7 @@ def build(spec, template, skin_table, capsules=None, particle_radius=None, link_
 
     # output joints, one or more particle slots each
     # Slots per joint (header +0x38): at least MIN_SLOTS, since fewer crash the game's CPU solver.
-    S = max(MIN_SLOTS, max(len(o["particles"]) for o in spec.outputs))
+    S = max(MIN_SLOTS, max((len(o["particles"]) for o in spec.outputs), default=0))   # none: vertex_drive.apply
     sec24 = bytearray()
     sec25 = bytearray()
     for o in spec.outputs:

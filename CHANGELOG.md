@@ -1,5 +1,17 @@
 # Change Log
 
+## Unreleased
+
+### New
+- **Drive Mesh Vertices** — a Header setting: the cloth moves the mesh's vertices near it directly, in every LOD, instead of its bones, as some Onimusha files do. Experimental for Wilds and RE9. The export reads the vertices from the exported `.mesh` and is refused without it. Drive Distance picks the vertices; the vertex groups `GPUC_Drive` / `GPUC_NoDrive` force them in or out; Triangles per Vertex sets how many cloth triangles each one follows.
+
+- **Force Export** — in the export dialog, off by default. See below.
+
+### Changed
+- **Export needs the exported `.mesh`** — a cloth made from bones, and From Mesh joints, are checked against the exported `.mesh`: the one in Mesh File, else the same-name `.mesh` beside the `.gpuc`, else the one other `.mesh` there with the cloth's skeleton (the `.gpuc` then takes its name, and the export says so). Without one, or with one of another skeleton, the export is refused; Force Export exports anyway with the scene's weights, as before. The `.mesh` the last export used is no longer taken for a new export. Keep Structure exported As Imported needs no `.mesh`.
+- **Rebuild from Bones** — a part that is no bone grid now says so plainly (for example Onimusha `ch001_20_01`'s cloak, a free-form mesh).
+- **Onimusha files that drive mesh vertices** (`ch001_20_01`, `it442_0131_00`, `it442_0135_00`) now import with Keep Structure, and export back byte for byte, instead of being refused. Rebuild from Bones sets Drive Mesh Vertices from the file.
+
 ## 0.4.1
 
 ### New

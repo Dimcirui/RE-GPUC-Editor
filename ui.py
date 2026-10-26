@@ -341,6 +341,15 @@ class REE_GPUC_PT_object_header(_ObjectPanel, bpy.types.Panel):
         sub = col.column()
         sub.enabled = "ree_gpuc_raw" not in context.object.keys()     # Keep Structure: the game is the file's
         sub.prop(h, "game")
+        keep = "ree_gpuc_raw" in context.object.keys()
+        if h.game in props.VERTEX_DRIVE_GAMES and not keep:
+            sub = col.column()
+            sub.prop(h, "drive_mode")
+            if h.drive_mode == "VERTICES":
+                if h.game != ".260209505":
+                    sub.label(text="Experimental", icon="EXPERIMENTAL")
+                sub.prop(h, "drive_distance")
+                sub.prop(h, "drive_slots")
         fields = gpuc_params.header_fields(h.game)
         for name, label, _, kind, known, _, _ in props.HEADER_FIELDS:
             if name not in fields:

@@ -44,7 +44,7 @@ To update, uninstall the old version first. Earlier versions were installed as `
 4. Set particle values in the Particles panel: "Paint" paints the chosen value as vertex weights, "Set on Selected" sets an exact value. Weights 0 to 1 map to the Part's Mapping Range.
 5. Configure the Header, Configs, Parts and colliders in the Object properties tab, or apply presets.
 6. (Optional) Preview under GPUC: Preview Simulation > Simulate.
-7. Export the mesh with the RE Mesh Editor, then export the cloth with "Export" under GPUC: General Tools, next to the mesh or with its path in Mesh File. The driven joints' indices come from that `.mesh`; without one, the export uses the scene's weights and warns.
+7. Export the mesh with the RE Mesh Editor, then export the cloth with "Export" under GPUC: General Tools. The export checks the cloth against the exported `.mesh`: the one in Mesh File, else the same-name `.mesh` beside the `.gpuc`, else the one other `.mesh` there with the cloth's skeleton, whose name the `.gpuc` then takes. Without one it is refused; Force Export exports anyway, the driven joints' indices then taken from the scene's weights. A Keep Structure cloth exported As Imported needs no `.mesh`.
 
 After you move bones in Edit Mode, the affected Parts rebuild when you leave it. "Check" reports problems with every Part of the active cloth.
 
@@ -56,6 +56,18 @@ After you move bones in Edit Mode, the affected Parts rebuild when you leave it.
 * **Update Existing**: applies the file's values to an existing GPUC collection.
 
 A cloth generated from bones or imported with Rebuild from Bones can be converted between Wilds, RE9 and Onimusha by changing the Game in its Header.
+
+</details>
+
+<details>
+  <summary>Driving mesh vertices (experimental)</summary>
+
+By default the cloth moves the bones its Parts are made from. With Drive set to Mesh Vertices in the Header, it moves the mesh's vertices near it directly, in every LOD, as some Onimusha files do. It is experimental for Wilds and RE9, where no game file does this.
+
+* The export reads the vertices from the exported `.mesh` (Mesh File, else the same-name `.mesh` beside the `.gpuc`), so export the mesh first, and the `.gpuc` again after every mesh export. Without the `.mesh` the export is refused.
+* Vertices closer than Drive Distance to the cloth's rest surface are driven. Vertex groups on the mesh force vertices in (`GPUC_Drive`) or out (`GPUC_NoDrive`); only the LODs imported into the scene can use them.
+* Each driven vertex follows up to Triangles per Vertex nearby cloth triangles, the nearest weighted most.
+* Onimusha files that drive vertices import with Keep Structure. Rebuild from Bones sets Drive and its values from the file.
 
 </details>
 

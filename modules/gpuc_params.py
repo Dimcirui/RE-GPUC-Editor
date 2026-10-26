@@ -39,8 +39,11 @@ RE9_ONLY = {"unk0c": (0x0C, "i"), "unk10": (0x10, "i"), "unk14": (0x14, "i"), "u
 # names). batch_infos counts section 7's entries, sim_lod_one section 13's; the game's files have interpolations,
 # restrictions (blend infos) and the two self-collision contact desc counts 0, sim_deform_weights 1, and the
 # generator writes none of them
+# drive_vertices: the mesh's vertex count in a file that drives mesh vertices, 0 otherwise (its LOD count is at 0x40,
+# the header's unk40: ``drive_lods``)
 HEADER_WILDS = {**{name: off for off, name in gpuc.WILDS_COUNTS.items()}, "batch_infos": 0x28, "configs": 0x2C,
-                "sim_lods": 0x30, "sim_lod_one": 0x44, "interpolations": 0x48, "restrictions": 0x4C,
+                "sim_lods": 0x30, "drive_vertices": 0x3C,
+                "sim_lod_one": 0x44, "interpolations": 0x48, "restrictions": 0x4C,
                 "sim_deform_weights": 0x50, "point_triangle_contacts": 0x84, "edge_edge_contacts": 0x88,
                 "bounds": 0x90}
 
@@ -80,6 +83,11 @@ def header_fields(ext: str) -> dict:
 def offset_of(ext: str, name: str) -> int:
     """Where a game's header keeps a count or a written value (HEADER_WILDS' names)."""
     return _offset(ext, HEADER_WILDS[name])
+
+
+def drive_lods(ext: str) -> int:
+    """Where a file that drives mesh vertices keeps the mesh's LOD count: the header's unk40."""
+    return header_fields(ext)["unk40"][0]
 
 
 def ext_of(layout) -> str:

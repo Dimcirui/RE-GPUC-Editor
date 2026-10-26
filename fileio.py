@@ -12,7 +12,9 @@ Maintenance constraints:
   mesh's weighted bones: the exported .mesh's own remap when one matching the armature is found, else the scene's
   (``weighted_bones``), as the RE Mesh Editor builds its remap (``export_weighted``).
 - Generated exports wind faces so particle normals point out; space limits and backstops are measured along them.
-- Exports keep Kernel Flags bit 2 (MeshMultiJointDeform): ``gpuc_build`` lays out sections 23 to 26 for it."""
+- Exports keep Kernel Flags bit 2 (MeshMultiJointDeform): ``gpuc_build`` lays out sections 23 to 26 for it. A cloth
+  that drives mesh vertices (header Drive) clears it and ``vertex_drive`` lays out sections 23, 24 and 27 instead,
+  from the exported .mesh's vertices (``mesh_file_vertices``)."""
 import base64
 import collections
 import importlib
@@ -26,7 +28,7 @@ import numpy as np
 from mathutils import Matrix
 
 from . import canon, collision, generate, props, reference, weld
-from .modules import gpuc, gpuc_build, gpuc_params as gp, grid, re4
+from .modules import gpuc, gpuc_build, gpuc_params as gp, grid, re4, vertex_drive
 
 ROTATE_BACK = np.array(Matrix.Rotation(math.radians(-90.0), 4, "X"), float)
 GAMES = props.GAMES
@@ -250,19 +252,81 @@ def companion_mesh(gpuc_path: str) -> tuple:
     return (os.path.join(folder, found[0]), "") if found else ("", f"no {stem}.mesh found beside the .gpuc")
 
 
-def find_mesh(coll, mesh_file: str = "", gpuc_path: str = "") -> tuple:
+def find_mesh(coll, mesh_file: str = "", gpuc_path: str = "", last: bool = True) -> tuple:
     """Return (the .mesh to take joint indices from, else "", why none): ``mesh_file``, else the one beside
-    ``gpuc_path`` (blank: the cloth's last export or import), else the one the last export used."""
+    ``gpuc_path`` (blank: the cloth's last export or import), else (``last``) the one the last export used."""
     if mesh_file:
         path = bpy.path.abspath(mesh_file)
         return (path, "") if os.path.isfile(path) else ("", f"Mesh File {path} does not exist")
     head = props.header(coll)
     gpuc_path = gpuc_path or (str(head.get(EXPORTED_KEY, "") or head.get(SOURCE_KEY, "")) if head else "")
     path, why = companion_mesh(gpuc_path) if gpuc_path else ("", "no .mesh found (the cloth has no file yet)")
-    last = bpy.path.abspath(str(head.get(MESH_FILE_KEY, ""))) if head and head.get(MESH_FILE_KEY) else ""
-    if not path and last and os.path.isfile(last):
-        return last, ""
+    used = bpy.path.abspath(str(head.get(MESH_FILE_KEY, ""))) if last and head and head.get(MESH_FILE_KEY) else ""
+    if not path and used and os.path.isfile(used):
+        return used, ""
     return path, why
+
+
+def matching_meshes(folder: str, arm) -> list:
+    """The ``*.mesh.<number>`` files in ``folder`` whose skeleton is ``arm``'s, by name."""
+    bones = [b.name for b in arm.data.bones]
+    out = []
+    try:
+        names = sorted(os.listdir(folder or "."))
+    except OSError:
+        return out
+    for n in names:
+        stem, _, number = n.rpartition(".")
+        if not stem.endswith(".mesh") or not number.isdigit() or not os.path.isfile(os.path.join(folder, n)):
+            continue
+        try:
+            if mesh_file_bones(os.path.join(folder, n))[0] == bones:
+                out.append(os.path.join(folder, n))
+        except ExportError:
+            continue
+    return out
+
+
+FORCE_HINT = "or turn on Force Export to export without one"
+
+
+def export_mesh(coll, path: str, mesh_file: str = "") -> tuple:
+    """Return (the .mesh an export calibrates against, the path to export to, notes); raises ``ExportError``.
+    ``mesh_file``, else the same-name .mesh beside ``path``; its skeleton must be the cloth armature's. Without
+    either, the one .mesh beside ``path`` with the armature's skeleton, and the .gpuc takes its name."""
+    arm = _cloth_armature(coll)
+    if arm is None:
+        raise ExportError("the cloth has no armature to match a .mesh against")
+    found, why = find_mesh(coll, mesh_file, path, last=False)
+    if found:
+        try:
+            if mesh_file_bones(found)[0] != [b.name for b in arm.data.bones]:
+                raise ExportError("its skeleton is not the cloth armature's")
+        except ExportError as e:
+            raise ExportError(f"{os.path.basename(found)} does not match this cloth: {e}. Export the mesh this cloth "
+                              f"belongs to, {FORCE_HINT}") from e
+        return found, path, []
+    if mesh_file:
+        raise ExportError(f"{why}: {FORCE_HINT}")
+    folder = os.path.dirname(bpy.path.abspath(path))
+    others = matching_meshes(folder, arm)
+    if len(others) > 1:
+        raise ExportError(f"{why}, and {len(others)} other meshes there have the cloth's skeleton "
+                          f"({', '.join(os.path.basename(o) for o in others[:3])}): paste the one into Mesh File, "
+                          f"{FORCE_HINT}")
+    if not others:
+        raise ExportError(f"{why}, and no other .mesh there has the cloth's skeleton. Export the mesh beside it, paste "
+                          f"its path into Mesh File, {FORCE_HINT}")
+    stem = os.path.basename(others[0]).split(".mesh.")[0]
+    name = os.path.basename(path)
+    renamed = os.path.join(folder, stem + (name[name.find(".gpuc"):] if ".gpuc" in name else os.path.splitext(name)[1]))
+    return others[0], renamed, [f"Found {os.path.basename(others[0])} beside it (no same-name .mesh): exported as "
+                                f"{os.path.basename(renamed)}"]
+
+
+def _cloth_armature(coll):
+    arm = generate._armature(coll)
+    return arm if arm is not None and arm.type == "ARMATURE" else None
 
 
 def _mesh_reader():
@@ -312,6 +376,139 @@ def mesh_file_bones(path: str) -> tuple:
     return names, [names[i] for i in remap]
 
 
+def mesh_file_vertices(path: str) -> tuple:
+    """Return (every LOD's vertices in the .mesh's vertex-buffer order (V, 3) in game space, each vertex's LOD, the
+    LOD count); raises ``ExportError``. Reads the whole mesh with RE Mesh Editor (its streaming half too)."""
+    m = _mesh_reader()
+    if m is None:
+        raise ExportError("RE Mesh Editor is not enabled to read the .mesh")
+    try:
+        parse = importlib.import_module(m.__name__.rsplit(".", 1)[0] + ".re_mesh_parse")
+        mesh = m.readREMesh(path)
+        parsed = parse.ParsedREMesh()
+        parsed.ParseREMesh(mesh, {"importAllLOD": True, "importShadowMesh": False, "importOcclusionMesh": False,
+                                  "importBlendShapes": False})
+    except Exception as e:
+        raise ExportError(f"{os.path.basename(path)} cannot be read ({e})") from e
+    runs = {}
+    for li, lod in enumerate(parsed.mainMeshLODList):
+        for group in lod.visconGroupList:
+            for sub in group.subMeshList:
+                if sub.isReusedMesh or int(sub.meshVertexOffset) in runs:
+                    continue
+                runs[int(sub.meshVertexOffset)] = (li, np.asarray(sub.vertexPosList, float).reshape(-1, 3))
+    count = max((off + len(v) for off, (_, v) in runs.items()), default=0)
+    if not count:
+        raise ExportError(f"{os.path.basename(path)} has no vertices")
+    pos, lod_of, seen = np.zeros((count, 3)), np.zeros(count, np.int64), np.zeros(count, bool)
+    for off, (li, v) in runs.items():
+        pos[off:off + len(v)], lod_of[off:off + len(v)], seen[off:off + len(v)] = v, li, True
+    if not seen.all():
+        raise ExportError(f"{os.path.basename(path)}: {int((~seen).sum())} vertices belong to no submesh")
+    return pos, lod_of, len(parsed.mainMeshLODList)
+
+
+DRIVE_GROUPS = ("GPUC_Drive", "GPUC_NoDrive")     # vertex groups forcing mesh vertices in / out of a vertex drive
+
+
+def drive_overrides(mesh_coll, arm, pos, lod_of) -> tuple:
+    """Return (forced in, forced out masks over the .mesh's vertices, the number in the scene's LODs without a
+    match, the .mesh's LODs the scene lacks): each vertex takes the DRIVE_GROUPS of the scene vertices of its LOD at
+    the same game-space place (within 0.1 mm). A mesh collection without "Main Mesh LOD"
+    children is LOD0 alone (the RE Mesh Editor's default import). Without a mesh collection nothing is forced."""
+    on, off = np.zeros(len(pos), bool), np.zeros(len(pos), bool)
+    if mesh_coll is None:
+        return on, off, None, []
+    from mathutils import kdtree
+    lods = sorted((c for c in mesh_coll.children if "Main Mesh LOD" in c.name), key=lambda c: c.name) or [mesh_coll]
+    to_game = ROTATE_BACK
+    unmatched = np.zeros(len(pos), bool)
+    missing = [li for li in range(len(lods), int(lod_of.max()) + 1)]
+    for li, lod in enumerate(lods):
+        sel = np.flatnonzero(lod_of == li)
+        if not len(sel):
+            continue
+        entries = []
+        for obj in lod.objects:
+            if obj.type != "MESH" or obj.get("MeshExportExclude"):
+                continue
+            groups = {g.index: g.name for g in obj.vertex_groups if g.name in DRIVE_GROUPS}
+            mat = to_game @ np.array(obj.matrix_world, float)
+            for v in obj.data.vertices:
+                names = {groups[ge.group] for ge in v.groups if ge.group in groups and ge.weight > 0}
+                entries.append(((mat @ np.r_[v.co, 1.0])[:3], names))
+        if not entries:
+            unmatched[sel] = True
+            continue
+        tree = kdtree.KDTree(len(entries))
+        for k, (co, _) in enumerate(entries):
+            tree.insert(co, k)
+        tree.balance()
+        for i in sel:
+            found = tree.find_range(pos[i], 1e-4)        # every scene vertex there: a seam's copies share a place
+            if not found:
+                unmatched[i] = True
+                continue
+            names = set().union(*(entries[k][1] for _, k, _ in found))
+            on[i] = DRIVE_GROUPS[0] in names
+            off[i] = DRIVE_GROUPS[1] in names
+    return on, off, int(unmatched.sum()), missing
+
+
+def vertex_drive_info(raw: bytes):
+    """A vertex-driving .gpuc's (J, S, the mesh's vertex count, its LOD count, each vertex's output), else None."""
+    if re4.matches(raw):
+        return None
+    g = gpuc.Gpuc(raw)
+    ext = gp.ext_of(g.layout)
+    if struct.unpack_from("<I", raw, gp.header_fields(ext)["kernel_flags"][0])[0] & 4:
+        return None
+    c = g.counts()
+    V, L = (struct.unpack_from("<I", raw, off)[0] for off in (gp.offset_of(ext, "drive_vertices"), gp.drive_lods(ext)))
+    if not c["joints"] or not V or 27 not in g.sections:
+        return None
+    return c["joints"], c["joint_slots"], V, L, vertex_drive.read_map(g.sections[27].data, V)
+
+
+def _drive_vertices(g, head, coll, arm, mesh_coll, mesh_path, notes) -> None:
+    """Make the built file ``g`` drive the mesh's vertices (``vertex_drive.apply``); raises ``ExportError``."""
+    h = head.ree_gpuc_header
+    if not mesh_path:
+        raise ExportError("Drive Mesh Vertices needs the exported .mesh: export the mesh, then put its path in Mesh "
+                          "File or the .gpuc beside it")
+    pos, lod_of, lods = mesh_file_vertices(mesh_path)
+    ppos, tris = vertex_drive.particles_and_triangles(g)
+    near = vertex_drive.distances(pos, vertex_drive.tri_frames(ppos, tris)).min(1)
+    on, off, unmatched, missing = drive_overrides(mesh_coll or (mesh_collection(arm) if arm else None), arm, pos,
+                                                  lod_of)
+    driven = np.flatnonzero(((near < h.drive_distance) | on) & ~off)
+    name = os.path.basename(mesh_path)
+    if not len(driven):
+        raise ExportError(f"no vertex of {name} lies within {h.drive_distance * 100:.1f} cm of the cloth: raise "
+                          f"Drive Distance or add vertices to the GPUC_Drive group")
+    tri, u, v, hh, w = vertex_drive.bind(pos[driven], ppos, tris, h.drive_slots)
+    ext = gp.ext_of(g.layout)
+    vertex_drive.apply(g, len(pos), lods, driven, (tri, u, v, hh, w), gp.offset_of(ext, "drive_vertices"),
+                       gp.drive_lods(ext))
+    q = vertex_drive.decode(g.sections[24].data, len(driven), h.drive_slots)
+    err = np.linalg.norm(vertex_drive.evaluate(ppos, tris, *q) - pos[driven], axis=1)
+    per_lod = ", ".join(f"LOD{k} {int((lod_of[driven] == k).sum())}/{int((lod_of == k).sum())}" for k in range(lods))
+    notes.append(f"Drives {len(driven)} vertices of {name} ({per_lod})")
+    if unmatched is None:
+        notes.append("No mesh collection: the vertex groups GPUC_Drive / GPUC_NoDrive were not read")
+    elif unmatched:
+        notes.append(f"{unmatched} vertices of {name} match no scene vertex: their vertex groups are not read (is "
+                     f"the scene's mesh the one exported?)")
+    if missing and (on.any() or off.any()):
+        notes.append(f"LOD{', LOD'.join(map(str, missing))} not in the scene: their vertices go by Drive Distance "
+                     f"alone (import the mesh with all LODs to use the vertex groups there)")
+    if err.max() > 1e-3:
+        notes.append(f"{int((err > 1e-3).sum())} driven vertices sit up to {err.max() * 1000:.1f} mm off after "
+                     f"packing (far from the cloth?)")
+    if ext != gp.ONI_EXT:
+        notes.append(f"Drive Mesh Vertices is experimental for {game_name(ext)}: no game file of it drives vertices")
+
+
 def export_weighted(coll, arm, mesh_coll, mesh_file, gpuc_path, notes) -> list[str]:
     """Return the weighted bones that index the driven joints: the .mesh's (``find_mesh``) when its skeleton is the
     armature's; else, with a note, the scene's (``weighted_bones``). Raises ``ExportError`` with neither."""
@@ -334,12 +531,22 @@ def export_weighted(coll, arm, mesh_coll, mesh_file, gpuc_path, notes) -> list[s
     return weighted_bones(mesh_armature_or(mesh_coll, arm), mesh_coll)
 
 
-def export(coll, path: str, mesh_coll=None, joints: str = "FILE", game: str = "", mesh_file: str = "") -> list[str]:
+def export(coll, path: str, mesh_coll=None, joints: str = "FILE", game: str = "", mesh_file: str = "",
+           force: bool = False) -> list[str]:
     """Write the cloth as a .gpuc of ``game`` (blank: the header's) and return notes; raises ``ExportError``.
-    A Keep Structure cloth is written over its stored file; ``mesh_coll`` and ``mesh_file`` then only serve From
-    Mesh joints. The .mesh found (``find_mesh``) is remembered for later exports and Wilds-Dynamics."""
-    found = find_mesh(coll, mesh_file, path)[0]
-    data, notes = build_bytes(coll, mesh_coll, joints, game, found, path)
+    A cloth made from bones, and From Mesh joints, calibrate against the exported .mesh (``export_mesh``), which
+    may rename the file (the header's EXPORTED_KEY is the path written); ``force`` exports without one, the joints
+    then taken from the scene's weights. A Keep Structure cloth As Imported needs none. The .mesh found is
+    remembered for later exports and Wilds-Dynamics."""
+    notes = []
+    if keeps_structure(coll) and joints != "MESH":
+        found = ""
+    elif force or _cloth_armature(coll) is None:          # no armature: build_bytes says why it cannot export
+        found = find_mesh(coll, mesh_file, path)[0]
+    else:
+        found, path, notes = export_mesh(coll, path, mesh_file)
+    data, more = build_bytes(coll, mesh_coll, joints, game, found, path)
+    notes = notes + more
     with open(path, "wb") as f:
         f.write(data)
     head = props.header(coll)
@@ -402,7 +609,10 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT, mes
         problems = generate.check(obj)
         if problems:
             raise ExportError(f"{obj.name}: {problems[0]} (regenerate it)")
-    weighted = export_weighted(coll, arm, mesh_coll, mesh_file, gpuc_path, notes)
+    vertices = head.ree_gpuc_header.drive_mode == "VERTICES"
+    if vertices and ext not in props.VERTEX_DRIVE_GAMES:
+        raise ExportError(f"{game_name(ext)} cloth cannot drive mesh vertices: set Drive to Joints")
+    weighted = [] if vertices else export_weighted(coll, arm, mesh_coll, mesh_file, gpuc_path, notes)
     bones = [b.name for b in arm.data.bones]
     to_game = ROTATE_BACK @ np.array(arm.matrix_world, float)
 
@@ -452,7 +662,7 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT, mes
             for j, x in zip(d["skin"][i], w / max(w.sum(), 1e-9)):
                 if x > 0:
                     skinned[d["nodes"][j]].append((base + i, float(x)))
-        for name in d["nodes"]:
+        for name in d["nodes"] if not vertices else ():
             if name not in weighted:
                 notes.append(f"{name} has no weights in the mesh: it is not driven")
                 continue
@@ -480,7 +690,7 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT, mes
         total = sum(x for _, x in keep)
         o["particles"], o["weights"] = [p for p, _ in keep], [x / total for _, x in keep]
     outputs.sort(key=lambda o: o["full"])
-    if not outputs:
+    if not outputs and not vertices:
         raise ExportError("no bone of the cloth has weights in the mesh: nothing would move")
     spec = gpuc_build.ClothSpec(np.vstack(positions), np.concatenate(sim_weight), skin_bones, skin_w, faces, uvs,
                                 outputs, np.concatenate(bend))
@@ -491,7 +701,7 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT, mes
     g = gpuc.Gpuc(out, layout)
     for i in gpuc_build.PACKED:                               # parsing infers 16 from a start on 16; these pack at 4
         g.sections[i].align = 4
-    _write_blocks(g, head.ree_gpuc_header, cfg_objs, part_objs, part_vals, notes, arm)
+    _write_blocks(g, head.ree_gpuc_header, cfg_objs, part_objs, part_vals, notes, arm, vertices=vertices)
     _write_capsules(g, coll, arm, notes)
     # one batch info and sim LOD (the generator's); no interpolation, restriction or self-collision contact;
     # simulation deform weights 1, as in game files
@@ -499,6 +709,8 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT, mes
                     ("restrictions", 0), ("sim_deform_weights", 1), ("point_triangle_contacts", 0),
                     ("edge_edge_contacts", 0)):
         struct.pack_into("<I", g.header, gp.offset_of(ext, name), v)
+    if vertices:
+        _drive_vertices(g, head, coll, arm, mesh_coll, find_mesh(coll, mesh_file, gpuc_path)[0], notes)
     data = g.build()
     gpuc.Gpuc(data, layout)                                   # raises if the output does not parse back
     return data, list(dict.fromkeys(notes))
@@ -535,7 +747,8 @@ def _build_keep(coll, head, cfg_objs, part_objs, from_mesh=False, mesh_coll=None
     arm = next((o.ree_gpuc_part.armature for o in part_objs if o.ree_gpuc_part.armature), None)
     vals = [canon.values(o) for o in part_objs]
     starts = [int(np.argmax(f_part == k)) for k in range(len(part_objs))]        # each part's run, where it lies
-    _write_blocks(g, head.ree_gpuc_header, cfg_objs, part_objs, vals, notes, arm, starts)
+    vertices = vertex_drive_info(stored_file(coll)) is not None
+    _write_blocks(g, head.ree_gpuc_header, cfg_objs, part_objs, vals, notes, arm, starts, vertices)
     # each link's tail: the links of a part in the file's order, as the import took them
     tails = [canon.link_tails(o, canon.load(o)) for o in part_objs]
     taken = [0] * len(part_objs)
@@ -733,12 +946,16 @@ def _contiguous(part_of) -> bool:
     return all(np.ptp(idx) + 1 == len(idx) for idx in (np.where(part_of == p)[0] for p in np.unique(part_of)))
 
 
-def _write_blocks(g, h, cfg_objs, part_objs, part_vals, notes, arm=None, starts=None) -> None:
+def _write_blocks(g, h, cfg_objs, part_objs, part_vals, notes, arm=None, starts=None, vertices=False) -> None:
+    """``vertices``: the file drives mesh vertices, so Kernel Flags bit 2 is cleared instead of set."""
     header = g.header
     game = gp.ext_of(g.layout)
     values = {name: getattr(h, name) for name in gp.header_fields(game)}
     values["calculate_mode"] = h.bl_rna.properties["calculate_mode"].enum_items[h.calculate_mode].value
-    if not values["kernel_flags"] & 4:
+    if vertices and values["kernel_flags"] & 4:
+        notes.append("Kernel Flags: Mesh Multi Joint Deform turned off (the cloth drives mesh vertices)")
+        values["kernel_flags"] &= ~4
+    elif not vertices and not values["kernel_flags"] & 4:
         notes.append("Kernel Flags: Mesh Multi Joint Deform kept on (the exported file requires it)")
         values["kernel_flags"] |= 4
     gp.write_header(header, values, game)
@@ -870,7 +1087,7 @@ def file_parts(raw: bytes) -> dict:
             "part_of": p0[:, 0x28:0x2C].copy().view("<u4")[:, 0].astype(np.int64), "normal": normal,
             "skin": np.array(skin_idx, np.int64), "skin_w": np.array(skin_w, float), "tris": tris,
             "tri_uv": tri_uv, "links": links, "joints": joints, "caps": caps, "frames": frames,
-            "flags": flags,
+            "flags": flags, "vertex": None if flags & 4 else vertex_drive_info(raw),
             "values": {field: p0[:, off:off + 4].copy().view("<f4")[:, 0].astype(np.float32)
                        for field, off in gp.PARTICLE_VALUES.items()}}
 
@@ -969,9 +1186,9 @@ def check_keep(f: dict, arm, mesh_coll, path: str = "") -> tuple:
     does not fit. The .mesh beside ``path`` (``mesh_weighted``) settles joints on bones that share a place."""
     notes = []
     bones = [b.name for b in arm.data.bones]
-    if not f["flags"] & 4:
-        raise ImportProblem("its Kernel Flags lack Mesh Multi Joint Deform, a deform layout this editor does not "
-                            "read")
+    if not f["flags"] & 4 and f["vertex"] is None:
+        raise ImportProblem("its Kernel Flags lack Mesh Multi Joint Deform and it drives no mesh vertices the "
+                            "editor reads")
     used = f["skin"][f["skin"] >= 0]
     if len(used) and used.max() >= len(bones):
         raise ImportProblem(f"its skinning names bone {int(used.max())}, the armature has {len(bones)}: pick the "
@@ -1013,9 +1230,9 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
     if arm is not None:
         joints, notes = check_keep(f, arm, mesh_coll, path)
     else:
-        if not is_re4 and not f["flags"] & 4:
-            raise ImportProblem("its Kernel Flags lack Mesh Multi Joint Deform, a deform layout this editor does "
-                                "not read")
+        if not is_re4 and not f["flags"] & 4 and f["vertex"] is None:
+            raise ImportProblem("its Kernel Flags lack Mesh Multi Joint Deform and it drives no mesh vertices the "
+                                "editor reads")
         joints, notes = [], [NO_MESH]
     if not _contiguous(f["part_of"]):
         raise ImportProblem("a part's particles are not all together")
@@ -1071,6 +1288,9 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
             obj[ROOT_HASH_KEY] = gp.signed(block["root_hash"])
     _keep_capsules(coll, arm, f["caps"], by_hash, notes)
     _keep_welds(coll, f, notes)                       # after the collisions: the chain editor's order
+    if f.get("vertex"):
+        J, S, V, L, _ = f["vertex"]
+        notes.append(f"It drives {J} of {V} mesh vertices ({L} LODs) directly; the bindings are kept from the file")
     if is_re4:
         notes = ["RE4: the original skinning, output bindings and collisions are kept from the file and not editable",
                  "RE4 Config values are named by their offset in the file; their effects are unknown",
@@ -1154,7 +1374,10 @@ def _recognise(f: dict, i: int, bones: list) -> tuple:
         if found:
             break
     if found is None:
-        return None, "its links are not a grid's as the editor makes them", None
+        alone = int(((f["skin_w"][sel] > 0).sum(1) == 1).sum())
+        why = (f"its {n} particles and their links form no rows-by-columns grid of the kind the editor makes from "
+               f"bone chains")
+        return None, why + ("" if alone else " (a free-form mesh: no particle follows one bone alone)"), None
     rows, cols, closed, bend, gl = found
     skin, sw = f["skin"][sel], f["skin_w"][sel]
     single = {k for k in range(n) if (sw[k] > 0).sum() == 1}
@@ -1255,6 +1478,8 @@ def import_rebuild(path: str, mesh_coll, force: bool = False) -> tuple:
     set_asset_path(coll, path)
     head.ree_gpuc_header.game = r["ext"]
     _set_header(head.ree_gpuc_header, r["header"], notes)
+    if f["vertex"]:
+        _rebuild_drive(head.ree_gpuc_header, f, path, notes)
     cfg_objs = _set_configs(coll, arm, r["configs"], notes)
     placed, more = reference.resolve(coll, arm, _joint_hashes(f, r))
     by_hash.update(placed)
@@ -1314,6 +1539,34 @@ def import_rebuild(path: str, mesh_coll, force: bool = False) -> tuple:
     return coll, list(dict.fromkeys(notes))
 
 
+def _rebuild_drive(h, f, path, notes) -> None:
+    """Set a rebuilt cloth to drive mesh vertices as the file does: its triangles per vertex, and a Drive Distance
+    between its driven and other vertices of the .mesh beside it when one distance parts them."""
+    J, S, V, L, out = f["vertex"]
+    h.drive_mode = "VERTICES"
+    h.drive_slots = min(max(S, 1), vertex_drive.MAX_SLOTS)
+    mesh, why = companion_mesh(path)
+    try:
+        if not mesh:
+            raise ExportError(why)
+        pos, _, _ = mesh_file_vertices(mesh)
+        if len(pos) != V:
+            raise ExportError(f"it has {len(pos)} vertices, the .gpuc drives a mesh of {V}")
+    except ExportError as e:
+        notes.append(f"Drive Distance left at {h.drive_distance * 100:.1f} cm: {e}")
+        return
+    near = vertex_drive.distances(pos, vertex_drive.tri_frames(f["pos"], f["tris"])).min(1)
+    drv = out >= 0
+    inside, outside = near[drv].max(initial=0.0), near[~drv].min(initial=np.inf)
+    if inside < outside:
+        h.drive_distance = float(min((inside + outside) / 2, inside + 0.01))
+    else:
+        notes.append(f"No one Drive Distance gives the file's driven vertices ({int(drv.sum())}): its vertices "
+                     f"{inside * 100:.2f} cm and {outside * 100:.2f} cm from the cloth differ in it; use the vertex "
+                     f"groups GPUC_Drive / GPUC_NoDrive")
+        h.drive_distance = float(inside + 1e-4)
+
+
 # --- comparing structures -----------------------------------------------------------------------------------
 
 def fingerprint(raw: bytes, bones=None, weighted=None, arm=None) -> dict:
@@ -1328,9 +1581,10 @@ def fingerprint(raw: bytes, bones=None, weighted=None, arm=None) -> dict:
     ids = joint_bones(f, arm)[0] if arm is not None else [j["palette"] for j in f["joints"]]
     joints = sorted((str(k), tuple(sorted((int(cp), round(float(w), 3)) for cp, w in j["drivers"])))
                     for k, j in zip(ids, f["joints"]))
+    driven = tuple(np.flatnonzero(f["vertex"][4] >= 0).tolist()) if f.get("vertex") else None
     return {"parts": np.bincount(f["part_of"]).tolist(), "tris": {tuple(sorted(t)) for t in f["tris"].tolist()},
             "links": {(min(a, b), max(a, b), t) for a, b, t, _ in f["links"]}, "pos": f["pos"], "skin": skin,
-            "joints": joints, "caps": [(ha, hb) for ha, hb, *_ in f["caps"]]}
+            "joints": joints, "caps": [(ha, hb) for ha, hb, *_ in f["caps"]], "driven": driven}
 
 
 def differences(a: dict, b: dict) -> list:
@@ -1352,6 +1606,9 @@ def differences(a: dict, b: dict) -> list:
         out.append(f"driven joints differ ({len(a['joints'])} / {len(b['joints'])})")
     if a["caps"] != b["caps"]:
         out.append(f"own capsules differ ({len(a['caps'])} / {len(b['caps'])})")
+    if a.get("driven") != b.get("driven"):
+        count = lambda d: "joints" if d is None else f"{len(d)} vertices"  # noqa: E731
+        out.append(f"driven mesh vertices differ ({count(a.get('driven'))} / {count(b.get('driven'))})")
     return out
 
 
