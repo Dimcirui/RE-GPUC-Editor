@@ -22,7 +22,7 @@ This addon allows for creating, editing, importing and exporting RE Engine GPU c
 | **Monster Hunter Wilds** | Full |
 | **Resident Evil Requiem (RE9)** | Full |
 | **Onimusha: Way of the Sword** | Full |
-| **Resident Evil 4** | Values edit only |
+| **Resident Evil 4** | New cloth from bones; imported files: values edit only |
 
 ## Requirements
 * [Blender 4.2 or higher](https://www.blender.org/download/) (5.1 recommended)
@@ -99,12 +99,17 @@ The GPUC: Presets panel saves Header, Config, Part, Collision, Weld and preview 
 <details>
   <summary>RE4</summary>
 
-RE4 supports Keep Structure only: it is used automatically on import and needs no Mesh Collection.
+**New cloth.** Create a cloth with the game RE4 and make Parts from bones as for the other games. The export writes a whole RE4 file: the particles are skinned by the exported `.mesh`'s weighted bones, so a matching `.mesh` is needed (or Force Export, which takes the scene's weights). Drive Mesh Vertices drives LOD0's vertices, as RE4's own files do.
 
-* You can edit the particles' Simulation weight, Collision radius, Inverse mass, Max distance and Backstop radius; the link settings; the Part's friction, bounce, stickiness and collision masks; and the Header's Max Velocity.
-* Config fields are named by their offset in the file (such as `RE4 value +0x24`). Their effects are unknown; they are not the Wilds fields of the same position.
-* Names, the number of Parts and Configs, bone bindings and colliders cannot be changed, and the simulation cannot be previewed.
+* Each Part's particle values (Simulation weight, Collision radius, Inverse mass, Max distance, Backstop radius), link settings, friction, bounce, stickiness and collision masks, the Configs' RE4 values and the Header's Max Velocity are written.
+* Config fields are named by their offset in the file (such as `RE4 value +0x24`). Their effects are unknown; they are not the Wilds fields of the same position. The Header's `RE4 value +0x44` and `+0x60` are unknown too.
+* Only capsules are written as colliders, each joint by its bone's name. The simulation cannot be previewed.
+
+**Imported files** use Keep Structure automatically and need no Mesh Collection.
+
+* You can edit the same values as above. Names, the number of Parts and Configs, bone bindings and colliders cannot be changed.
 * Export with RE4 selected and Joint Indices set to As Imported.
+* Rebuild from Bones does not take RE4 files yet.
 
 </details>
 

@@ -51,7 +51,7 @@ HEADER_FIELDS = (
 GAMES = [(".241111760", "MH Wilds", "Monster Hunter Wilds, .gpuc.241111760", 0),
          (".250925365", "RE9", "Resident Evil Requiem, .gpuc.250925365", 1),
          (".260209505", "Onimusha", "Onimusha: Way of the Sword, .gpuc.260209505", 3),
-         (".221108868", "RE4 (Keep Structure)", "Resident Evil 4, preservation-only .gpuc.221108868", 2)]
+         (".221108868", "RE4", "Resident Evil 4, .gpuc.221108868", 2)]
 # A new RE9 / Onimusha header's values where that game's most common ones differ from HEADER_FIELDS' defaults
 GAME_DEFAULTS = {".250925365": {"calculate_mode": "UNSET", "max_velocity": 0.1, "kernel_flags": 4, "unk7c": 0},
                  ".260209505": {"max_velocity": 0.1, "kernel_flags": 20}}
@@ -70,7 +70,8 @@ DRIVE_MODES = [
      "The cloth moves the mesh's vertices near it directly, in every LOD. The export reads them from the exported "
      ".mesh, so export the mesh first and the .gpuc again after each mesh export"),
 ]
-VERTEX_DRIVE_GAMES = {".241111760", ".250925365", ".260209505"}   # Wilds and RE9 experimental: no game file does it
+VERTEX_DRIVE_GAMES = {".241111760", ".250925365", ".260209505", ".221108868"}
+EXPERIMENTAL_DRIVE = {".241111760", ".250925365"}       # Wilds and RE9: no game file of theirs drives vertices
 
 CLSP_COLLECTION_TYPE = "RE_CLSP_COLLECTION"        # the RE Chain Editor's imported .clsp
 
@@ -94,6 +95,12 @@ REE_GPUC_Header = type("REE_GPUC_Header", (bpy.types.PropertyGroup,), {
             description="A .clsp the RE Chain Editor imported, which the cloth will collide with in game: its "
                         "shapes name the CLSP Flags' bits and the preview collides with the ones a Part takes "
                         "(not written to the .gpuc)"),
+        # RE4 header values of unknown effect (a cloth made from bones; Keep Structure keeps the file's)
+        "re4_unk44": IntProperty(name="RE4 value +0x44", default=0,
+                                 description="RE4 only. Effect unknown. 0 to 3 in game files, mostly 0"),
+        "re4_unk60": IntProperty(name="RE4 value +0x60", default=1,
+                                 description="RE4 only. Effect unknown (maybe iterations). 1 to 16 in game files, "
+                                             "mostly 1"),
         "drive_mode": EnumProperty(name="Drive", items=DRIVE_MODES, default="JOINTS", update=_redraw_any,
                                    description="What the cloth moves in game"),
         "drive_distance": FloatProperty(

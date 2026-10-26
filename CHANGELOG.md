@@ -6,6 +6,7 @@
 - **Drive Mesh Vertices** — a Header setting: the cloth moves the mesh's vertices near it directly, in every LOD, instead of its bones, as some Onimusha files do. Experimental for Wilds and RE9. The export reads the vertices from the exported `.mesh` and is refused without it. Drive Distance picks the vertices; the vertex groups `GPUC_Drive` / `GPUC_NoDrive` force them in or out; Triangles per Vertex sets how many cloth triangles each one follows.
 
 - **Force Export** — in the export dialog, off by default. See below.
+- **RE4 cloth from bones** — a cloth created for RE4 now exports as a whole RE4 file, its particles skinned by the exported `.mesh`'s weighted bones, driving joints or (Drive Mesh Vertices) LOD0's vertices. Capsules are its only colliders. The Header shows RE4's `+0x44` and `+0x60` (effect unknown). The game list names it RE4 instead of RE4 (Keep Structure).
 
 ### Changed
 - **Export needs the exported `.mesh`** — a cloth made from bones, and From Mesh joints, are checked against the exported `.mesh`: the one in Mesh File, else the same-name `.mesh` beside the `.gpuc`, else the one other `.mesh` there with the cloth's skeleton (the `.gpuc` then takes its name, and the export says so). Without one, or with one of another skeleton, the export is refused; Force Export exports anyway with the scene's weights, as before. The `.mesh` the last export used is no longer taken for a new export. Keep Structure exported As Imported needs no `.mesh`.

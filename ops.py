@@ -347,8 +347,6 @@ class REE_GPUC_OT_create_header(bpy.types.Operator):
 
     def execute(self, context):
         arm = bpy.data.objects.get(self.armature)
-        if self.game == fileio.re4.EXT:
-            return refused(self, "RE4 cloth cannot be created. Import an RE4 .gpuc with Keep Structure instead")
         if arm is None or arm.type != "ARMATURE":
             self.report({"ERROR"}, "Choose the armature the cloth is on")
             return {"CANCELLED"}

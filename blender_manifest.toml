@@ -3,7 +3,7 @@ schema_version = "1.0.0"
 id = "re_gpuc_editor"
 version = "0.4.1"
 name = "RE GPUC Editor"
-tagline = "Edit Wilds, RE9 and Onimusha GPU cloth; keep-structure RE4"
+tagline = "Edit Wilds, RE9, Onimusha and RE4 GPU cloth"
 maintainer = "Dimcirui"
 type = "add-on"
 

@@ -2,8 +2,8 @@
 as .gpuc.
 
 Wilds, RE9 and Onimusha files share blocks and records; their headers (``gp.header_fields``), RE9's skin indices
-(``gpuc.read_skin``) and Onimusha's section table differ. RE4 goes through Keep Structure only. The header's
-``game`` decides which layout an export writes.
+(``gpuc.read_skin``) and Onimusha's section table differ. RE4 files import with Keep Structure only; a cloth made
+from bones exports for RE4 through ``re4_build``. The header's ``game`` decides which layout an export writes.
 
 Maintenance constraints:
 - Game model space = ``ROTATE_BACK`` (-90 deg about X) x the armature's ``matrix_world`` x armature space, as the
@@ -28,7 +28,7 @@ import numpy as np
 from mathutils import Matrix
 
 from . import canon, collision, generate, props, reference, weld
-from .modules import gpuc, gpuc_build, gpuc_params as gp, grid, re4, vertex_drive
+from .modules import gpuc, gpuc_build, gpuc_params as gp, grid, re4, re4_build, vertex_drive
 
 ROTATE_BACK = np.array(Matrix.Rotation(math.radians(-90.0), 4, "X"), float)
 GAMES = props.GAMES
@@ -590,8 +590,6 @@ def build_bytes(coll, mesh_coll=None, joints: str = "FILE", game: str = "", mesh
                 raise ExportError("RE4 keeps its original skinning and output bindings: use As Imported")
             return _build_re4(coll, head, cfg_objs, part_objs)
         return _build_keep(coll, head, cfg_objs, part_objs, joints == "MESH", mesh_coll, mesh_file, gpuc_path)
-    if game == re4.EXT:
-        raise ExportError("RE4 supports Keep Structure imports only; new cloth generation is not supported")
     return _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, game, mesh_file, gpuc_path)
 
 
@@ -612,7 +610,8 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT, mes
     vertices = head.ree_gpuc_header.drive_mode == "VERTICES"
     if vertices and ext not in props.VERTEX_DRIVE_GAMES:
         raise ExportError(f"{game_name(ext)} cloth cannot drive mesh vertices: set Drive to Joints")
-    weighted = [] if vertices else export_weighted(coll, arm, mesh_coll, mesh_file, gpuc_path, notes)
+    is_re4 = ext == re4.EXT                  # RE4 skins by the mesh's weighted bones, so it needs them either way
+    weighted = [] if vertices and not is_re4 else export_weighted(coll, arm, mesh_coll, mesh_file, gpuc_path, notes)
     bones = [b.name for b in arm.data.bones]
     to_game = ROTATE_BACK @ np.array(arm.matrix_world, float)
 
@@ -696,6 +695,11 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT, mes
                                 outputs, np.concatenate(bend))
     skin_table = sorted({b for row, w in zip(skin_bones, skin_w) for b, x in zip(row, w) if x})
     link_tail = lambda typ, a, b: shapes.get((min(a, b), max(a, b), typ))  # noqa: E731
+    if is_re4:
+        data = _build_generated_re4(coll, head, arm, cfg_objs, part_objs, part_vals, spec, weighted, bones,
+                                    link_tail, starts, vertices, mesh_coll, find_mesh(coll, mesh_file, gpuc_path)[0],
+                                    notes)
+        return data, list(dict.fromkeys(notes))
     out = gpuc_build.build(spec, layout, skin_table, link_tail=link_tail, welds=_weld_links(coll, starts))
 
     g = gpuc.Gpuc(out, layout)
@@ -714,6 +718,79 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT, mes
     data = g.build()
     gpuc.Gpuc(data, layout)                                   # raises if the output does not parse back
     return data, list(dict.fromkeys(notes))
+
+
+def _build_generated_re4(coll, head, arm, cfg_objs, part_objs, part_vals, spec, weighted, bones, link_tail, starts,
+                         vertices, mesh_coll, mesh_path, notes) -> bytes:
+    """RE4 bytes for a cloth made from bones (``re4_build``): skin by the mesh's weighted bones, joints (452 layout)
+    or, with Drive Mesh Vertices, LOD0's vertices (328 layout); the header's RE4 values, the Parts' and Configs'."""
+    h = head.ree_gpuc_header
+    place = {name: k for k, name in enumerate(weighted)}
+    skin_remap = np.zeros((len(spec.positions), 8), np.int64)
+    for i, (row, w) in enumerate(zip(spec.skin_bones, spec.skin_w)):
+        for k, (b, x) in enumerate(zip(row, w)):
+            if not x:
+                continue
+            if bones[b] not in place:
+                raise ExportError(f"{bones[b]} skins particles but has no weights in the mesh: RE4 skins the cloth "
+                                  f"by the mesh's weighted bones")
+            skin_remap[i, k] = place[bones[b]]
+    if (spec.skin_w > 0).sum(1).max(initial=0) > 8:
+        raise ExportError("a particle has more than 8 skin bones (RE4 takes 8)")
+    pvalues = np.column_stack([np.concatenate([np.clip(v["sim_weight"], 0.0, 1.0) if f == "sim_weight" else v[f]
+                                               for v in part_vals]) for f in re4.PARTICLE_VALUES])
+    part_of = np.concatenate([np.full(len(v["sim_weight"]), k) for k, v in enumerate(part_vals)])
+    parts = []
+    for obj in part_objs:
+        p = obj.ree_gpuc_part
+        known = reference.bone_owner(reference.cloth_of(obj), arm, p.root_joint) is not None
+        root = p.root_joint if p.use_root_joint and known else None
+        if p.use_root_joint and root is None:
+            notes.append(f"{obj.name}: its root joint {p.root_joint or '(none)'} is not a bone: written without one")
+        parts.append({"name": p.part_name, "config": cfg_objs.index(p.config), "root": root,
+                      "body10": struct.pack("<ii", -1, -1),          # -1 in every game file
+                      "body24": struct.pack("<4f3i", p.friction, p.bounce, p.stickiness, p.re4_value_30,
+                                            p.plane_bits, p.sphere_bits, p.capsule_bits)})
+    configs = []
+    for obj in cfg_objs:
+        c = obj.ree_gpuc_config
+        guid = struct.pack("<4i", c.unk10, c.unk14, c.unk18, c.unk1c)
+        values = struct.pack("<6f", *(getattr(c, f"re4_value_{o:02x}") for o in range(0x24, 0x3C, 4)))
+        configs.append({"name": obj.name, "body0c": struct.pack("<I", 0) + guid + struct.pack("<i", c.re4_flags_20)
+                        + values + struct.pack("<i", c.re4_flags_3c)})
+    capsules = []
+    for root in by_name(r for r in collision.roots(bpy.context.scene) if r.name in coll.all_objects):
+        c = root.ree_gpuc_capsule
+        if any(reference.bone_owner(coll, arm, j) is None for j in (c.joint_a, c.joint_b))                 or c.radius_a <= 0 or c.radius_b <= 0:
+            notes.append(f"{root.name}: left out (RE4 names a capsule's joints: both must be bones; radii over 0)")
+            continue
+        capsules.append((c.joint_a, c.joint_b, struct.pack("<3ff3ff", *c.offset_a, c.radius_a, *c.offset_b,
+                                                             c.radius_b)))
+    drive = None
+    if vertices:
+        if not mesh_path:
+            raise ExportError("Drive Mesh Vertices needs the exported .mesh: export the mesh, then put its path in "
+                              "Mesh File or the .gpuc beside it")
+        pos, lod_of, _ = mesh_file_vertices(mesh_path)
+        frames = vertex_drive.tri_frames(spec.positions, [t[:3] for t in gpuc_build._triangles(spec)])
+        near = vertex_drive.distances(pos, frames).min(1)
+        on, off, unmatched, missing = drive_overrides(mesh_coll or mesh_collection(arm), arm, pos, lod_of)
+        driven = np.flatnonzero(((near < h.drive_distance) | on) & ~off & (lod_of == 0))
+        if not len(driven):
+            raise ExportError(f"no LOD0 vertex of {os.path.basename(mesh_path)} lies within "
+                              f"{h.drive_distance * 100:.1f} cm of the cloth: raise Drive Distance or add vertices "
+                              f"to the GPUC_Drive group")
+        drive = (pos[driven], driven, h.drive_slots)
+        notes.append(f"Drives {len(driven)} of {int((lod_of == 0).sum())} LOD0 vertices of "
+                     f"{os.path.basename(mesh_path)} (RE4 drives LOD0 alone)")
+        if unmatched:
+            notes.append(f"{unmatched} vertices match no scene vertex: their vertex groups are not read")
+    try:
+        return re4_build.build(spec, pvalues, part_of, parts, configs,
+                               {"max_velocity": h.max_velocity, "h44": h.re4_unk44, "h60": h.re4_unk60},
+                               skin_remap, len(weighted), link_tail, _weld_links(coll, starts), capsules, drive, notes)
+    except ValueError as e:
+        raise ExportError(str(e)) from e
 
 
 def _weld_links(coll, starts) -> list:
