@@ -34,7 +34,7 @@ from .modules import gpuc_build
 
 DT = 1.0 / 60.0
 _state: dict = {}            # part name -> {"x", "prev", "skin", "root", "shapes"}
-_batches: dict = {}          # (rows, cols, closed) -> (links (n x 4) ordered by batch, batch sizes)
+_batches: dict = {}          # (rows, cols, closed, diagonal bend) -> (links (n x 4) ordered by batch, batch sizes)
 _clock = {"t": 0.0, "running": False}
 _inputs: dict = {}           # Config name -> the curves' inputs last frame (translation, rotation), for the graph
 
@@ -72,7 +72,8 @@ def shown(obj):
 def batches(d: dict):
     """The links coloured into batches: (a, b, type, shape, index into canon.links) rows, batch sizes."""
     ln = draw.links(d)
-    key = ("L", hash(ln.tobytes())) if d["locked"] else (d["rows"], d["cols"], d["closed"])
+    key = ("L", hash(ln.tobytes())) if d["locked"] else (d["rows"], d["cols"], d["closed"],
+                                                         d.get("diagonal_bend", True))
     if key not in _batches:
         rows = np.column_stack([ln, np.arange(len(ln))])
         ordered, sizes = gpuc_build._colour([tuple(r) for r in rows.tolist()], key=lambda r: (r[0], r[1]))

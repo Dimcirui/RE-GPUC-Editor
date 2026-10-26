@@ -500,11 +500,15 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
         if re4_part:
             col.prop(p, "re4_value_30")
         _split(layout).prop(p, "link_preset")
-        for name, label, _ in props.LINK_SHAPES:
+        own = canon.overrides(obj, canon.load(obj)) if canon.has(obj) and not canon.locked(obj) else {}
+        if own:
+            layout.label(text="Links with their own tail (set the shape to clear):", icon="INFO")
+        for k, (name, label, _) in enumerate(props.LINK_SHAPES):
             tail = getattr(p, name)
             header, body = layout.panel(f"ree_gpuc_link_{name}", default_closed=True)
             row = header.row(align=True)
-            row.label(text=label + (" *" if tail.conditional else ""))
+            mark = (" *" if tail.conditional else "") + (f" ({len(own[k][0])} own)" if k in own else "")
+            row.label(text=label + mark)
             row.prop(tail, "k", text="Stiffness", slider=True)
             if body is None:
                 continue
@@ -523,6 +527,7 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
             col = _split(layout)
             col.prop(p, "flip_normals")
             col.prop(p, "other_diagonal")
+            col.prop(p, "diagonal_bend")
 
 
 class REE_GPUC_PT_object_collision(_ObjectPanel, bpy.types.Panel):

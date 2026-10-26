@@ -208,7 +208,12 @@ class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
     target_collection: bpy.props.StringProperty(name="", description="The GPUC collection to export")
     mesh_collection: bpy.props.StringProperty(
         name="", description="The RE Mesh Editor collection of the mesh this cloth belongs to. Its weighted bones "
-                             "give the driven joints' indices. Leave blank to use the armature's collection")
+                             "give the driven joints' indices when no matching exported .mesh is found. Leave "
+                             "blank to use the armature's collection")
+    mesh_file: bpy.props.StringProperty(
+        name="Mesh File", description="The exported .mesh whose weighted bones give the driven joints' indices "
+                                      "(paste its full path). Blank: the same-name .mesh beside the .gpuc, else the "
+                                      "one the last export used", options={"SKIP_SAVE"})
     joint_indices: bpy.props.EnumProperty(
         name="Joint Indices", items=fileio.JOINT_INDICES, default="FILE",
         description="How driven joint indices are written. Cloth imported with Keep Structure defaults to As "
@@ -246,11 +251,16 @@ class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
             layout.label(text="Joint Indices:")
             layout.prop(self, "joint_indices", text="")
             if self.joint_indices == "MESH":
-                layout.label(text="Mesh Collection:")
-                layout.prop_search(self, "mesh_collection", bpy.data, "collections")
+                self._draw_mesh(layout)
             return
         layout.label(text="Joint Indices: From Mesh (cloth made from bones)")
-        layout.label(text="Mesh Collection:")
+        self._draw_mesh(layout)
+
+    def _draw_mesh(self, layout):
+        # a text field: a file path button would open a second file browser inside this one
+        layout.label(text="Mesh File (blank: same name beside):")
+        layout.prop(self, "mesh_file", text="")
+        layout.label(text="Mesh Collection (no matching .mesh):")
         layout.prop_search(self, "mesh_collection", bpy.data, "collections")
 
     def execute(self, context):
@@ -261,7 +271,7 @@ class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
         if context.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
         try:
-            notes = fileio.export(coll, self.filepath, mesh, self.joint_indices, self.filename_ext)
+            notes = fileio.export(coll, self.filepath, mesh, self.joint_indices, self.filename_ext, self.mesh_file)
         except fileio.ExportError as e:
             return refused(self, f"Not exported: {e}")
         for note in notes:

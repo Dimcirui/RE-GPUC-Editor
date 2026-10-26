@@ -127,7 +127,7 @@ def load(obj) -> dict:
     return {"locked": False, "count": rows * cols, "base_co": base, "rest_offset": offset,
             "rows": rows, "cols": cols, "closed": bool(c["closed"]), "tile": int(c["tile"]), "co": co,
             "nodes": nodes, "node_rows": nr, "node_cols": nc, "sub_rows": sr, "sub_cols": sc, "node_co": node_co,
-            "skin": skin, "skin_w": skin_w, "centre": centre,
+            "skin": skin, "skin_w": skin_w, "centre": centre, "diagonal_bend": obj.ree_gpuc_part.diagonal_bend,
             **{n: f32(c[n]) if n in c else np.full(rows * cols, DEFAULTS[n], np.float32) for n in FIELD_NAMES}}
 
 
@@ -194,24 +194,61 @@ def links(d: dict) -> np.ndarray:
     """Every link as (a, b, type, shape index into ``grid.SHAPES``)."""
     if d["locked"]:
         return d["links"]
-    key = (d["rows"], d["cols"], d["closed"])
+    key = (d["rows"], d["cols"], d["closed"], d.get("diagonal_bend", True))
     if key not in _grid_links:
         _grid_links[key] = grid.links(*key)
     return _grid_links[key]
 
 
 EDITED_KEY = "ree_gpuc_tails_edited"       # on a locked Part: the link shapes whose tail was set by hand
+# on a Part made from bones: links whose tail is not their shape's, kept from a rebuilt file:
+# {"grid": [rows, cols, closed, diagonal bend], shape: {"links": [index into links()], "tails": [k, k2, lo, hi, ...]}};
+# setting a shape's tail drops its entry, a grid of other links ignores them all
+OVERRIDES_KEY = "ree_gpuc_link_overrides"
+
+
+def _grid_key(d: dict) -> list:
+    return [int(d["rows"]), int(d["cols"]), int(bool(d["closed"])), int(bool(d.get("diagonal_bend", True)))]
+
+
+def set_overrides(obj, d: dict, tails, default) -> int:
+    """Keep each link's tail that is not its shape's ``default`` (one per shape) as an override; return how many."""
+    ln, out = links(d), {"grid": _grid_key(d)}
+    tails, default = np.asarray(tails, np.float32), np.asarray(default, np.float32)
+    for k, n in enumerate(s.lower() for s in grid.SHAPES):
+        own = np.where((ln[:, 3] == k) & (np.abs(tails - default[k]).max(axis=1) > 1e-6))[0]
+        if len(own):
+            out[n] = {"links": own.tolist(), "tails": tails[own].ravel().tolist()}
+    if len(out) > 1:
+        obj[OVERRIDES_KEY] = out
+    elif OVERRIDES_KEY in obj.keys():
+        del obj[OVERRIDES_KEY]
+    return sum(len(v["links"]) for n, v in out.items() if n != "grid")
+
+
+def overrides(obj, d: dict) -> dict:
+    """{shape index: (link indices, tails)} of the overrides that apply to the Part's current grid."""
+    c = obj.get(OVERRIDES_KEY)
+    if d["locked"] or c is None or list(c.get("grid", ())) != _grid_key(d):
+        return {}
+    names = [s.lower() for s in grid.SHAPES]
+    return {names.index(n): (np.asarray(v["links"], np.int64), f32(v["tails"]).reshape(-1, 4))
+            for n, v in c.items() if n in names}
 
 
 def link_tails(obj, d: dict) -> np.ndarray:
-    """Each link's tail (k, k2, lo, hi) from its shape's settings on the Part; a locked Part's links keep the
-    file's tails except for the shapes listed under ``EDITED_KEY``."""
+    """Each link's tail (k, k2, lo, hi) from its shape's settings on the Part, a Part made from bones taking its
+    ``OVERRIDES_KEY`` links' own; a locked Part's links keep the file's tails except for the shapes listed under
+    ``EDITED_KEY``."""
     part = obj.ree_gpuc_part
     names = [s.lower() for s in grid.SHAPES]
     shape = np.array([getattr(part, n).tail() for n in names], np.float32)
     ln = links(d)
     if not d["locked"]:
-        return shape[ln[:, 3]]
+        out = shape[ln[:, 3]]
+        for idx, tails in overrides(obj, d).values():
+            out[idx] = tails
+        return out
     out = d["tails"].copy()
     for k, n in enumerate(names):
         if n in obj.get(EDITED_KEY, ()):

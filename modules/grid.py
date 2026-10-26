@@ -3,8 +3,8 @@ the top (row 0) down, joined into quads; the grid UV the editor selects on; the 
 
 Particle i is row i // cols, column i % cols. A closed grid (a skirt ring) joins the last column to the
 first; an open one (a cape, a front panel) does not. The links follow ``gpuc_build._relations`` and
-``LINK_TYPES``: a quad edge gives a structural link (type 0), a quad diagonal a shear (1) and a bend (2) link,
-two steps straight along quad edges a bend link (2). The game's solver does not read the type number; what a link
+``LINK_TYPES``: a quad edge gives a structural link (type 0), a quad diagonal a shear (1) and a bend (2) link
+(the shear alone without ``diagonal_bend``), two steps straight along quad edges a bend link (2). The game's solver does not read the type number; what a link
 does is its tail (k, k2, lo, hi), set per shape: VERTICAL and RING (the quad edges down a column and across a
 row), SHEAR (the diagonals' type 1), BEND (the diagonals' type 2 and the two-step links)."""
 from __future__ import annotations
@@ -145,10 +145,12 @@ def particle_uv(rows: int, cols: int, closed: bool, tile: int = 0) -> np.ndarray
     return np.column_stack([tile + c / span, 1.0 - r / (rows - 1)])
 
 
-def links(rows: int, cols: int, closed: bool) -> np.ndarray:
-    """Every link as (a, b, type, shape index into SHAPES), a < b, in the generator's order."""
+def links(rows: int, cols: int, closed: bool, diagonal_bend: bool = True) -> np.ndarray:
+    """Every link as (a, b, type, shape index into SHAPES), a < b, in the generator's order; without
+    ``diagonal_bend`` the diagonals carry no bend link."""
     out = []
-    for (a, b), typ, rel in gpuc_build._links(_Spec(faces(rows, cols, closed))):
+    bend = None if diagonal_bend else np.zeros(rows * cols, bool)
+    for (a, b), typ, rel in gpuc_build._links(_Spec(faces(rows, cols, closed), bend)):
         ra, ca = divmod(a, cols)
         rb, cb = divmod(b, cols)
         if rel == "Q":
@@ -164,8 +166,9 @@ def links(rows: int, cols: int, closed: bool) -> np.ndarray:
 class _Spec:
     """What gpuc_build._links reads of a ClothSpec."""
 
-    def __init__(self, quads):
+    def __init__(self, quads, diagonal_bend=None):
         self.faces = [tuple(f) for f in quads]
+        self.diagonal_bend = diagonal_bend
 
 
 def normals(co, rows: int, cols: int, closed: bool) -> np.ndarray:

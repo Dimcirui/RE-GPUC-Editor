@@ -42,9 +42,10 @@ class ClothSpec:
     outputs     list of output joints in mesh bone order:
                 dict(palette=index in the mesh's weighted bone list, world=4x4 row-major
                 bind matrix (translation in row 3), particles=[ids], weights=[floats])
+    diagonal_bend (P,) bool, optional: off where a quad diagonal starting at that particle has no bend link
     """
 
-    def __init__(self, positions, sim_weight, skin_bones, skin_w, faces, face_uv, outputs):
+    def __init__(self, positions, sim_weight, skin_bones, skin_w, faces, face_uv, outputs, diagonal_bend=None):
         self.positions = np.asarray(positions, float)
         self.sim_weight = np.asarray(sim_weight, float)
         self.skin_bones = np.asarray(skin_bones, int)
@@ -52,6 +53,7 @@ class ClothSpec:
         self.faces = [tuple(f) for f in faces]
         self.face_uv = face_uv
         self.outputs = outputs
+        self.diagonal_bend = None if diagonal_bend is None else np.asarray(diagonal_bend, bool)
 
 
 def _triangles(spec):
@@ -101,9 +103,12 @@ LINK_TYPES = {"Q": (0,), "diag": (1, 2), "bend": (2,)}
 
 
 def _links(spec):
+    """(pair, type, relation) in pair order; a diagonal whose first particle is off in ``spec.diagonal_bend``
+    carries its shear link alone."""
     rel = _relations(spec.faces)
+    bend = getattr(spec, "diagonal_bend", None)
     return [(tuple(sorted(e)), typ, r) for e, r in sorted(rel.items(), key=lambda x: tuple(sorted(x[0])))
-            for typ in LINK_TYPES[r]]
+            for typ in LINK_TYPES[r] if not (r == "diag" and typ == 2 and bend is not None and not bend[min(e)])]
 
 
 def _colour(items, key=lambda x: x):

@@ -1,5 +1,19 @@
 # Change Log
 
+## 0.4.1
+
+### New
+- **Diagonal Bend** — a Part export setting, on by default. Off, the quad diagonals carry shear links alone, as some files are made (for example Wilds `ch03_074_0015`). Rebuild from Bones finds it, so such files no longer fall back to Keep Structure.
+
+- **Mesh File** — in the export dialog. From Mesh joint indices now come from the exported `.mesh` itself: the file pasted here, else the same-name `.mesh` beside the `.gpuc`, else the one the last export used. Only its header, skeleton and names are read, so its streaming half is not needed. Needs RE Mesh Editor enabled.
+
+- **Per-link tails** — Rebuild from Bones keeps links whose tail differs from the rest of their shape (for example `ch03_074_0015`'s shear links, stiffer at the hem's front) instead of falling back to Keep Structure. The link shape's header shows how many links have their own tail; setting the shape gives them all its tail again.
+
+### Changed
+- **Rebuild from Bones** — particles that sit off their bones in the file keep those offsets as rest offsets, instead of counting as a difference.
+- **Keep Structure joints** — where two bones share a place, the `.mesh` beside the `.gpuc` decides which one a driven joint follows. `ch03_100_1005` now exports From Mesh byte for byte.
+- **From Mesh joints** — when no `.mesh` is found, or the one found has another skeleton, the export still goes ahead with the scene's weights as before and warns that a mesh and `.gpuc` that do not match may make the cloth behave wrongly in game. Meshes left out of a mesh export (Selected Only) no longer shift the indices when the `.mesh` is found.
+
 ## 0.4.0
 
 ### ⚠️ Breaking

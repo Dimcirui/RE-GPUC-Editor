@@ -44,7 +44,7 @@ To update, uninstall the old version first. Earlier versions were installed as `
 4. Set particle values in the Particles panel: "Paint" paints the chosen value as vertex weights, "Set on Selected" sets an exact value. Weights 0 to 1 map to the Part's Mapping Range.
 5. Configure the Header, Configs, Parts and colliders in the Object properties tab, or apply presets.
 6. (Optional) Preview under GPUC: Preview Simulation > Simulate.
-7. Export with "Export" under GPUC: General Tools.
+7. Export the mesh with the RE Mesh Editor, then export the cloth with "Export" under GPUC: General Tools, next to the mesh or with its path in Mesh File. The driven joints' indices come from that `.mesh`; without one, the export uses the scene's weights and warns.
 
 After you move bones in Edit Mode, the affected Parts rebuild when you leave it. "Check" reports problems with every Part of the active cloth.
 

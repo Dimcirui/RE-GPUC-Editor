@@ -317,13 +317,20 @@ _applying = False
 
 def _tail_edit(self, context):
     """Set the Part's link preset to Custom; on a locked Part, mark the shape so ``canon.link_tails`` applies the
-    tail to every link of that shape."""
+    tail to every link of that shape; on a Part made from bones, drop the shape's per-link overrides."""
     obj = self.id_data
+    shape = self.path_from_id().rsplit(".", 1)[-1]
     if obj.get("ree_gpuc_canon", {}).get("locked"):
-        shape = self.path_from_id().rsplit(".", 1)[-1]
         edited = list(obj.get("ree_gpuc_tails_edited", ()))
         if shape not in edited:
             obj["ree_gpuc_tails_edited"] = edited + [shape]
+    elif shape in obj.get("ree_gpuc_link_overrides", {}):
+        over = obj["ree_gpuc_link_overrides"].to_dict()
+        del over[shape]
+        if len(over) > 1:
+            obj["ree_gpuc_link_overrides"] = over
+        else:
+            del obj["ree_gpuc_link_overrides"]
     if not _applying:
         part = self.id_data.ree_gpuc_part
         if part.link_preset != "CUSTOM":
@@ -469,6 +476,10 @@ class REE_GPUC_Part(bpy.types.PropertyGroup):
                                              "the lower left to the upper right corner): some files are made so. "
                                              "Rebuild from Bones finds it; the triangles give the particles' frames "
                                              "and the collision edges")
+    diagonal_bend: BoolProperty(name="Diagonal Bend", default=True, update=_redraw,
+                                description="Give each quad diagonal a bend link (type 2) besides its shear link. "
+                                            "Off: the diagonals carry shear links alone, as some files are made. "
+                                            "Rebuild from Bones finds it")
     uv_tile: IntProperty(name="UV tile", description="The part's place on the grid UV (u from this to this + 1)")
     # the part block (section 6); its config index and name hash follow from the hierarchy and the name
     part_name: StringProperty(name="Name", default="_p000", description="The part block's name (usually _p000, _p001, ...)")

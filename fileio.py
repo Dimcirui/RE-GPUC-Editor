@@ -9,11 +9,13 @@ Maintenance constraints:
 - Game model space = ``ROTATE_BACK`` (-90 deg about X) x the armature's ``matrix_world`` x armature space, as the
   RE Mesh Editor exports the mesh.
 - Skinning holds full mesh bone indices (armature order); an output joint's index is its bone's place among the
-  mesh's weighted bones (``weighted_bones``), as the RE Mesh Editor builds its remap.
+  mesh's weighted bones: the exported .mesh's own remap when one matching the armature is found, else the scene's
+  (``weighted_bones``), as the RE Mesh Editor builds its remap (``export_weighted``).
 - Generated exports wind faces so particle normals point out; space limits and backstops are measured along them.
 - Exports keep Kernel Flags bit 2 (MeshMultiJointDeform): ``gpuc_build`` lays out sections 23 to 26 for it."""
 import base64
 import collections
+import importlib
 import json
 import math
 import os
@@ -198,7 +200,8 @@ def mesh_collection(arm):
 
 def weighted_bones(arm, mesh_coll) -> list[str]:
     """Return the bones weighted in the first "Main Mesh LOD" (else the mesh collection), excluded meshes skipped,
-    in armature order, as the RE Mesh Editor exports them; raises ``ExportError`` when none are."""
+    in armature order, as the RE Mesh Editor exports them; raises ``ExportError`` when none are. It cannot know
+    which meshes an export left out (Selected Only): ``export_weighted`` prefers the exported .mesh's own table."""
     lods = sorted((c for c in mesh_coll.children if "Main Mesh LOD" in c.name), key=lambda c: c.name)
     lod = lods[0] if lods else mesh_coll
     used = set()
@@ -214,10 +217,6 @@ def weighted_bones(arm, mesh_coll) -> list[str]:
     return [b.name for b in arm.data.bones if b.name in used]
 
 
-def _tails_bytes(part) -> list[bytes]:
-    return [gp.tail_bytes(*getattr(part, name).tail()) for name, _, _ in props.LINK_SHAPES]
-
-
 def _outward(co, rows, cols, closed, centre, inside) -> bool:
     """Whether ``grid.faces``' winding gives outward normals for this Part."""
     tri = np.asarray(grid.faces(rows, cols, closed)[0][:3])
@@ -229,19 +228,125 @@ def _outward(co, rows, cols, closed, centre, inside) -> bool:
 
 JOINT_INDICES = [("FILE", "As Imported", "Keep the driven joints' indices from the imported file. Use when the "
                                          "game keeps the mesh the file came with"),
-                 ("MESH", "From Mesh", "Index each driven joint by its bone among the mesh collection's weighted "
-                                       "bones, as the RE Mesh Editor exports them. Use after exporting the mesh again")]
+                 ("MESH", "From Mesh", "Index each driven joint by its bone among the exported .mesh's weighted "
+                                       "bones (else the mesh collection's). Use after exporting the mesh again")]
+
+MESH_FILE_KEY = "ree_gpuc_mesh_file"     # on the header: the .mesh the last export took its joint indices from
+MISMATCH = "if the mesh and the .gpuc do not match, the cloth may behave wrongly in game"
 
 
-def export(coll, path: str, mesh_coll=None, joints: str = "FILE", game: str = "") -> list[str]:
+def companion_mesh(gpuc_path: str) -> tuple:
+    """Return (the one ``<stem>.mesh.<number>`` beside a .gpuc, else "", why none)."""
+    folder, name = os.path.split(bpy.path.abspath(gpuc_path))
+    stem = name.split(".gpuc")[0]
+    prefix = stem + ".mesh."
+    try:
+        found = sorted(n for n in os.listdir(folder or ".") if n.startswith(prefix) and n[len(prefix):].isdigit()
+                       and os.path.isfile(os.path.join(folder, n)))
+    except OSError:
+        found = []
+    if len(found) > 1:
+        return "", f"{len(found)} {stem}.mesh files lie beside the .gpuc (paste the exported one into Mesh File)"
+    return (os.path.join(folder, found[0]), "") if found else ("", f"no {stem}.mesh found beside the .gpuc")
+
+
+def find_mesh(coll, mesh_file: str = "", gpuc_path: str = "") -> tuple:
+    """Return (the .mesh to take joint indices from, else "", why none): ``mesh_file``, else the one beside
+    ``gpuc_path`` (blank: the cloth's last export or import), else the one the last export used."""
+    if mesh_file:
+        path = bpy.path.abspath(mesh_file)
+        return (path, "") if os.path.isfile(path) else ("", f"Mesh File {path} does not exist")
+    head = props.header(coll)
+    gpuc_path = gpuc_path or (str(head.get(EXPORTED_KEY, "") or head.get(SOURCE_KEY, "")) if head else "")
+    path, why = companion_mesh(gpuc_path) if gpuc_path else ("", "no .mesh found (the cloth has no file yet)")
+    last = bpy.path.abspath(str(head.get(MESH_FILE_KEY, ""))) if head and head.get(MESH_FILE_KEY) else ""
+    if not path and last and os.path.isfile(last):
+        return last, ""
+    return path, why
+
+
+def _mesh_reader():
+    """The enabled RE Mesh Editor's .mesh reader module, else None."""
+    for name in bpy.context.preferences.addons.keys():
+        try:
+            mod = importlib.import_module(f"{name}.modules.mesh.file_re_mesh")
+        except Exception:
+            continue
+        if callable(getattr(mod, "readREMesh", None)):
+            return mod
+    return None
+
+
+def mesh_file_bones(path: str) -> tuple:
+    """Return (the .mesh's full skeleton, its weighted bones in remap order); raises ``ExportError``. Only the
+    header, skeleton and names are read, so a mesh whose streaming half is elsewhere still reads."""
+    m = _mesh_reader()
+    if m is None:
+        raise ExportError("RE Mesh Editor is not enabled to read it")
+    try:
+        number = int(path.rsplit(".", 1)[1])
+        version = m.meshFileVersionToNewVersionDict.get(number) or m.getNearestRemapVersion(number)
+        with open(path, "rb") as file:
+            head = m.FileHeader()
+            head.read(file, version)
+            if not head.skeletonOffset:
+                raise ExportError("it has no skeleton")
+            file.seek(head.skeletonOffset)
+            skel = m.Skeleton()
+            skel.read(file)
+            file.seek(head.nameOffsetsOffset)
+            offsets = [m.read_uint64(file) for _ in range(head.nameCount)]
+            raw = []
+            for offset in offsets:
+                file.seek(offset)
+                raw.append(m.read_string(file))
+            file.seek(head.boneNameRemapOffset)
+            names = [raw[m.read_ushort(file)] for _ in range(skel.boneCount)]
+        remap = list(skel.boneRemapList)
+    except ExportError:
+        raise
+    except Exception as e:
+        raise ExportError(f"it cannot be read ({e})") from e
+    if not remap or len(set(remap)) != len(remap) or not all(0 <= i < len(names) for i in remap):
+        raise ExportError("its weighted-bone table is invalid")
+    return names, [names[i] for i in remap]
+
+
+def export_weighted(coll, arm, mesh_coll, mesh_file, gpuc_path, notes) -> list[str]:
+    """Return the weighted bones that index the driven joints: the .mesh's (``find_mesh``) when its skeleton is the
+    armature's; else, with a note, the scene's (``weighted_bones``). Raises ``ExportError`` with neither."""
+    path, why = find_mesh(coll, mesh_file, gpuc_path)
+    if path:
+        try:
+            names, weighted = mesh_file_bones(path)
+            if names == [b.name for b in arm.data.bones]:
+                return weighted
+            why = "its skeleton is not the cloth armature's"
+        except ExportError as e:
+            why = str(e)
+        notes.append(f"{os.path.basename(path)} does not match this cloth: {why}. Joint indices come from the "
+                     f"scene's weights; {MISMATCH}")
+    else:
+        notes.append(f"No matching mesh found: {why}. Joint indices come from the scene's weights; {MISMATCH}")
+    mesh_coll = mesh_coll or mesh_collection(arm)
+    if mesh_coll is None:
+        raise ExportError("no mesh collection: the export needs the mesh's weighted bones")
+    return weighted_bones(mesh_armature_or(mesh_coll, arm), mesh_coll)
+
+
+def export(coll, path: str, mesh_coll=None, joints: str = "FILE", game: str = "", mesh_file: str = "") -> list[str]:
     """Write the cloth as a .gpuc of ``game`` (blank: the header's) and return notes; raises ``ExportError``.
-    A Keep Structure cloth is written over its stored file; ``mesh_coll`` then only serves From Mesh joints."""
-    data, notes = build_bytes(coll, mesh_coll, joints, game)
+    A Keep Structure cloth is written over its stored file; ``mesh_coll`` and ``mesh_file`` then only serve From
+    Mesh joints. The .mesh found (``find_mesh``) is remembered for later exports and Wilds-Dynamics."""
+    found = find_mesh(coll, mesh_file, path)[0]
+    data, notes = build_bytes(coll, mesh_coll, joints, game, found, path)
     with open(path, "wb") as f:
         f.write(data)
     head = props.header(coll)
     set_asset_path(coll, path, exported=True)
     head[EXPORTED_KEY] = path                                  # wd_api: the file it stands for
+    if found and (joints == "MESH" or not keeps_structure(coll)):
+        head[MESH_FILE_KEY] = found
     return notes
 
 
@@ -252,8 +357,10 @@ def game_name(ext: str) -> str:
     return next((g[1] for g in GAMES if g[0] == ext), ext)
 
 
-def build_bytes(coll, mesh_coll=None, joints: str = "FILE", game: str = "") -> tuple:
-    """Return the cloth's .gpuc bytes and notes; raises ``ExportError`` when it cannot be exported."""
+def build_bytes(coll, mesh_coll=None, joints: str = "FILE", game: str = "", mesh_file: str = "",
+                gpuc_path: str = "") -> tuple:
+    """Return the cloth's .gpuc bytes and notes; raises ``ExportError`` when it cannot be exported. ``mesh_file``
+    and ``gpuc_path`` lead to the .mesh whose weighted bones index the driven joints (``export_weighted``)."""
     head = props.header(coll)
     if head is None:
         raise ExportError("the cloth has no header")
@@ -275,13 +382,13 @@ def build_bytes(coll, mesh_coll=None, joints: str = "FILE", game: str = "") -> t
             if joints != "FILE":
                 raise ExportError("RE4 keeps its original skinning and output bindings: use As Imported")
             return _build_re4(coll, head, cfg_objs, part_objs)
-        return _build_keep(coll, head, cfg_objs, part_objs, mesh_coll if joints == "MESH" else None)
+        return _build_keep(coll, head, cfg_objs, part_objs, joints == "MESH", mesh_coll, mesh_file, gpuc_path)
     if game == re4.EXT:
         raise ExportError("RE4 supports Keep Structure imports only; new cloth generation is not supported")
-    return _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, game)
+    return _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, game, mesh_file, gpuc_path)
 
 
-def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT) -> tuple:
+def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT, mesh_file="", gpuc_path="") -> tuple:
     notes = []
     layout = gpuc.LAYOUTS[int(ext[1:])]
     arm = generate._armature(coll)
@@ -295,14 +402,11 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT) -> 
         problems = generate.check(obj)
         if problems:
             raise ExportError(f"{obj.name}: {problems[0]} (regenerate it)")
-    mesh_coll = mesh_coll or mesh_collection(arm)
-    if mesh_coll is None:
-        raise ExportError("no mesh collection: the export needs the mesh's weighted bones")
-    weighted = weighted_bones(arm, mesh_coll)
+    weighted = export_weighted(coll, arm, mesh_coll, mesh_file, gpuc_path, notes)
     bones = [b.name for b in arm.data.bones]
     to_game = ROTATE_BACK @ np.array(arm.matrix_world, float)
 
-    positions, sim_weight, skin_bones, skin_w, faces, uvs, outputs = [], [], [], [], [], [], []
+    positions, sim_weight, skin_bones, skin_w, faces, uvs, outputs, bend = [], [], [], [], [], [], [], []
     shapes, part_vals, driven, base, starts = {}, [], {}, 0, {}
     skinned = collections.defaultdict(list)            # bone -> (particle, its skin weight to it) of every Part
     for obj, why in weld.skipped(coll):
@@ -320,6 +424,7 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT) -> 
         game = co @ to_game[:3, :3].T + to_game[:3, 3]
         n = rows * cols
         positions.append(game)
+        bend.append(np.full(n, d["diagonal_bend"]))
         sim_weight.append(np.clip(vals["sim_weight"], 0.0, 1.0))
         part_vals.append(vals)
         root = arm.data.bones.get(obj.ree_gpuc_part.root_joint)
@@ -364,9 +469,8 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT) -> 
             notes.append(f"{obj.name}: {len(shared)} of its bones are an earlier Part's too ({', '.join(shared[:3])}"
                          f"{', ...' if len(shared) > 3 else ''}) and it is not welded to it: their joints follow "
                          f"both Parts")
-        tails = _tails_bytes(obj.ree_gpuc_part)
-        for a, b, typ, shape in grid.links(rows, cols, closed):
-            shapes[(base + int(a), base + int(b), int(typ))] = tails[int(shape)]
+        for (a, b, typ, _), tail in zip(canon.links(d), canon.link_tails(obj, d)):
+            shapes[(base + int(a), base + int(b), int(typ))] = gp.tail_bytes(*map(float, tail))   # float32 rounds
         base += n
     # As in game files: each joint is driven by every particle skinned to its bone (any Part), by that skin weight;
     # the heaviest MIN_SLOTS are kept (ties: lower particles), in descending particle order.
@@ -379,7 +483,7 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT) -> 
     if not outputs:
         raise ExportError("no bone of the cloth has weights in the mesh: nothing would move")
     spec = gpuc_build.ClothSpec(np.vstack(positions), np.concatenate(sim_weight), skin_bones, skin_w, faces, uvs,
-                                outputs)
+                                outputs, np.concatenate(bend))
     skin_table = sorted({b for row, w in zip(skin_bones, skin_w) for b, x in zip(row, w) if x})
     link_tail = lambda typ, a, b: shapes.get((min(a, b), max(a, b), typ))  # noqa: E731
     out = gpuc_build.build(spec, layout, skin_table, link_tail=link_tail, welds=_weld_links(coll, starts))
@@ -411,9 +515,10 @@ def _weld_links(coll, starts) -> list:
     return out
 
 
-def _build_keep(coll, head, cfg_objs, part_objs, mesh_coll=None) -> tuple:
-    """Write a Keep Structure cloth's values over its stored file, the structure unchanged; with ``mesh_coll`` the
-    driven joints are re-indexed by their bones among its weighted bones."""
+def _build_keep(coll, head, cfg_objs, part_objs, from_mesh=False, mesh_coll=None, mesh_file="",
+                gpuc_path="") -> tuple:
+    """Write a Keep Structure cloth's values over its stored file, the structure unchanged; ``from_mesh`` re-indexes
+    the driven joints by their bones among the mesh's weighted bones (``export_weighted``)."""
     notes = []
     g = gpuc.Gpuc(stored_file(coll))
     game = gp.ext_of(g.layout)
@@ -453,15 +558,15 @@ def _build_keep(coll, head, cfg_objs, part_objs, mesh_coll=None) -> tuple:
         s2[k * 16 + 8:k * 16 + 16] = gp.tail_bytes(*tails[i][taken[i]])
         taken[i] += 1
     _write_capsules(g, coll, arm, notes)
-    if mesh_coll is not None:
-        weighted = weighted_bones(mesh_armature_or(mesh_coll, arm), mesh_coll)
+    if from_mesh:
         names = list(head.get(JOINTS_KEY, ()))
-        if len(names) != struct.unpack_from("<I", g.header, gp.offset_of(game, "joints"))[0]:
+        if arm is None or len(names) != struct.unpack_from("<I", g.header, gp.offset_of(game, "joints"))[0]:
             raise ExportError("its driven joints were not found at import (no mesh collection): export As Imported")
+        weighted = export_weighted(coll, arm, mesh_coll, mesh_file, gpuc_path, notes)
         s23 = g.sections[23].data
         lost = [k for k, n in enumerate(names) if n not in weighted]
         if lost:
-            raise ExportError(f"{len(lost)} driven joints have no weighted bone in {mesh_coll.name} "
+            raise ExportError(f"{len(lost)} driven joints have no weighted bone in the mesh "
                               f"({', '.join(names[k] or '(none)' for k in lost[:3])}): export As Imported")
         for k, n in enumerate(names):
             struct.pack_into("<I", s23, 4 * k, weighted.index(n))
@@ -824,9 +929,10 @@ def locked_problems(obj) -> list:
     return []
 
 
-def joint_bones(f: dict, arm) -> tuple:
+def joint_bones(f: dict, arm, weighted=None) -> tuple:
     """Match each driven joint's bind position to the nearest bone head; return (names, "" where none is within
-    1 mm; distances)."""
+    1 mm; distances). Where several heads lie within 1 mm, the bone the joint's index names among ``weighted``
+    (the mesh's weighted bones) is taken when it is one of them."""
     if not f["joints"] or f["frames"] is None:
         return [], []
     to_game = ROTATE_BACK @ np.array(arm.matrix_world, float)
@@ -840,14 +946,27 @@ def joint_bones(f: dict, arm) -> tuple:
             continue
         d = np.linalg.norm(heads - _bind(f, j), axis=1)
         k = int(np.argmin(d))
+        named = weighted[j["palette"]] if weighted and 0 <= j["palette"] < len(weighted) else None
+        if named in names and d[names.index(named)] <= 1e-3:
+            k = names.index(named)
         out.append(names[k] if d[k] <= 1e-3 else "")
         dist.append(float(d[k]))
     return out, dist
 
 
-def check_keep(f: dict, arm, mesh_coll) -> tuple:
+def mesh_weighted(path: str, arm):
+    """The weighted bones of the .mesh beside the .gpuc at ``path`` when its skeleton is ``arm``'s, else None."""
+    found = companion_mesh(path)[0] if path else ""
+    try:
+        names, weighted = mesh_file_bones(found) if found else ([], [])
+    except ExportError:
+        return None
+    return weighted if weighted and names == [b.name for b in arm.data.bones] else None
+
+
+def check_keep(f: dict, arm, mesh_coll, path: str = "") -> tuple:
     """Return (each driven joint's bone, notes) for the file on this armature; raises ``ImportProblem`` when it
-    does not fit."""
+    does not fit. The .mesh beside ``path`` (``mesh_weighted``) settles joints on bones that share a place."""
     notes = []
     bones = [b.name for b in arm.data.bones]
     if not f["flags"] & 4:
@@ -857,7 +976,8 @@ def check_keep(f: dict, arm, mesh_coll) -> tuple:
     if len(used) and used.max() >= len(bones):
         raise ImportProblem(f"its skinning names bone {int(used.max())}, the armature has {len(bones)}: pick the "
                             f"mesh this .gpuc belongs to")
-    joints, dist = joint_bones(f, arm)
+    from_file = mesh_weighted(path, arm)
+    joints, dist = joint_bones(f, arm, from_file)
     lost = [x for n, x in zip(joints, dist) if not n]
     if joints and len(lost) == len(joints):
         raise ImportProblem("none of its driven joints sits on a bone of this armature: pick the mesh this .gpuc "
@@ -866,7 +986,7 @@ def check_keep(f: dict, arm, mesh_coll) -> tuple:
         notes.append(f"{len(lost)} of {len(joints)} driven joints sit on no bone (the nearest "
                      f"{min(lost) * 1000:.1f} mm off): their indices are kept as they are")
     try:
-        weighted = weighted_bones(arm, mesh_coll)
+        weighted = from_file or weighted_bones(arm, mesh_coll)
         moved = sum(1 for n, j in zip(joints, f["joints"]) if n and (n not in weighted or weighted.index(n) != j["palette"]))
         if moved:
             notes.append(f"{moved} driven joints' indices differ from the mesh's as the RE Mesh Editor exports it: "
@@ -891,7 +1011,7 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
     arm = mesh_armature(mesh_coll) if mesh_coll is not None else None
     f = file_parts(raw)
     if arm is not None:
-        joints, notes = check_keep(f, arm, mesh_coll)
+        joints, notes = check_keep(f, arm, mesh_coll, path)
     else:
         if not is_re4 and not f["flags"] & 4:
             raise ImportProblem("its Kernel Flags lack Mesh Multi Joint Deform, a deform layout this editor does "
@@ -1021,18 +1141,21 @@ def _recognise(f: dict, i: int, bones: list) -> tuple:
     mine = {(min(a, b) - base, max(a, b) - base, t): tail for a, b, t, tail in f["links"]
             if base <= a < base + n and base <= b < base + n}
     found = None
-    for closed in (False, True):
-        for cols in range(2, n // 2 + 1):
-            if n % cols == 0:
-                gl = grid.links(n // cols, cols, closed)
-                if len(gl) == len(mine) and {(int(a), int(b), int(t)) for a, b, t, _ in gl} == set(mine):
-                    found = (n // cols, cols, closed, gl)
-                    break
+    for bend in (True, False):
+        for closed in (False, True):
+            for cols in range(2, n // 2 + 1):
+                if n % cols == 0:
+                    gl = grid.links(n // cols, cols, closed, bend)
+                    if len(gl) == len(mine) and {(int(a), int(b), int(t)) for a, b, t, _ in gl} == set(mine):
+                        found = (n // cols, cols, closed, bend, gl)
+                        break
+            if found:
+                break
         if found:
             break
     if found is None:
         return None, "its links are not a grid's as the editor makes them", None
-    rows, cols, closed, gl = found
+    rows, cols, closed, bend, gl = found
     skin, sw = f["skin"][sel], f["skin_w"][sel]
     single = {k for k in range(n) if (sw[k] > 0).sum() == 1}
     span = cols if closed else cols - 1
@@ -1049,7 +1172,7 @@ def _recognise(f: dict, i: int, bones: list) -> tuple:
             if len(set(names)) != len(names):
                 return None, "a bone sits on two of its particles", None
             lay = {"node_rows": (rows - 1) // (sr + 1) + 1, "node_cols": len(range(0, cols, sc + 1)),
-                   "sub_rows": sr, "sub_cols": sc, "closed": closed, "nodes": names}
+                   "sub_rows": sr, "sub_cols": sc, "closed": closed, "nodes": names, "diagonal_bend": bend}
             return lay, mine, gl
     return None, "its particles skinned to one bone alone lie on no lattice of its grid", None
 
@@ -1094,8 +1217,9 @@ def _preset_of(part) -> str:
 def import_rebuild(path: str, mesh_coll, force: bool = False) -> tuple:
     """Import the file as Parts regenerated from the mesh's bones with the file's values; return (collection, notes).
 
-    The rebuild is kept only when its export matches the file's ``fingerprint`` and each link shape has one tail;
-    otherwise the file is imported with Keep Structure and the first note starts "Not rebuilt (" (parsed by
+    Each link shape takes its commonest tail, the other links keep theirs (``canon.set_overrides``), and the
+    particles keep their offsets from the bones. The rebuild is kept only when its export matches the file's
+    ``fingerprint``; otherwise the file is imported with Keep Structure and the first note starts "Not rebuilt (" (parsed by
     ``ops``). ``force`` keeps a mismatching rebuild, but a part that is no grid of bones still falls back."""
     raw = open(path, "rb").read()
     if path.endswith(re4.EXT):
@@ -1144,14 +1268,12 @@ def import_rebuild(path: str, mesh_coll, force: bool = False) -> tuple:
         tails = {}
         for a, b, t, s in gl:
             tails.setdefault(gp.SHAPES[s], collections.Counter())[links[(int(a), int(b), int(t))]] += 1
-        spread = [s for s, c in tails.items() if len(c) > 1]
-        if spread:
-            changed.append(f"part {i}: its {', '.join(spread)} links have more than one tail (the commonest taken)")
-        _set_part(obj, block, {s: gp.tail_values(c.most_common(1)[0][0]) for s, c in tails.items()}, None, cfg_objs,
-                  notes)
+        common = {s: gp.tail_values(c.most_common(1)[0][0]) for s, c in tails.items()}
+        _set_part(obj, block, common, None, cfg_objs, notes)
         p = obj.ree_gpuc_part
         p.link_preset = _preset_of(p)
         p.other_diagonal = _other_diagonal(f, sel, lay["rows"], lay["cols"], lay["closed"])
+        p.diagonal_bend = lay["diagonal_bend"]
         if block["use_root_joint"] and block["root_hash"] not in by_hash:
             obj[ROOT_HASH_KEY] = gp.signed(block["root_hash"])
         d = canon.load(obj)
@@ -1159,11 +1281,18 @@ def import_rebuild(path: str, mesh_coll, force: bool = False) -> tuple:
         for field in canon.FIELD_NAMES:
             v = f["values"][field][sel]
             d[field] = v
+        d["rest_offset"] = (f["pos"][sel] @ to_arm[:3, :3].T + to_arm[:3, 3]) - d["base_co"]   # the file's rest pose
         canon.store(obj, d)
         canon.write_groups(obj)
-        far = float(np.abs(lay["co"] - (f["pos"][sel] @ to_arm[:3, :3].T + to_arm[:3, 3])).max())
+        far = float(np.linalg.norm(d["rest_offset"], axis=1).max())
         if far > 1e-3:
-            changed.append(f"part {i}: its particles made again up to {far * 1000:.1f} mm off the file's")
+            notes.append(f"part {i}: particles kept up to {far * 1000:.1f} mm off their bones, as rest offsets")
+        default = [common.get(s, (0.0, 1.0, 1.0, 1.0)) for s in gp.SHAPES]
+        own = canon.set_overrides(obj, canon.load(obj), [gp.tail_values(links[(int(a), int(b), int(t))])
+                                                         for a, b, t, _ in gl], default)
+        if own:
+            notes.append(f"part {i}: {own} links keep their own tails from the file (setting a link shape gives "
+                         f"all its links that tail)")
     _keep_capsules(coll, arm, f["caps"], by_hash, notes)
     for name in _keep_welds(coll, f, notes):         # after the collisions: the chain editor's order
         changed.append(f"{name}: its links have more than one tail or type (the commonest taken)")
