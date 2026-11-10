@@ -96,6 +96,7 @@ A Keep Structure Part is a mesh of quads and triangles: each vertex is a particl
 * Faces must have 3 or 4 corners, every particle must be on a face, and every particle needs a skin weight; otherwise the edit is undone, with the reason in the Part panel.
 * New particles take their values and skin from their vertex groups, which Blender fills in as you edit. New links take the commonest tail of their shape on the Part.
 * Once a Part is edited, the export writes the whole file again from the Parts instead of patching the original. The driven joints stay where the file binds them; a joint whose particles were removed, or whose bone now skins new particles, is driven by the particles skinned to its bone most.
+* Each face holds its triangles' tangent flags as the attributes `gpuc_tangent_flags_a` (its first triangle) and `gpuc_tangent_flags_b` (a quad's second). Read them in the Spreadsheet and set them with Mesh > Set Attribute in Edit Mode, in an edit that changes no faces. Bits 0–2 flip the tangent at a corner and bit 3 takes no tangent from the UVs; they change how driven joints turn about the cloth's normal, not how the cloth moves. New triangles get bit 3 where their UVs span no area, else 0.
 * Parts cannot be added or removed, and Update Existing is refused, once a Part is edited.
 * Not editable: RE4 cloth, files that drive mesh vertices, and the few parts whose links are not the ones their faces give (the import says which).
 

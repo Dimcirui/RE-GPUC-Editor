@@ -11,6 +11,25 @@ import numpy as np
 from . import gpuc_build
 
 
+CORNER_BITS = 7                   # tangent flag bits 0-2: one per triangle corner
+
+
+def carry_flags(tris, flags, onto) -> list:
+    """Each triangle of ``onto`` (in the numbering of ``tris``; a negative index is a new particle): the tangent
+    flags of the triangle of ``tris`` on the same particles, its corner bits following their particles, or None."""
+    was = {frozenset(t): (t, int(x)) for t, x in zip((tuple(map(int, t)) for t in tris), flags)}
+    out = []
+    for t in onto:
+        t = [int(v) for v in t]
+        hit = was.get(frozenset(t)) if min(t) >= 0 else None
+        if hit is None:
+            out.append(None)
+            continue
+        old, x = hit
+        out.append((x & ~CORNER_BITS) | sum(1 << t.index(p) for c, p in enumerate(old) if x >> c & 1))
+    return out
+
+
 def quads(tris, tri_uv, links) -> tuple | None:
     """Return (faces, face corner UVs, diagonal bend) when the part's links are exactly those ``gpuc_build`` makes
     from its triangles paired into quads, else None. ``links`` are (a, b, type) in part indices."""

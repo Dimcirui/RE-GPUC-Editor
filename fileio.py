@@ -1042,6 +1042,7 @@ def _build_keep(coll, head, cfg_objs, part_objs, from_mesh=False, mesh_coll=None
     starts = [int(np.argmax(f_part == k)) for k in range(len(part_objs))]        # each part's run, where it lies
     vertices = vertex_drive_info(stored_file(coll)) is not None
     _write_blocks(g, head.ree_gpuc_header, cfg_objs, part_objs, vals, notes, arm, starts, vertices)
+    _write_tangent_flags(g, part_objs, starts)
     # each link's tail: the links of a part in the file's order, as the import took them
     tails = [canon.link_tails(o, canon.load(o)) for o in part_objs]
     taken = [0] * len(part_objs)
@@ -1073,6 +1074,20 @@ def _build_keep(coll, head, cfg_objs, part_objs, from_mesh=False, mesh_coll=None
     data = g.build()
     gpuc.Gpuc(data, g.layout)
     return data, list(dict.fromkeys(notes))
+
+
+def _write_tangent_flags(g, part_objs, starts) -> None:
+    """Write the editable Parts' tangent flags onto the file's triangles on the same particles."""
+    s1 = g.sections[1].data
+    tris = [struct.unpack_from("<3H", s1, i * 20) for i in range(g.counts()["triangles"])]
+    for obj, start in zip(part_objs, starts):
+        d = canon.load(obj)
+        if not canon.editable(d):
+            continue
+        mine = start + d["src"][topology.triangles(d["faces"], d["face_uv"])[0]]
+        for i, x in enumerate(topology.carry_flags(mine.tolist(), d["tri_flags"], tris)):
+            if x is not None:
+                struct.pack_into("<H", s1, i * 20 + 6, x)
 
 
 def _batch_of(sizes, welded, notes, keep=None) -> np.ndarray:
@@ -1857,9 +1872,9 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
         if quads is not None:
             data["faces"], data["face_uv"], bend = quads
             data["editable"] = True
-            flag = {frozenset(t): int(x) for t, x in zip(data["tris"].tolist(), f["tri_flags"][tri_keep])}
-            data["tri_flags"] = [flag.get(frozenset(t), 0) for t in
-                                 topology.triangles(data["faces"], data["face_uv"])[0].tolist()]
+            data["tri_flags"] = [x or 0 for x in topology.carry_flags(
+                data["tris"].tolist(), f["tri_flags"][tri_keep],
+                topology.triangles(data["faces"], data["face_uv"])[0].tolist())]
         elif editable:
             fixed.append(block["part_name"] or f"part {i}")
         obj = _new_locked_part(coll, arm, cfg_objs[min(block["config"], len(cfg_objs) - 1)], block, data)
@@ -1957,6 +1972,7 @@ def _keep_shapes(coll, arm, f, by_hash, notes) -> None:
         root = collision.new_capsule(coll, arm, a, off, r, a, off, r, gp.signed(ha), gp.signed(ha), shape="SPHERE")
         if hb != NO_JOINT:
             root[PAIR_KEY] = gp.signed(hb)
+            root.id_properties_ui(PAIR_KEY).update(description="Effect unknown. A second joint hash some spheres hold")
     for ha, _, normal, d in f["planes"]:
         a = by_hash.get(ha, f"HASH_{ha}")
         missing += ha not in by_hash

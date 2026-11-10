@@ -10,6 +10,8 @@
 - **Force Export** — in the export dialog: exports without a matching `.mesh`, the joints taken from the scene's weights.
 - **Edit Keep Structure Parts** — move, add, remove and reconnect particles of an imported cloth in Edit Mode, cut slits and repaint its skin; the export writes the file again from the Parts. Works on game files that Rebuild from Bones cannot take. **Import a cloth again to edit it if an earlier version imported it.**
 - **Collision planes and spheres for Wilds, RE9 and Onimusha** — a file's own planes and spheres import as objects and export to their own sections, chosen by the Part's Plane and Sphere Bits; Collision From Bones makes planes for every game.
+- **Triangle tangent flags** — on an editable Keep Structure Part's faces, as attributes you can read and set; new triangles whose UVs span no area get the flag the game's files give them.
+- **Second Joint Hash** — shown in the Collision panel for a file's spheres that hold one. Effect unknown.
 - **Unkn Particle 0–5** — six more per-particle values a file holds, kept, painted and exported like the others. Effect unknown.
 
 ### Changed

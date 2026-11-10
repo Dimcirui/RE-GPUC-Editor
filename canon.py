@@ -11,7 +11,8 @@ Maintenance constraints:
   6-bone skin by name and normals, and is never regenerated. ``count``, ``faces``, ``face_uvs``, ``links`` and
   ``particle_uv`` serve both kinds.
 - An editable locked Part also stores its faces (quads split at a-c, ``topology``), each of their triangles'
-  tangent flags and each particle's index in the file (``src``, -1 for a new one); its mesh carries ``PARTICLE_ID`` and one skin group per bone, and a change
+  tangent flags and each particle's index in the file (``src``, -1 for a new one); its mesh carries
+  ``PARTICLE_ID``, one skin group per bone and the flags (``TANGENT_FLAGS``, copied back by ``sync``). A change
   to its structure or skin is taken by ``structure.adopt`` instead of being undone."""
 import bpy
 import numpy as np
@@ -22,6 +23,8 @@ KEY = "ree_gpuc_canon"
 UV_LAYER = "grid"
 ROW, COL = "gpuc_row", "gpuc_col"
 PARTICLE_ID = "gpuc_particle_id"
+# on an editable locked Part's faces: the tangent flags of each face's first triangle and of a quad's second
+TANGENT_FLAGS = ("gpuc_tangent_flags_a", "gpuc_tangent_flags_b")
 MAPPING_KEY = "ree_gpuc_value_mapping"
 
 
@@ -451,6 +454,7 @@ def build_mesh(obj) -> None:
     for g in [g for g in obj.vertex_groups if g.name not in keep]:
         obj.vertex_groups.remove(g)
     if editable(d):
+        write_tangent_flags(obj, d)
         dense = skin_dense(d)
         for k, name in enumerate(d["nodes"]):
             g = obj.vertex_groups.new(name=name)
@@ -459,6 +463,37 @@ def build_mesh(obj) -> None:
                     g.add([int(i) for i in np.flatnonzero(dense[:, k] == value)], float(value), "REPLACE")
     write_groups(obj, d)
     obj.vertex_groups.active_index = obj.vertex_groups[group_name(FIELD_NAMES[0])].index
+
+
+def write_tangent_flags(obj, d) -> None:
+    """Put an editable Part's triangles' tangent flags on its faces (``TANGENT_FLAGS``)."""
+    me = obj.data
+    flags = iter(int(x) for x in d["tri_flags"])
+    first, second = [], []
+    for f in d["faces"]:
+        first.append(next(flags, 0))
+        second.append(next(flags, 0) if len(f) == 4 else 0)
+    for name, values in zip(TANGENT_FLAGS, (first, second)):
+        if name in me.attributes:
+            me.attributes.remove(me.attributes[name])
+        me.attributes.new(name, "INT", "FACE").data.foreach_set("value", np.asarray(values, np.int32))
+
+
+def read_tangent_flags(obj, d) -> list | None:
+    """The triangles' tangent flags the faces hold, clamped to u16; None when an attribute is missing."""
+    me = obj.data
+    got = []
+    for name in TANGENT_FLAGS:
+        attr = me.attributes.get(name)
+        if attr is None or attr.domain != "FACE" or attr.data_type != "INT" or len(attr.data) != len(d["faces"]):
+            return None
+        values = np.empty(len(d["faces"]), np.int32)
+        attr.data.foreach_get("value", values)
+        got.append(np.clip(values, 0, 0xFFFF).tolist())
+    out = []
+    for f, a, b in zip(d["faces"], *got):
+        out += [a, b] if len(f) == 4 else [a]
+    return out
 
 
 def skin_dense(d) -> np.ndarray:
@@ -551,6 +586,13 @@ def sync(obj) -> None:
     for f, v in values(obj, d).items():
         if not np.array_equal(v, d[f]):
             c[f] = [float(x) for x in v]
+    if editable(d):
+        flags = read_tangent_flags(obj, d)
+        if flags is None:
+            write_tangent_flags(obj, d)
+        elif flags != [int(x) for x in d["tri_flags"]]:
+            c["tri_flags"] = flags
+            write_tangent_flags(obj, load(obj))    # shows clamped values as written
     remember_mapping(obj)
 
 

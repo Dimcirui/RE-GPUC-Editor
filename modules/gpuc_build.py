@@ -46,7 +46,7 @@ class ClothSpec:
     batch_of    (P,) int, optional: each particle's batch (``batches``), not decreasing; none is one batch. An
                 output joint's particles must all be in one batch.
     tri_flags   optional: each triangle's u16 tangent flags, in the order the faces split (a quad gives two);
-                none is 0
+                a triangle past its end takes ``tangent_flags``'s
     """
 
     def __init__(self, positions, sim_weight, skin_bones, skin_w, faces, face_uv, outputs, diagonal_bend=None,
@@ -79,20 +79,45 @@ def batches(part_sizes, welded_pairs, limit=BATCH_LIMIT):
     return out
 
 
+NO_UV_TANGENT = 8                 # tangent flag: the triangle's face normal only, no tangent from its UVs
+
+
+def _uv_words(uv) -> list:
+    return [max(0, min(65535, int(round(c * 65535)))) for p in uv for c in p]
+
+
+def _tangent_flag(q) -> int:
+    u0, v0, u1, v1, u2, v2 = q
+    return NO_UV_TANGENT if (u1 - u0) * (v2 - v0) - (u2 - u0) * (v1 - v0) == 0 else 0
+
+
+def _split(faces, face_uv):
+    """(triangle, the six unorm16 UVs it is written with) as the faces split; a quad's second triangle copies the
+    first one's UVs."""
+    for f, uv in zip(faces, face_uv):
+        q = _uv_words(uv)
+        if len(f) == 3:
+            yield (f[0], f[1], f[2]), q
+        else:
+            yield (f[0], f[1], f[2]), q[0:6]
+            yield (f[0], f[2], f[3]), q[0:6]
+
+
+def tangent_flags(faces, face_uv) -> list:
+    """Each triangle's tangent flags as a new triangle takes them: ``NO_UV_TANGENT`` where its written UVs span no
+    area, else 0. ``face_uv`` as in ``ClothSpec``."""
+    return [_tangent_flag(q) for _, q in _split(faces, face_uv)]
+
+
 def _triangles(spec):
     # tail: u16 tangent flags (bits 0-2 flip the tangent at that corner for a mirrored UV; bit 3 no UV tangent,
     # face normal only), then three unorm16 UVs
-    tris = []  # (i, j, k, uv tail bytes)
-    flags = iter(getattr(spec, "tri_flags", None) or [])
-    for f, uv in zip(spec.faces, spec.face_uv):
-        q = [max(0, min(65535, int(round(c * 65535)))) for p in uv for c in p]
-        if len(f) == 3:
-            tris.append((f[0], f[1], f[2], struct.pack("<H6H", next(flags, 0), *q)))
-        else:
-            # first triangle (a, b, c); the second copies the first one's UVs
-            tris.append((f[0], f[1], f[2], struct.pack("<H6H", next(flags, 0), *q[0:6])))
-            tris.append((f[0], f[2], f[3], struct.pack("<H6H", next(flags, 0), *q[0:6])))
-    return tris
+    flags = list(getattr(spec, "tri_flags", None) or [])
+    out = []  # (i, j, k, tail bytes)
+    for t, (tri, q) in enumerate(_split(spec.faces, spec.face_uv)):
+        flag = flags[t] if t < len(flags) else _tangent_flag(q)
+        out.append((*tri, struct.pack("<H6H", flag, *q)))
+    return out
 
 
 def _relations(faces):

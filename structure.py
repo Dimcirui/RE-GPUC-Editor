@@ -6,7 +6,7 @@ Maintenance constraints:
   not the copy nearest the particle's last position, is a new particle. Kept particles keep their file index
   (``src``, which the export's driven joints follow), exact values, skin and link tails; welds follow them too.
 - Links come from the faces (``topology.links_of``); a new link takes the commonest tail of its shape on the Part,
-  a new triangle tangent flags 0.
+  a new triangle the export's tangent flags for its UVs (``gpuc_build.tangent_flags``).
 - Every change ends in ``canon.build_mesh``, which numbers the particles again."""
 import collections
 
@@ -155,6 +155,19 @@ def _values(obj, keep, old) -> dict:
     return out
 
 
+def _tri_flags(faces, face_uv, tris, keep, old) -> list:
+    """Each triangle's tangent flags: a triangle of kept particles that was one keeps its flags; any other takes
+    the export's flags for a new triangle."""
+    corners, at = [], 0
+    for f in faces:
+        corners.append([tuple(map(float, p)) for p in np.clip(face_uv[at:at + len(f)], 0.0, 1.0)])
+        at += len(f)
+    fresh = gpuc_build.tangent_flags(faces, corners)
+    was = topology.carry_flags(topology.triangles(old["faces"], old["face_uv"])[0].tolist(), old["tri_flags"],
+                               keep[tris].tolist())
+    return [f if f is not None else x for f, x in zip(was, fresh)]
+
+
 def _welds(obj, keep) -> int:
     """Move the welds of the Part onto its kept particles; return how many pairs were dropped."""
     coll = reference.cloth_of(obj)
@@ -195,10 +208,7 @@ def adopt(obj) -> str:
     if sign < 0:
         normal = -normal
     src = np.where(keep >= 0, old["src"][np.clip(keep, 0, None)], -1)
-    flag = {frozenset(t): int(x) for t, x in zip(topology.triangles(old["faces"], old["face_uv"])[0].tolist(),
-                                                   old["tri_flags"])}
-    tri_flags = [flag.get(frozenset(int(keep[v]) for v in t), 0) if (keep[list(t)] >= 0).all() else 0
-                 for t in tris.tolist()]
+    tri_flags = _tri_flags(faces, face_uv, tris, keep, old)
     data = {**old, "count": n, "co": co, "tris": tris, "tri_uv": tri_uv - (old["tile"], 0.0), "faces": faces,
             "face_uv": face_uv, "links": links, "tails": tails, "nodes": names, "skin": skin, "skin_w": skin_w,
             "normal": normal, "src": src, "tri_flags": tri_flags, "editable": True, "edited": True, **values}

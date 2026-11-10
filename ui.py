@@ -636,6 +636,9 @@ class REE_GPUC_PT_object_collision(_ObjectPanel, bpy.types.Panel):
                 col.prop(c, joint)
             col.prop(c, offset)
             col.prop(c, radius)
+        from . import fileio
+        if fileio.PAIR_KEY in root and collision.is_sphere(c):
+            col.prop(root, f'["{fileio.PAIR_KEY}"]', text="Second Joint Hash")
 
 
 class REE_GPUC_PT_object_plane(_ObjectPanel, bpy.types.Panel):
