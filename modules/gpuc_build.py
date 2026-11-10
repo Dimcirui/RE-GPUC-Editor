@@ -45,10 +45,12 @@ class ClothSpec:
     diagonal_bend (P,) bool, optional: off where a quad diagonal starting at that particle has no bend link
     batch_of    (P,) int, optional: each particle's batch (``batches``), not decreasing; none is one batch. An
                 output joint's particles must all be in one batch.
+    tri_flags   optional: each triangle's u16 tangent flags, in the order the faces split (a quad gives two);
+                none is 0
     """
 
     def __init__(self, positions, sim_weight, skin_bones, skin_w, faces, face_uv, outputs, diagonal_bend=None,
-                 batch_of=None):
+                 batch_of=None, tri_flags=None):
         self.positions = np.asarray(positions, float)
         self.sim_weight = np.asarray(sim_weight, float)
         self.skin_bones = np.asarray(skin_bones, int)
@@ -58,6 +60,7 @@ class ClothSpec:
         self.outputs = outputs
         self.diagonal_bend = None if diagonal_bend is None else np.asarray(diagonal_bend, bool)
         self.batch_of = None if batch_of is None else np.asarray(batch_of, np.int64)
+        self.tri_flags = None if tri_flags is None else [int(x) for x in tri_flags]
 
 
 BATCH_LIMIT = 512                 # particles a batch takes before the next Part starts another
@@ -80,16 +83,15 @@ def _triangles(spec):
     # tail: u16 tangent flags (bits 0-2 flip the tangent at that corner for a mirrored UV; bit 3 no UV tangent,
     # face normal only), then three unorm16 UVs
     tris = []  # (i, j, k, uv tail bytes)
+    flags = iter(getattr(spec, "tri_flags", None) or [])
     for f, uv in zip(spec.faces, spec.face_uv):
         q = [max(0, min(65535, int(round(c * 65535)))) for p in uv for c in p]
         if len(f) == 3:
-            tail = struct.pack("<H6H", 0, *q)
-            tris.append((f[0], f[1], f[2], tail))
+            tris.append((f[0], f[1], f[2], struct.pack("<H6H", next(flags, 0), *q)))
         else:
-            # first triangle (a, b, c); the second copies the first one's tail
-            tail = struct.pack("<H6H", 0, *(q[0:2] + q[2:4] + q[4:6]))
-            tris.append((f[0], f[1], f[2], tail))
-            tris.append((f[0], f[2], f[3], tail))
+            # first triangle (a, b, c); the second copies the first one's UVs
+            tris.append((f[0], f[1], f[2], struct.pack("<H6H", next(flags, 0), *q[0:6])))
+            tris.append((f[0], f[2], f[3], struct.pack("<H6H", next(flags, 0), *q[0:6])))
     return tris
 
 

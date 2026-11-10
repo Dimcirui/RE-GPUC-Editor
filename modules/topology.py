@@ -1,0 +1,101 @@
+"""Pair a part's triangles into quads and derive its links from its faces (``gpuc_build._relations``).
+
+Maintenance constraints:
+- A quad (a, b, c, d) is split at a-c into (a, b, c) and (a, c, d), as ``gpuc_build._triangles`` writes it, so
+  ``quads`` puts the file's diagonal at a-c and keeps both triangles' winding.
+- A part's quad diagonals carry a bend link all or none: ``quads`` fails on a part that mixes them."""
+import collections
+
+import numpy as np
+
+from . import gpuc_build
+
+
+def quads(tris, tri_uv, links) -> tuple | None:
+    """Return (faces, face corner UVs, diagonal bend) when the part's links are exactly those ``gpuc_build`` makes
+    from its triangles paired into quads, else None. ``links`` are (a, b, type) in part indices."""
+    tris = [tuple(int(v) for v in t) for t in tris]
+    tri_uv = np.asarray(tri_uv, float).reshape(-1, 3, 2)
+    structural = {(min(a, b), max(a, b)) for a, b, t in links if t == 0}
+    by_edge = collections.defaultdict(list)
+    for k, t in enumerate(tris):
+        for i in range(3):
+            by_edge[tuple(sorted((t[i], t[(i + 1) % 3])))].append(k)
+    paired, faces, uvs = set(), [], []
+    for edge, ks in sorted(by_edge.items()):
+        if edge in structural:
+            continue
+        if len(ks) != 2 or paired & set(ks):
+            return None
+        quad = _join(tris[ks[0]], tri_uv[ks[0]], tris[ks[1]], tri_uv[ks[1]])
+        if quad is None:
+            return None
+        paired |= set(ks)
+        faces.append(quad[0])
+        uvs.append(quad[1])
+    for k, t in enumerate(tris):
+        if k not in paired:
+            faces.append(t)
+            uvs.append(tri_uv[k])
+    want = {(min(a, b), max(a, b), int(t)) for a, b, t in links}
+    for bend in (True, False):
+        if {tuple(x) for x in links_of(faces, bend).tolist()} == want and len(want) == len(links):
+            return faces, np.concatenate(uvs).reshape(-1, 2), bend
+    return None
+
+
+def _join(t1, uv1, t2, uv2):
+    """The quad of two triangles sharing their diagonal, starting at a diagonal corner, or None when their
+    windings disagree."""
+    shared = set(t1) & set(t2)
+    k = next(i for i in range(3) if t1[i] not in shared)          # t1 turned so its off corner is second
+    order = [(k - 1) % 3, k, (k + 1) % 3]
+    a, b, c = (t1[i] for i in order)
+    d = next(v for v in t2 if v not in shared)
+    second = (a, c, d)
+    if not any(second == t2[i:] + t2[:i] for i in range(3)):
+        return None
+    uv = uv1[order]
+    # a second triangle that repeats the first one's UVs (as the export writes it) holds none of its own corner
+    d_uv = uv[0] + uv[2] - uv[1] if np.array_equal(uv1, uv2) else uv2[t2.index(d)]
+    return (a, b, c, d), np.vstack([uv, d_uv[None]])
+
+
+def triangles(faces, face_uv) -> tuple:
+    """(triangles, their corner UVs) as the export splits the faces."""
+    tris, uvs, at = [], [], 0
+    face_uv = np.asarray(face_uv, float).reshape(-1, 2)
+    for f in faces:
+        uv = face_uv[at:at + len(f)]
+        at += len(f)
+        tris.append(tuple(f[:3]))
+        uvs.append(uv[:3])
+        if len(f) == 4:
+            tris.append((f[0], f[2], f[3]))
+            uvs.append(uv[[0, 2, 3]])
+    return np.asarray(tris, np.int64).reshape(-1, 3), np.asarray(uvs, np.float32).reshape(-1, 3, 2)
+
+
+class _Spec:
+    def __init__(self, faces, bend):
+        self.faces = [tuple(f) for f in faces]
+        self.diagonal_bend = bend
+
+
+def links_of(faces, diagonal_bend: bool = True) -> np.ndarray:
+    """Every link (a, b, type), a < b, in the export's order."""
+    n = max((max(f) for f in faces), default=-1) + 1
+    bend = None if diagonal_bend else np.zeros(n, bool)
+    out = [(a, b, typ) for (a, b), typ, _ in gpuc_build._links(_Spec(faces, bend))]
+    return np.asarray(out, np.int64).reshape(-1, 3)
+
+
+def normals(co, tris) -> np.ndarray:
+    """Each particle's unit normal: its triangles' normals, area weighted, by their winding."""
+    co = np.asarray(co, float)
+    t = np.asarray(tris, np.int64).reshape(-1, 3)
+    n = np.cross(co[t[:, 1]] - co[t[:, 0]], co[t[:, 2]] - co[t[:, 0]])
+    out = np.zeros_like(co)
+    for k in range(3):
+        np.add.at(out, t[:, k], n)
+    return out / np.maximum(np.linalg.norm(out, axis=1, keepdims=True), 1e-12)

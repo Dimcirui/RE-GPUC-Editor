@@ -536,7 +536,12 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
             text = obj.get(key)
             if text and text != "ok":
                 layout.label(text=text, icon=icon)
-        if canon.locked(obj):
+        if canon.edited(obj):
+            layout.label(text="Particles or faces edited: the file is written again from the Parts on export",
+                         icon="MESH_DATA")
+        elif canon.editable_part(obj):
+            layout.label(text="Imported with Keep Structure: edit particles and faces in Edit Mode", icon="UNLOCKED")
+        elif canon.locked(obj):
             layout.label(text="Imported with Keep Structure: values can be edited, but not regenerated",
                          icon="LOCKED")
         re4_part = props.is_re4_object(obj)

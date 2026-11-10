@@ -52,7 +52,7 @@ After you move bones in Edit Mode, the affected Parts rebuild when you leave it.
   <summary>Import modes</summary>
 
 * **Rebuild from Bones** (default): rebuilds the cloth with the editor's grid model, so it can be regenerated. Needs a Mesh Collection. Files whose structure does not fit the model are imported with Keep Structure instead, with a message saying why.
-* **Keep Structure**: keeps the file's particles, links and skinning, and lets you edit the values. With no edits, the export is byte for byte the original file. It can only be exported for the game the file came from.
+* **Keep Structure**: keeps the file's particles, links and skinning, and lets you edit the values, and the particles and faces themselves (see Editing a Keep Structure Part). With no edits, the export is byte for byte the original file. It can only be exported for the game the file came from.
 * **Update Existing**: applies the file's values to an existing GPUC collection.
 
 A cloth generated from bones or imported with Rebuild from Bones can be converted between Wilds, RE9 and Onimusha by changing the Game in its Header.
@@ -84,7 +84,20 @@ Select a generated Part and press Tab to enter Edit Mode. Move particles with `G
 * Vertex count, connectivity and UVs are protected: deleting or merging vertices or changing UVs is undone when you leave Edit Mode.
 * "Reset Selected" / "Reset All" return particles to the positions generated from the bones.
 * A file exported with offsets may import with Keep Structure. Keep the .blend file to go on editing the offsets.
-* Particles of Keep Structure Parts (including RE4) cannot be moved.
+* Keep Structure Parts: see below.
+
+</details>
+
+<details>
+  <summary>Editing a Keep Structure Part</summary>
+
+A Keep Structure Part is a mesh of quads and triangles: each vertex is a particle, and its links come from the faces, as the game's own cloth is made. In Edit Mode you can move particles, subdivide, cut loops, extrude, delete or fill faces, and cut slits. Its skin is in one vertex group per bone, which you can paint. The changes are taken when you go back to Object Mode.
+
+* Faces must have 3 or 4 corners, every particle must be on a face, and every particle needs a skin weight; otherwise the edit is undone, with the reason in the Part panel.
+* New particles take their values and skin from their vertex groups, which Blender fills in as you edit. New links take the commonest tail of their shape on the Part.
+* Once a Part is edited, the export writes the whole file again from the Parts instead of patching the original. The driven joints stay where the file binds them; a joint whose particles were removed, or whose bone now skins new particles, is driven by the particles skinned to its bone most.
+* Parts cannot be added or removed, and Update Existing is refused, once a Part is edited.
+* Not editable: RE4 cloth, files that drive mesh vertices, and the few parts whose links are not the ones their faces give (the import says which).
 
 </details>
 

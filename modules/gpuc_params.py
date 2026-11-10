@@ -123,6 +123,8 @@ PART = {"clsp_flags_a": (0x10, "i"), "clsp_flags_b": (0x14, "i"), "friction": (0
 PARTICLE_VALUES = {"sim_weight": 0x00, "radius": 0x04, "inverse_mass": 0x08, "max_distance": 0x0C,
                    "space_limit_lower": 0x10, "space_limit_upper": 0x14, "backstop_radius": 0x18,
                    "backstop_offset": 0x1C}
+SEC28 = 24                         # section 28: one record per particle, six f32 of unknown effect
+SEC28_VALUES = {f"unkn_particle_{k}": 4 * k for k in range(6)}
 SHAPES = ("vertical", "ring", "shear", "bend")
 HI_SCALE = 4095.0
 

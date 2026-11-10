@@ -48,7 +48,8 @@ IMPORT_MODES = [
     ("UPDATE", "Update Existing", "Write the file's values onto the GPUC collection it was imported or exported "
                                   "from. Refused if the two structures differ"),
     ("KEEP", "Keep Structure", "Create a new GPUC collection with the file's particles, faces, links and skinning. "
-                               "Every value can be edited; the structure cannot be regenerated"),
+                               "Every value can be edited, and the particles and faces in Edit Mode; the parts are not regenerated "
+                               "from bones"),
     ("REBUILD", "Rebuild from Bones", "Rebuild the parts from the mesh's bones with the file's values, so they can be "
                                       "regenerated. Uses Keep Structure if the rebuild does not reproduce the "
                                       "file's structure. Files exported by this editor always rebuild"),
@@ -176,7 +177,7 @@ def _fell_back_popup(context, fell_back) -> None:
             for k, line in enumerate(textwrap.wrap(why, 90)):
                 col.label(text=line, icon="BLANK1" if k or name else "INFO")
         col.separator()
-        col.label(text="Their Parts keep the file's structure: values can be edited, but not regenerated")
+        col.label(text="Their Parts keep the file's structure: edit values, or particles and faces in Edit Mode")
     context.window_manager.popup_menu(draw, title="Imported with Keep Structure, not rebuilt", icon="ERROR")
 
 

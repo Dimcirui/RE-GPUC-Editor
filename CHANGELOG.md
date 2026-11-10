@@ -8,6 +8,8 @@
 - **RE4 cloth from bones** — a cloth created for RE4 now exports for RE4, driving joints or LOD0's vertices.
 - **RE4 collision planes** — Collision From Bones adds a Plane for RE4 cloth; spheres are written as spheres.
 - **Force Export** — in the export dialog: exports without a matching `.mesh`, the joints taken from the scene's weights.
+- **Edit Keep Structure Parts** — move, add, remove and reconnect particles of an imported cloth in Edit Mode, cut slits and repaint its skin; the export writes the file again from the Parts. Works on game files that Rebuild from Bones cannot take. **Import a cloth again to edit it if an earlier version imported it.**
+- **Unkn Particle 0–5** — six more per-particle values a file holds, kept, painted and exported like the others. Effect unknown.
 
 ### Changed
 - **Batches** — a cloth of several Parts is split into batches of up to 512 particles between Parts, as the game's files are; it was one batch however large.

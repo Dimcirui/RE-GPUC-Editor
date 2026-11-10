@@ -28,7 +28,7 @@ import numpy as np
 from mathutils import Matrix
 
 from . import canon, collision, generate, props, reference, weld
-from .modules import gpuc, gpuc_build, gpuc_params as gp, grid, re4, re4_build, vertex_drive
+from .modules import gpuc, gpuc_build, gpuc_params as gp, grid, re4, re4_build, topology, vertex_drive
 
 ROTATE_BACK = np.array(Matrix.Rotation(math.radians(-90.0), 4, "X"), float)
 GAMES = props.GAMES
@@ -1014,6 +1014,67 @@ def _weld_links(coll, starts) -> list:
     return out
 
 
+def _build_keep(coll, head, cfg_objs, part_objs, from_mesh=False, mesh_coll=None, mesh_file="",
+                gpuc_path="") -> tuple:
+    """Write a Keep Structure cloth's values over its stored file, the structure unchanged; ``from_mesh`` re-indexes
+    the driven joints by their bones among the mesh's weighted bones (``export_weighted``)."""
+    notes = []
+    g = gpuc.Gpuc(stored_file(coll))
+    game = gp.ext_of(g.layout)
+    f_part = np.frombuffer(bytes(g.sections[0].data)[:g.counts()["particles"] * gp.PARTICLE], np.uint8) \
+        .reshape(-1, gp.PARTICLE)[:, 0x28:0x2C].copy().view("<u4")[:, 0]
+    counts = np.bincount(f_part, minlength=len(part_objs)).tolist()
+    mine = []
+    for obj in part_objs:
+        if not canon.locked(obj):
+            raise ExportError(f"{obj.name} was made from bones in a cloth that keeps a file's structure")
+        mine.append(canon.count(canon.load(obj)))
+    if any(canon.edited(o) for o in part_objs):
+        if len(part_objs) != len(counts):
+            raise ExportError(f"it has {len(part_objs)} Parts, its file {len(counts)}: a Keep Structure cloth cannot "
+                              f"add or remove Parts")
+        return _build_restructured(coll, head, cfg_objs, part_objs, g, f_part, from_mesh, mesh_coll, mesh_file,
+                                   gpuc_path)
+    if mine != counts:
+        raise ExportError(f"its Parts ({mine} particles) are not its file's ({counts}): import it again")
+    arm = next((o.ree_gpuc_part.armature for o in part_objs if o.ree_gpuc_part.armature), None)
+    vals = [canon.values(o) for o in part_objs]
+    starts = [int(np.argmax(f_part == k)) for k in range(len(part_objs))]        # each part's run, where it lies
+    vertices = vertex_drive_info(stored_file(coll)) is not None
+    _write_blocks(g, head.ree_gpuc_header, cfg_objs, part_objs, vals, notes, arm, starts, vertices)
+    # each link's tail: the links of a part in the file's order, as the import took them
+    tails = [canon.link_tails(o, canon.load(o)) for o in part_objs]
+    taken = [0] * len(part_objs)
+    s2 = g.sections[2].data
+    welded = {}
+    for obj, pa, ia, pb, ib in weld.welds(coll):
+        if pa in part_objs and pb in part_objs:
+            welded[(starts[part_objs.index(pa)] + ia, starts[part_objs.index(pb)] + ib)] = obj
+    for k in range(g.counts()["links"]):
+        a, b = struct.unpack_from("<HH", s2, k * 16)
+        i = int(f_part[a])
+        if f_part[b] != i:                            # a link joining two parts: its weld's
+            obj = welded.get((a, b))
+            if obj is None:
+                raise ExportError(f"the file welds particle {a} (part {i}) to {b} (part {int(f_part[b])}) and no "
+                                  f"weld of the cloth does: a Keep Structure cloth cannot take a weld out")
+            if obj.get(weld.EDITED_KEY):
+                s2[k * 16 + 8:k * 16 + 16] = gp.tail_bytes(*obj.ree_gpuc_weld.tail())
+            continue
+        s2[k * 16 + 8:k * 16 + 16] = gp.tail_bytes(*tails[i][taken[i]])
+        taken[i] += 1
+    _write_capsules(g, coll, arm, notes)
+    if from_mesh:
+        palette = _mesh_palette(coll, head, arm, struct.unpack_from("<I", g.header, gp.offset_of(game, "joints"))[0],
+                                mesh_coll, mesh_file, gpuc_path, notes)
+        s23 = g.sections[23].data
+        for k, x in enumerate(palette):
+            struct.pack_into("<I", s23, 4 * k, x)
+    data = g.build()
+    gpuc.Gpuc(data, g.layout)
+    return data, list(dict.fromkeys(notes))
+
+
 def _batch_of(sizes, welded, notes, keep=None) -> np.ndarray:
     """Each particle's batch, the Parts in their stored order: ``keep`` (a batch per Part) while it still holds no
     more than ``BATCH_LIMIT`` particles a batch and no weld spans two, else ``gpuc_build.batches``."""
@@ -1051,64 +1112,159 @@ def _one_batch(outputs, batch_of, notes) -> None:
                      f"heaviest particle")
 
 
-def _build_keep(coll, head, cfg_objs, part_objs, from_mesh=False, mesh_coll=None, mesh_file="",
-                gpuc_path="") -> tuple:
-    """Write a Keep Structure cloth's values over its stored file, the structure unchanged; ``from_mesh`` re-indexes
-    the driven joints by their bones among the mesh's weighted bones (``export_weighted``)."""
+def _mesh_palette(coll, head, arm, joints, mesh_coll, mesh_file, gpuc_path, notes) -> list[int]:
+    """Each driven joint's index among the mesh's weighted bones (From Mesh); raises ``ExportError`` when a joint's
+    bone is unknown or has no weights."""
+    names = list(head.get(JOINTS_KEY, ()))
+    if arm is None or len(names) != joints:
+        raise ExportError("its driven joints were not found at import (no mesh collection): export As Imported")
+    weighted = export_weighted(coll, arm, mesh_coll, mesh_file, gpuc_path, notes)
+    lost = [k for k, n in enumerate(names) if n not in weighted]
+    if lost:
+        raise ExportError(f"{len(lost)} driven joints have no weighted bone in the mesh "
+                          f"({', '.join(names[k] or '(none)' for k in lost[:3])}): export As Imported")
+    return [weighted.index(n) for n in names]
+
+
+def _build_restructured(coll, head, cfg_objs, part_objs, g, f_part, from_mesh=False, mesh_coll=None, mesh_file="",
+                        gpuc_path="") -> tuple:
+    """Write a Keep Structure cloth whose Parts' structure was edited as a whole file of its game: particles, faces,
+    skin and values from the Parts, links from their faces, and the file's driven joints at the file's binds.
+
+    A joint keeps the file's particles and weights while they all remain and no new particle is skinned to its bone;
+    otherwise it takes the heaviest ``MIN_SLOTS`` particles skinned to that bone, as a cloth made from bones."""
     notes = []
-    g = gpuc.Gpuc(stored_file(coll))
-    game = gp.ext_of(g.layout)
-    f_part = np.frombuffer(bytes(g.sections[0].data)[:g.counts()["particles"] * gp.PARTICLE], np.uint8) \
-        .reshape(-1, gp.PARTICLE)[:, 0x28:0x2C].copy().view("<u4")[:, 0]
-    counts = np.bincount(f_part, minlength=len(part_objs)).tolist()
-    mine = []
-    for obj in part_objs:
-        if not canon.locked(obj):
-            raise ExportError(f"{obj.name} was made from bones in a cloth that keeps a file's structure")
-        mine.append(canon.count(canon.load(obj)))
-    if mine != counts:
-        raise ExportError(f"its Parts ({mine} particles) are not its file's ({counts}): import it again")
+    ext = gp.ext_of(g.layout)
+    f = file_parts(stored_file(coll))
     arm = next((o.ree_gpuc_part.armature for o in part_objs if o.ree_gpuc_part.armature), None)
-    vals = [canon.values(o) for o in part_objs]
-    starts = [int(np.argmax(f_part == k)) for k in range(len(part_objs))]        # each part's run, where it lies
-    vertices = vertex_drive_info(stored_file(coll)) is not None
-    _write_blocks(g, head.ree_gpuc_header, cfg_objs, part_objs, vals, notes, arm, starts, vertices)
-    # each link's tail: the links of a part in the file's order, as the import took them
-    tails = [canon.link_tails(o, canon.load(o)) for o in part_objs]
-    taken = [0] * len(part_objs)
-    s2 = g.sections[2].data
-    welded = {}
-    for obj, pa, ia, pb, ib in weld.welds(coll):
-        if pa in part_objs and pb in part_objs:
-            welded[(starts[part_objs.index(pa)] + ia, starts[part_objs.index(pb)] + ib)] = obj
-    for k in range(g.counts()["links"]):
-        a, b = struct.unpack_from("<HH", s2, k * 16)
-        i = int(f_part[a])
-        if f_part[b] != i:                            # a link joining two parts: its weld's
-            obj = welded.get((a, b))
-            if obj is None:
-                raise ExportError(f"the file welds particle {a} (part {i}) to {b} (part {int(f_part[b])}) and no "
-                                  f"weld of the cloth does: a Keep Structure cloth cannot take a weld out")
-            if obj.get(weld.EDITED_KEY):
-                s2[k * 16 + 8:k * 16 + 16] = gp.tail_bytes(*obj.ree_gpuc_weld.tail())
+    arm = arm if arm is not None and arm.type == "ARMATURE" else None
+    bones = [b.name for b in arm.data.bones] if arm is not None else []
+    to_game = ROTATE_BACK @ np.array(arm.matrix_world, float) if arm is not None else np.eye(4)   # as import_keep
+
+    def full(name):                          # "#k": imported without a mesh, skin bone k of the file
+        if name.startswith("#"):
+            return int(name[1:])
+        if name not in bones:
+            raise ExportError(f"skin bone {name} is not in the armature")
+        return bones.index(name)
+
+    file_start = [int(np.argmax(f_part == k)) for k in range(len(part_objs))]
+    file_batch = np.zeros(len(f_part), np.int64)          # each file particle's batch
+    s7 = bytes(g.sections[7].data)
+    for b in range(len(s7) // 0x50):
+        count, start = struct.unpack_from("<I", s7, b * 0x50)[0], struct.unpack_from("<I", s7, b * 0x50 + 0x24)[0]
+        file_batch[start:start + count] = b
+    positions, sim_weight, skin_bones, skin_w, faces, uvs, bend, tri_flags = [], [], [], [], [], [], [], []
+    vals, run = [None] * len(part_objs), [0] * len(part_objs)
+    shapes, starts, new_of, fresh, base = {}, {}, {}, set(), 0
+    for k in sorted(range(len(part_objs)), key=lambda k: file_start[k]):     # the parts' runs in the file's order
+        obj = part_objs[k]
+        d = canon.load(obj)
+        if not canon.editable(d):
+            raise ExportError(f"{obj.name}: its links are not the ones its faces give, so the cloth cannot be rebuilt "
+                              f"with another Part's structure edited: import the file again")
+        v = canon.values(obj, d)
+        vals[k] = v
+        n = d["count"]
+        starts[obj] = run[k] = base
+        positions.append(d["co"].astype(float) @ to_game[:3, :3].T + to_game[:3, 3])
+        sim_weight.append(np.clip(v["sim_weight"], 0.0, 1.0))
+        tri_flags += list(d["tri_flags"])
+        corner = np.clip(d["face_uv"], 0.0, 1.0)
+        at = 0
+        for face in d["faces"]:
+            faces.append(tuple(base + i for i in face))
+            uvs.append([tuple(map(float, p)) for p in corner[at:at + len(face)]])
+            at += len(face)
+        idx = [full(b) for b in d["nodes"]]
+        for i in range(n):
+            row = [(idx[s], int(round(w * 255))) for s, w in zip(d["skin"][i], d["skin_w"][i]) if w > 0]
+            skin_bones.append([b for b, _ in row] + [row[0][0]] * (8 - len(row)))
+            skin_w.append([w for _, w in row] + [0] * (8 - len(row)))
+        bend.append(np.full(n, obj.ree_gpuc_part.diagonal_bend))
+        for (a, b, t, _), tail in zip(canon.links(d), canon.link_tails(obj, d)):
+            shapes[(base + int(a), base + int(b), int(t))] = gp.tail_bytes(*map(float, tail))
+        for i, s in enumerate(d["src"]):
+            if s >= 0:
+                new_of[file_start[k] + int(s)] = base + i
+            else:
+                fresh.add(base + i)
+        base += n
+    skinned = collections.defaultdict(list)            # bone -> (particle, its share of the particle's skin)
+    for p, (row, w) in enumerate(zip(skin_bones, skin_w)):
+        for b, x in zip(row, w):
+            if x:
+                skinned[b].append((p, x / 255.0))
+    palette = (_mesh_palette(coll, head, arm, len(f["joints"]), mesh_coll, mesh_file, gpuc_path, notes) if from_mesh
+               else [j["palette"] for j in f["joints"]])
+    outputs, moved, dropped = [], 0, 0
+    for j, x in zip(f["joints"], palette):
+        if not j["drivers"]:
+            dropped += 1
             continue
-        s2[k * 16 + 8:k * 16 + 16] = gp.tail_bytes(*tails[i][taken[i]])
-        taken[i] += 1
-    _write_capsules(g, coll, arm, notes)
-    if from_mesh:
-        names = list(head.get(JOINTS_KEY, ()))
-        if arm is None or len(names) != struct.unpack_from("<I", g.header, gp.offset_of(game, "joints"))[0]:
-            raise ExportError("its driven joints were not found at import (no mesh collection): export As Imported")
-        weighted = export_weighted(coll, arm, mesh_coll, mesh_file, gpuc_path, notes)
-        s23 = g.sections[23].data
-        lost = [k for k, n in enumerate(names) if n not in weighted]
-        if lost:
-            raise ExportError(f"{len(lost)} driven joints have no weighted bone in the mesh "
-                              f"({', '.join(names[k] or '(none)' for k in lost[:3])}): export As Imported")
-        for k, n in enumerate(names):
-            struct.pack_into("<I", s23, 4 * k, weighted.index(n))
-    data = g.build()
-    gpuc.Gpuc(data, g.layout)
+        cp = j["drivers"][0][0]
+        frame = f["frames"][cp][:, :3].astype(float)          # world -> the particle's local axes
+        world = np.eye(4)
+        world[:3, :3] = j["rotations"][0] @ frame
+        world[3, :3] = f["pos"][cp] + frame.T @ j["offsets"][0]
+        score = collections.Counter()
+        for p, w in j["drivers"]:
+            for b, s in zip(f["skin"][p], f["skin_w"][p]):
+                if s > 0 and b >= 0:
+                    score[int(b)] += w * s
+        bone = score.most_common(1)[0][0] if score else -1
+        kept = [new_of.get(p) for p, _ in j["drivers"]]
+        if None not in kept and not any(p in fresh for p, _ in skinned[bone]):
+            outputs.append(dict(palette=x, world=world, particles=kept, weights=[w for _, w in j["drivers"]]))
+            continue
+        keep = sorted(skinned[bone], key=lambda p: (-p[1], p[0]))[:gpuc_build.MIN_SLOTS]
+        if not keep:
+            dropped += 1
+            continue
+        keep.sort(key=lambda p: -p[0])
+        total = sum(s for _, s in keep)
+        outputs.append(dict(palette=x, world=world, particles=[p for p, _ in keep], weights=[s / total for _, s in keep]))
+        moved += 1
+    if not outputs:
+        raise ExportError("no driven joint has a particle left: nothing would move")
+    order = sorted(range(len(part_objs)), key=lambda k: file_start[k])
+    place = {obj: i for i, obj in enumerate(part_objs[k] for k in order)}
+    welded = {(place[pa], place[pb]) for _, pa, _, pb, _ in weld.welds(coll) if pa in place and pb in place}
+    batch_of = _batch_of([canon.count(canon.load(part_objs[k])) for k in order], welded, notes,
+                         [file_batch[file_start[k]] for k in order])
+    _one_batch(outputs, batch_of, notes)
+    spec = gpuc_build.ClothSpec(np.vstack(positions), np.concatenate(sim_weight), skin_bones, skin_w, faces, uvs,
+                                outputs, np.concatenate(bend), batch_of, tri_flags)
+    skin_table = sorted({b for row, w in zip(skin_bones, skin_w) for b, x in zip(row, w) if x})
+    link_tail = lambda typ, a, b: shapes.get((min(a, b), max(a, b), typ))  # noqa: E731
+    try:
+        out = gpuc_build.build(spec, g.layout, skin_table, link_tail=link_tail, welds=_weld_links(coll, starts))
+    except ValueError as e:
+        raise ExportError(str(e)) from e
+    rebuilt = gpuc.Gpuc(out, g.layout)
+    for i in gpuc_build.PACKED:                               # parsing infers 16 from a start on 16; these pack at 4
+        rebuilt.sections[i].align = 4
+    _write_blocks(rebuilt, head.ree_gpuc_header, cfg_objs, part_objs, vals, notes, arm, run)
+    _write_capsules(rebuilt, coll, arm, notes)
+    # the file's own collision planes and spheres name joints alone: kept as they are
+    rebuilt.set_planes_spheres(*(bytes(g.sections[k].data) if k in g.sections else b"" for k in (14, 15)))
+    left = [name for name in ("interpolations", "restrictions", "point_triangle_contacts", "edge_edge_contacts")
+            if struct.unpack_from("<I", g.header, gp.offset_of(ext, name))[0]]
+    B = int(batch_of.max()) + 1
+    for name, v in (("batch_infos", B), ("sim_lods", B), ("sim_lod_one", 1), ("interpolations", 0),
+                    ("restrictions", 0), ("sim_deform_weights", 1), ("point_triangle_contacts", 0),
+                    ("edge_edge_contacts", 0)):
+        struct.pack_into("<I", rebuilt.header, gp.offset_of(ext, name), v)
+    data = rebuilt.build()
+    gpuc.Gpuc(data, g.layout)                                 # raises if the output does not parse back
+    notes.append(Info("Particles or faces edited: the file is written again from the Parts"))
+    if moved:
+        notes.append(Info(f"{moved} driven joints follow new particles (the heaviest skinned to their bones)"))
+    if dropped:
+        notes.append(f"{dropped} driven joints have no particle left and are left out")
+    if left:
+        notes.append(f"The file's {', '.join(n.replace('_', ' ') for n in left)} are left out: they name its old "
+                     f"particles")
     return data, list(dict.fromkeys(notes))
 
 
@@ -1189,7 +1345,8 @@ def _build_re4(coll, head, cfg_objs, part_objs):
             raise ExportError(f"{obj.name}: RE4 particle positions or triangles changed; import again")
         values = canon.values(obj, d)
         for name, value in values.items():
-            original = f["values"][name][sel]
+            original = f["values"][name][sel] if name in f["values"] else np.full(len(sel), canon.DEFAULTS[name],
+                                                                                  np.float32)   # no section 28
             changed = np.flatnonzero(value != original)
             if len(changed) and name not in re4.PARTICLE_VALUES:
                 raise ExportError(f"RE4 has no particle field {name}")
@@ -1310,6 +1467,7 @@ def _write_blocks(g, h, cfg_objs, part_objs, part_vals, notes, arm=None, starts=
     g.sections[22].data = bytearray(bytes(g.sections[22].data[:before]) + names)
     g.refs["sec6"] = [(22, before + off) for off in at]
     s6, s0 = bytearray(), g.sections[0].data
+    s28 = g.sections[28].data if 28 in g.sections else bytearray()
     starts = starts or np.cumsum([0] + [len(v["sim_weight"]) for v in part_vals]).tolist()
     for k, (obj, vals) in enumerate(zip(part_objs, part_vals)):
         p = obj.ree_gpuc_part
@@ -1329,6 +1487,10 @@ def _write_blocks(g, h, cfg_objs, part_objs, part_vals, notes, arm=None, starts=
             for field, off in gp.PARTICLE_VALUES.items():
                 v = float(np.clip(vals[field][i], 0.0, 1.0)) if field == "sim_weight" else float(vals[field][i])
                 s0[at_ + off:at_ + off + 4] = np.float32(v).tobytes()
+            at28 = (starts[k] + i) * gp.SEC28
+            if at28 + gp.SEC28 <= len(s28):
+                for field, off in gp.SEC28_VALUES.items():
+                    s28[at28 + off:at28 + off + 4] = np.float32(vals[field][i]).tobytes()
             s0[at_ + 0x28:at_ + 0x30] = np.array([k, config], "<u4").tobytes()
     g.sections[6].data = s6
     struct.pack_into("<I", header, gp.offset_of(game, "parts"), len(part_objs))
@@ -1369,7 +1531,10 @@ def file_parts(raw: bytes) -> dict:
     """Return a .gpuc's structure in game space: particles (skin as full mesh bone indices, u8 weights), triangles
     and UVs, links (a, b, type, tail), output joints and the file's own capsules."""
     if re4.matches(raw):
-        return re4.File(raw).geometry()
+        out = re4.File(raw).geometry()
+        for field in gp.SEC28_VALUES:                  # RE4 has no section 28
+            out["values"][field] = np.full(out["count"], canon.DEFAULTS[field], np.float32)
+        return out
     g = gpuc.Gpuc(raw)
     game = gp.ext_of(g.layout)
     c = g.counts()
@@ -1387,6 +1552,7 @@ def file_parts(raw: bytes) -> dict:
     tb = bytes(g.sections[1].data)
     tris = np.array([struct.unpack_from("<3H", tb, i * 20) for i in range(T)], np.int64).reshape(-1, 3)
     tri_uv = np.array([struct.unpack_from("<6H", tb, i * 20 + 8) for i in range(T)], float).reshape(-1, 3, 2) / 65535
+    tri_flags = np.array([struct.unpack_from("<H", tb, i * 20 + 6)[0] for i in range(T)], np.int64)
     lb, ty = bytes(g.sections[2].data), bytes(g.sections[29].data)
     links = [(*struct.unpack_from("<HH", lb, k * 16), struct.unpack_from("<I", ty, k * 4)[0],
               lb[k * 16 + 8:k * 16 + 16]) for k in range(L)]
@@ -1401,7 +1567,10 @@ def file_parts(raw: bytes) -> dict:
             used = [(k, cp, w) for k, (cp, w) in enumerate(slots) if cp >= 0]
             off = [np.frombuffer(s25[(j * S + k) * 48 + 36:(j * S + k) * 48 + 48], "<f4").astype(float)
                    for k, _, _ in used]
-            joints.append({"palette": int(t23[j]), "drivers": [(cp, w) for _, cp, w in used], "offsets": off})
+            rot = [np.frombuffer(s25[(j * S + k) * 48:(j * S + k) * 48 + 36], "<f4").astype(float).reshape(3, 3)
+                   for k, _, _ in used]
+            joints.append({"palette": int(t23[j]), "drivers": [(cp, w) for _, cp, w in used], "offsets": off,
+                           "rotations": rot})
     caps = []
     s16 = bytes(g.sections[16].data) if 16 in g.sections else b""
     for k in range(c["capsules"] if s16 else 0):
@@ -1412,10 +1581,33 @@ def file_parts(raw: bytes) -> dict:
     return {"g": g, "game": game, "count": P, "pos": p0[:, 0x48:0x54].copy().view("<f4").astype(float),
             "part_of": p0[:, 0x28:0x2C].copy().view("<u4")[:, 0].astype(np.int64), "normal": normal,
             "skin": np.array(skin_idx, np.int64), "skin_w": np.array(skin_w, float), "tris": tris,
-            "tri_uv": tri_uv, "links": links, "joints": joints, "caps": caps, "frames": frames,
+            "tri_uv": tri_uv, "tri_flags": tri_flags, "links": links, "joints": joints, "caps": caps, "frames": frames,
             "flags": flags, "vertex": None if flags & 4 else vertex_drive_info(raw),
-            "values": {field: p0[:, off:off + 4].copy().view("<f4")[:, 0].astype(np.float32)
-                       for field, off in gp.PARTICLE_VALUES.items()}}
+            "values": {**{field: p0[:, off:off + 4].copy().view("<f4")[:, 0].astype(np.float32)
+                          for field, off in gp.PARTICLE_VALUES.items()}, **_sec28_values(g, P)}}
+
+
+def stored_part_values(obj, fields) -> dict:
+    """The particle values ``fields`` of a Keep Structure Part as its stored file holds them; {} when the cloth keeps
+    no file or the Part's particles are no longer the file's."""
+    coll = reference.cloth_of(obj)
+    if coll is None or not keeps_structure(coll) or canon.edited(obj):
+        return {}
+    f = file_parts(stored_file(coll))
+    parts = by_name(props.parts(coll))
+    sel = np.flatnonzero(f["part_of"] == parts.index(obj)) if obj in parts else []
+    if len(sel) != int(obj[canon.KEY]["count"]):
+        return {}
+    return {field: f["values"][field][sel] for field in fields if field in f["values"]}
+
+
+def _sec28_values(g, P) -> dict:
+    """Section 28's values per particle; the defaults where the file holds no record for every particle."""
+    s28 = bytes(g.sections[28].data) if 28 in g.sections else b""
+    if len(s28) < P * gp.SEC28:
+        return {field: np.full(P, canon.DEFAULTS[field], np.float32) for field in gp.SEC28_VALUES}
+    rows = np.frombuffer(s28[:P * gp.SEC28], "<f4").reshape(P, -1)
+    return {field: rows[:, off // 4].astype(np.float32) for field, off in gp.SEC28_VALUES.items()}
 
 
 def _shape(typ, a, b, pos) -> int:
@@ -1581,6 +1773,11 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
         by_hash.update(found)
         notes += more
     inv = np.linalg.inv(ROTATE_BACK @ np.array(arm.matrix_world, float)) if arm is not None else np.eye(4)
+    # rebuilt by _build_restructured, which writes one simulation LOD
+    lods = not is_re4 and any(struct.unpack_from("<I", raw, gp.offset_of(r["ext"], n))[0]
+                              for n in ("interpolations", "restrictions"))
+    editable = not is_re4 and bool(f["flags"] & 4) and f["vertex"] is None and not lods
+    fixed = []                                        # parts whose links do not follow from their faces
     for i, block in enumerate(r["parts"]):
         sel = np.where(f["part_of"] == i)[0]
         if not len(sel):
@@ -1605,7 +1802,18 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
                              np.int64),
             "skin_w": (f["skin_w"][sel] / 255.0).astype(np.float32),
             **{field: f["values"][field][sel] for field in canon.FIELD_NAMES}}
+        quads = topology.quads(data["tris"], data["tri_uv"], data["links"][:, :3].tolist()) if editable else None
+        if quads is not None:
+            data["faces"], data["face_uv"], bend = quads
+            data["editable"] = True
+            flag = {frozenset(t): int(x) for t, x in zip(data["tris"].tolist(), f["tri_flags"][tri_keep])}
+            data["tri_flags"] = [flag.get(frozenset(t), 0) for t in
+                                 topology.triangles(data["faces"], data["face_uv"])[0].tolist()]
+        elif editable:
+            fixed.append(block["part_name"] or f"part {i}")
         obj = _new_locked_part(coll, arm, cfg_objs[min(block["config"], len(cfg_objs) - 1)], block, data)
+        if quads is not None:
+            obj.ree_gpuc_part.diagonal_bend = bend
         if is_re4:
             obj["ree_gpuc_re4_index"] = i
         _set_part(obj, block, r["tails"][i], None, cfg_objs, notes)
@@ -1617,6 +1825,12 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
     if f.get("vertex"):
         J, S, V, L, _ = f["vertex"]
         notes.append(f"It drives {J} of {V} mesh vertices ({L} LODs) directly; the bindings are kept from the file")
+        notes.append("Its particles and faces cannot be edited: it drives mesh vertices")
+    if fixed:
+        notes.append(f"{', '.join(fixed)}: its particles and faces cannot be edited (its links are not the ones its "
+                     f"faces give)")
+    if lods:
+        notes.append("Its particles and faces cannot be edited: it simulates in several levels of detail")
     if is_re4:
         notes = ["RE4: the original skinning, output bindings and collisions are kept from the file and not editable",
                  "RE4 Config values are named by their offset in the file; their effects are unknown",
@@ -1959,6 +2173,8 @@ def update_existing(path: str, coll, mesh_coll=None) -> list:
     except ExportError:
         weighted = None
     if keeps_structure(coll):
+        if any(canon.edited(o) for o in props.parts(coll)):
+            raise ImportProblem("its Parts' particles or faces were edited: import the file as a new collection")
         mine = stored_file(coll)
     else:
         if weighted is None:

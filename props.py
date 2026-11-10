@@ -590,6 +590,30 @@ class REE_GPUC_Part(bpy.types.PropertyGroup):
                                                precision=3, update=_range("backstop_offset"),
                                                description="The backstop offset (m) a gpuc_backstop_offset weight "
                                                            "of 0 and 1 stands for")
+    unkn_particle_0_range: FloatVectorProperty(name="Unkn Particle 0 range", size=2, default=(0.0, 1.0),
+                                               precision=3, update=_range("unkn_particle_0"),
+                                               description="The value a gpuc_unkn_particle_0 weight of 0 and 1 "
+                                                           "stands for. Effect unknown; usually 0.1 to 1")
+    unkn_particle_1_range: FloatVectorProperty(name="Unkn Particle 1 range", size=2, default=(0.0, 1.0),
+                                               precision=3, update=_range("unkn_particle_1"),
+                                               description="The value a gpuc_unkn_particle_1 weight of 0 and 1 "
+                                                           "stands for. Effect unknown; usually 0 to 1")
+    unkn_particle_2_range: FloatVectorProperty(name="Unkn Particle 2 range", size=2, default=(0.0, 1.0),
+                                               precision=3, update=_range("unkn_particle_2"),
+                                               description="The value a gpuc_unkn_particle_2 weight of 0 and 1 "
+                                                           "stands for. Effect unknown; usually 0 to 1")
+    unkn_particle_3_range: FloatVectorProperty(name="Unkn Particle 3 range", size=2, default=(0.0, 1.0),
+                                               precision=3, update=_range("unkn_particle_3"),
+                                               description="The value a gpuc_unkn_particle_3 weight of 0 and 1 "
+                                                           "stands for. Effect unknown; usually 0.8714")
+    unkn_particle_4_range: FloatVectorProperty(name="Unkn Particle 4 range", size=2, default=(0.0, 1.0),
+                                               precision=3, update=_range("unkn_particle_4"),
+                                               description="The value a gpuc_unkn_particle_4 weight of 0 and 1 "
+                                                           "stands for. Effect unknown; usually 0.8714")
+    unkn_particle_5_range: FloatVectorProperty(name="Unkn Particle 5 range", size=2, default=(0.0, 1.0),
+                                               precision=3, update=_range("unkn_particle_5"),
+                                               description="The value a gpuc_unkn_particle_5 weight of 0 and 1 "
+                                                           "stands for. Effect unknown; usually 0.8714")
     clsp_flags_a: IntProperty(name="CLSP Flags A", default=1032193,
                               description="With CLSP Flags B, one 64-bit mask of the CLSP tag groups the part "
                                           "collides with (as a chain group's): a CLSP shape is used when its mask "
@@ -619,6 +643,8 @@ PARTICLE_COLOURS = [
       for name, label in (("inverse_mass", "Inverse mass"), ("space_limit_lower", "Space limit lower"),
                           ("space_limit_upper", "Space limit upper"), ("backstop_radius", "Backstop radius"),
                           ("backstop_offset", "Backstop offset"))),
+    *((f"unkn_particle_{k}", f"Unkn Particle {k}", f"Effect unknown. As gpuc_unkn_particle_{k} shows in Weight "
+       f"Paint: the Part's range, low blue to high red") for k in range(6)),
 ]
 
 

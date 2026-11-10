@@ -207,6 +207,24 @@ class Gpuc:
             self.present[CAPSULE_SECTION] = True
         self.sections[CAPSULE_SECTION].data = bytearray(data)
 
+    def set_planes_spheres(self, planes, spheres):
+        """Set sections 14 (collision planes) and 15 (collision spheres), 32 bytes a record; the record count is the
+        section's size. A missing one is inserted 16-aligned before section 19 (15 after 14): an empty 19 or 20
+        sharing its start would take its data when the file is read. Empty data empties it and adds none."""
+        for sec, data in ((14, planes), (15, spheres)):
+            if not data:
+                if sec in self.sections:
+                    self.sections[sec].data = bytearray()
+                continue
+            if sec not in self.sections:
+                at = next(k for k, s in enumerate(self.order) if s in (19, 20, 16, 18, 21))
+                if sec == 15 and 14 in self.order:
+                    at = self.order.index(14) + 1
+                self.order.insert(at, sec)
+                self.sections[sec] = Section(sec, 0, bytearray(), 16)
+                self.present[sec] = True
+            self.sections[sec].data = bytearray(data)
+
     # ---- writer --------------------------------------------------------------------------
     def build(self):
         L = self.layout

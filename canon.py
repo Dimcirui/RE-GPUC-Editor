@@ -9,11 +9,14 @@ Maintenance constraints:
   space; ``sub_rows`` / ``sub_cols`` particles go between bones; each particle is skinned to 4 flat node indices.
 - A locked Part (imported with Keep Structure) stores the file's own triangles, UVs, links with their own tails,
   6-bone skin by name and normals, and is never regenerated. ``count``, ``faces``, ``face_uvs``, ``links`` and
-  ``particle_uv`` serve both kinds."""
+  ``particle_uv`` serve both kinds.
+- An editable locked Part also stores its faces (quads split at a-c, ``topology``), each of their triangles'
+  tangent flags and each particle's index in the file (``src``, -1 for a new one); its mesh carries ``PARTICLE_ID`` and one skin group per bone, and a change
+  to its structure or skin is taken by ``structure.adopt`` instead of being undone."""
 import bpy
 import numpy as np
 
-from .modules import grid
+from .modules import gpuc_build, grid
 
 KEY = "ree_gpuc_canon"
 UV_LAYER = "grid"
@@ -92,6 +95,9 @@ PARTICLE_FIELDS = (
     ("space_limit_upper", "Space limit upper", 0x14, 0.225),
     ("backstop_radius", "Backstop radius", 0x18, 0.0),      # 0: no backstop
     ("backstop_offset", "Backstop offset", 0x1C, 0.0),
+    # section 28's record, apart from the particle record (``gpuc_params.SEC28_VALUES``): effect unknown
+    *((f"unkn_particle_{k}", f"Unkn Particle {k}", 4 * k, float(v))
+      for k, v in enumerate(np.frombuffer(gpuc_build.SEC28, "<f4"))),
 )
 DEFAULTS = {f[0]: f[3] for f in PARTICLE_FIELDS}
 FIELD_NAMES = tuple(f[0] for f in PARTICLE_FIELDS)
@@ -134,13 +140,22 @@ def load(obj) -> dict:
 def _load_locked(c) -> dict:
     n = int(c["count"])
     links = np.asarray(c["links"], np.int64).reshape(-1, 4)
-    return {"locked": True, "count": n, "rows": 0, "cols": 0, "closed": False, "centre": None,
-            "tile": int(c["tile"]), "co": f32(c["co"]).reshape(-1, 3),
-            "tris": np.asarray(c["tris"], np.int64).reshape(-1, 3), "tri_uv": f32(c["tri_uv"]).reshape(-1, 3, 2),
-            "links": links, "tails": f32(c["tails"]).reshape(-1, 4), "nodes": [str(b) for b in c["nodes"]],
-            "skin": np.asarray(c["skin"], np.int64).reshape(n, -1), "skin_w": f32(c["skin_w"]).reshape(n, -1),
-            "normal": f32(c["normal"]).reshape(-1, 3),
-            **{f: f32(c[f]) if f in c else np.full(n, DEFAULTS[f], np.float32) for f in FIELD_NAMES}}
+    out = {"locked": True, "count": n, "rows": 0, "cols": 0, "closed": False, "centre": None,
+           "tile": int(c["tile"]), "co": f32(c["co"]).reshape(-1, 3),
+           "tris": np.asarray(c["tris"], np.int64).reshape(-1, 3), "tri_uv": f32(c["tri_uv"]).reshape(-1, 3, 2),
+           "links": links, "tails": f32(c["tails"]).reshape(-1, 4), "nodes": [str(b) for b in c["nodes"]],
+           "skin": np.asarray(c["skin"], np.int64).reshape(n, -1), "skin_w": f32(c["skin_w"]).reshape(n, -1),
+           "normal": f32(c["normal"]).reshape(-1, 3), "faces": None, "face_uv": None,
+           "src": np.asarray(c["src"], np.int64) if "src" in c else np.arange(n),
+           "editable": bool(c.get("editable")), "edited": bool(c.get("edited")),
+           **{f: f32(c[f]) if f in c else np.full(n, DEFAULTS[f], np.float32) for f in FIELD_NAMES}}
+    if "faces" in c:
+        flat, sizes = [int(v) for v in c["faces"]], np.cumsum([0] + [int(k) for k in c["face_n"]])
+        out["faces"] = [tuple(flat[a:b]) for a, b in zip(sizes[:-1], sizes[1:])]
+        out["face_uv"] = f32(c["face_uv"]).reshape(-1, 2)
+        n_tris = sum(len(f) - 2 for f in out["faces"])
+        out["tri_flags"] = np.asarray(c["tri_flags"], np.int64) if "tri_flags" in c else np.zeros(n_tris, np.int64)
+    return out
 
 
 def store(obj, data: dict) -> None:
@@ -152,6 +167,17 @@ def store(obj, data: dict) -> None:
                     "tails": fl(data["tails"]), "nodes": list(data["nodes"]), "skin": ints(data["skin"]),
                     "skin_w": fl(data["skin_w"]), "normal": fl(data["normal"]),
                     **{n: fl(data[n]) for n in FIELD_NAMES}}
+        c = obj[KEY]
+        if data.get("faces") is not None:
+            c["faces"] = [int(v) for f in data["faces"] for v in f]
+            c["face_n"] = [len(f) for f in data["faces"]]
+            c["face_uv"] = fl(data["face_uv"])
+            c["src"] = ints(data.get("src", np.arange(int(data["count"]))))
+            if data.get("tri_flags") is not None:
+                c["tri_flags"] = ints(data["tri_flags"])
+        for flag in ("editable", "edited"):
+            if data.get(flag):
+                c[flag] = 1
         return
     base = f32(data.get("base_co", data["co"]))
     offset = f32(data.get("rest_offset", np.zeros_like(base)))
@@ -169,20 +195,39 @@ def locked(obj) -> bool:
     return has(obj) and bool(obj[KEY].get("locked"))
 
 
+def editable_part(obj) -> bool:
+    """``editable`` without loading the Part (the panel asks on every redraw)."""
+    return locked(obj) and bool(obj[KEY].get("editable")) and "faces" in obj[KEY]
+
+
+def edited(obj) -> bool:
+    """Whether a locked Part's structure was changed (``structure.adopt``), so its cloth exports rebuilt."""
+    return locked(obj) and bool(obj[KEY].get("edited"))
+
+
 def count(d: dict) -> int:
     return d["count"]
 
 
 def faces(d: dict) -> list:
-    """The mesh's faces: the grid's quads, or a locked Part's triangles."""
+    """The mesh's faces: the grid's quads, or a locked Part's faces (else its triangles)."""
     if d["locked"]:
+        if d.get("faces") is not None:
+            return list(d["faces"])
         return [tuple(int(v) for v in t) for t in d["tris"]]
     return grid.faces(d["rows"], d["cols"], d["closed"])
+
+
+def editable(d: dict) -> bool:
+    """Whether a change to the Part's mesh structure is taken as its new structure (``structure.adopt``)."""
+    return d["locked"] and d.get("editable", False) and d.get("faces") is not None
 
 
 def face_uvs(d: dict) -> np.ndarray:
     """Each face corner's UV, on the Part's UV tile (u + tile)."""
     if d["locked"]:
+        if d.get("faces") is not None:
+            return d["face_uv"] + (d["tile"], 0.0)
         return d["tri_uv"].reshape(-1, 2) + (d["tile"], 0.0)
     return np.asarray(grid.face_uv(d["rows"], d["cols"], d["closed"], d["tile"]), np.float32).reshape(-1, 2)
 
@@ -391,10 +436,11 @@ def build_mesh(obj) -> None:
     me.from_pydata(d["co"].tolist(), [], faces(d))
     uv = me.uv_layers.new(name=UV_LAYER)
     uv.data.foreach_set("uv", face_uvs(d).astype(np.float32).ravel())
-    if not d["locked"]:
+    if not d["locked"] or editable(d):
         if PARTICLE_ID in me.attributes:
             me.attributes.remove(me.attributes[PARTICLE_ID])
         me.attributes.new(PARTICLE_ID, "INT", "POINT").data.foreach_set("value", np.arange(count(d), dtype=np.int32))
+    if not d["locked"]:
         r, c = np.divmod(np.arange(d["rows"] * d["cols"], dtype=np.int32), d["cols"])
         me.attributes.new(ROW, "INT", "POINT").data.foreach_set("value", r)
         me.attributes.new(COL, "INT", "POINT").data.foreach_set("value", c)
@@ -404,8 +450,38 @@ def build_mesh(obj) -> None:
     keep = {group_name(f) for f in FIELD_NAMES}
     for g in [g for g in obj.vertex_groups if g.name not in keep]:
         obj.vertex_groups.remove(g)
+    if editable(d):
+        dense = skin_dense(d)
+        for k, name in enumerate(d["nodes"]):
+            g = obj.vertex_groups.new(name=name)
+            for value in np.unique(dense[:, k]):
+                if value > 0:
+                    g.add([int(i) for i in np.flatnonzero(dense[:, k] == value)], float(value), "REPLACE")
     write_groups(obj, d)
     obj.vertex_groups.active_index = obj.vertex_groups[group_name(FIELD_NAMES[0])].index
+
+
+def skin_dense(d) -> np.ndarray:
+    """A locked Part's skin as one weight per particle and bone of ``d["nodes"]``."""
+    n = count(d)
+    out = np.zeros((n, len(d["nodes"])), np.float32)
+    for k in range(d["skin"].shape[1]):
+        np.add.at(out, (np.arange(n), d["skin"][:, k]), d["skin_w"][:, k])
+    return out
+
+
+def skin_groups(obj) -> tuple:
+    """(names, weights: vertices x names) of the mesh's vertex groups that are not value groups; object mode."""
+    values_ = {group_name(f) for f in FIELD_NAMES}
+    groups = [g for g in obj.vertex_groups if g.name not in values_]
+    col = {g.index: k for k, g in enumerate(groups)}
+    out = np.zeros((len(obj.data.vertices), len(groups)), np.float32)
+    for v in obj.data.vertices:
+        for ge in v.groups:
+            k = col.get(ge.group)
+            if k is not None:
+                out[v.index, k] = ge.weight
+    return [g.name for g in groups], out
 
 
 def mismatch(obj, positions=True) -> str:
@@ -454,6 +530,17 @@ def mismatch(obj, positions=True) -> str:
             return f"group {group_name(f)} removed"
         if np.isnan(w).any():
             return f"{int(np.isnan(w).sum())} particles left group {group_name(f)}"
+    if editable(d):
+        names, w = skin_groups(obj)
+        have = skin_dense(d)
+        mine = np.zeros((n, len(names)), np.float32)
+        for k, name in enumerate(d["nodes"]):
+            if name in names:
+                mine[:, names.index(name)] = have[:, k]
+            elif have[:, k].any():
+                return f"skin group {name} removed"
+        if not np.allclose(mine, w, atol=0.5 / 255):
+            return "skin weights changed"
     return ""
 
 
@@ -504,8 +591,12 @@ def upgrade(obj) -> bool:
     if not missing:
         return False
     d = load(obj)
+    kept = {}
+    if c.get("locked"):                       # a Keep Structure Part takes the values its file holds
+        from . import fileio
+        kept = fileio.stored_part_values(obj, missing)
     for f in missing:
-        c[f] = [float(x) for x in d[f]]
+        c[f] = [float(x) for x in kept.get(f, d[f])]
     write_groups(obj)
     return True
 
@@ -528,7 +619,15 @@ def restore(obj) -> str:
                     obj["ree_gpuc_notice"] = "Rest positions saved; offsets are kept when regenerating"
                 except ValueError as e:
                     why = str(e)
-        if why:
+        if why and editable(load(obj)):
+            from . import structure
+            try:
+                obj["ree_gpuc_notice"] = structure.adopt(obj)
+                why = ""
+            except ValueError as e:
+                build_mesh(obj)
+                obj["ree_gpuc_notice"] = f"Restored the particle mesh: {e}"
+        elif why:
             build_mesh(obj)
             obj["ree_gpuc_notice"] = f"Restored the particle mesh ({why}); only valid rest-position edits are accepted"
         else:
