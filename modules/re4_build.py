@@ -21,7 +21,7 @@ from .gpuc_build import name_hash
 EXT = ".221108868"
 ORDER = (8, 7, 9, 0, 10, 2, 1, 3, 4, 5, 6, 16, 17, 11, 12, 13, 14, 15)
 ALIGN16 = {10, 2, 1, 3, 11, 12, 13, 14, 15}
-BATCH_LIMIT = 512                 # particles a batch takes before the next Part starts another
+BATCH_LIMIT = gpuc_build.BATCH_LIMIT
 SLOTS_452, SLOTS_328 = 8, 16
 # section 14 per particle: 6 floats of unknown effect, written as their usual values
 S14 = struct.pack("<6f", 0.1, 0.75, 0.5, 0.8714, 0.8714, 0.8714)
@@ -134,17 +134,7 @@ def _colour_items(items, members):
     return [it for _, lst in groups for it in lst], [len(lst) for _, lst in groups]
 
 
-def batches(part_sizes, welded_pairs, limit=BATCH_LIMIT):
-    """Each Part's batch: consecutive Parts fill a batch up to ``limit`` particles; a batch ends only between two
-    Parts no weld spans, since particles are stored batch by batch."""
-    out, b, filled = [], 0, 0
-    for k, size in enumerate(part_sizes):
-        spanned = any(min(pa, pb) < k <= max(pa, pb) for pa, pb in welded_pairs)
-        if k and not spanned and filled + size > limit:
-            b, filled = b + 1, 0
-        out.append(b)
-        filled += size
-    return out
+batches = gpuc_build.batches
 
 
 def _frames_re4(pos, normals, tangent):

@@ -886,8 +886,13 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT, mes
     outputs.sort(key=lambda o: o["full"])
     if not outputs and not vertices:
         raise ExportError("no bone of the cloth has weights in the mesh: nothing would move")
+    batch_of = None
+    if not vertices and not is_re4:                # RE4 splits its own; a cloth driving vertices stays one batch
+        welded = {(part_objs.index(pa), part_objs.index(pb)) for _, pa, _, pb, _ in weld.welds(coll)}
+        batch_of = _batch_of([len(v["sim_weight"]) for v in part_vals], welded, notes)
+        _one_batch(outputs, batch_of, notes)
     spec = gpuc_build.ClothSpec(np.vstack(positions), np.concatenate(sim_weight), skin_bones, skin_w, faces, uvs,
-                                outputs, np.concatenate(bend))
+                                outputs, np.concatenate(bend), batch_of)
     skin_table = sorted({b for row, w in zip(skin_bones, skin_w) for b, x in zip(row, w) if x})
     link_tail = lambda typ, a, b: shapes.get((min(a, b), max(a, b), typ))  # noqa: E731
     if is_re4:
@@ -902,9 +907,10 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT, mes
         g.sections[i].align = 4
     _write_blocks(g, head.ree_gpuc_header, cfg_objs, part_objs, part_vals, notes, arm, vertices=vertices)
     _write_capsules(g, coll, arm, notes)
-    # one batch info and sim LOD (the generator's); no interpolation, restriction or self-collision contact;
+    # one sim LOD holding every batch; no interpolation, restriction or self-collision contact;
     # simulation deform weights 1, as in game files
-    for name, v in (("batch_infos", 1), ("sim_lods", 1), ("sim_lod_one", 1), ("interpolations", 0),
+    B = int(batch_of.max()) + 1 if batch_of is not None else 1
+    for name, v in (("batch_infos", B), ("sim_lods", B), ("sim_lod_one", 1), ("interpolations", 0),
                     ("restrictions", 0), ("sim_deform_weights", 1), ("point_triangle_contacts", 0),
                     ("edge_edge_contacts", 0)):
         struct.pack_into("<I", g.header, gp.offset_of(ext, name), v)
@@ -1006,6 +1012,43 @@ def _weld_links(coll, starts) -> list:
         w = obj.ree_gpuc_weld
         out.append((max(a, b), min(a, b), w.link_type, gp.tail_bytes(*w.tail())))
     return out
+
+
+def _batch_of(sizes, welded, notes, keep=None) -> np.ndarray:
+    """Each particle's batch, the Parts in their stored order: ``keep`` (a batch per Part) while it still holds no
+    more than ``BATCH_LIMIT`` particles a batch and no weld spans two, else ``gpuc_build.batches``."""
+    limit = gpuc_build.BATCH_LIMIT
+    if keep is not None:
+        keep = list(np.unique(keep, return_inverse=True)[1])            # numbered from 0 in order
+        ok = (all(a <= b for a, b in zip(keep, keep[1:]))
+              and np.bincount(keep, weights=sizes).max(initial=0) <= limit
+              and all(keep[a] == keep[b] for a, b in welded))
+        keep = keep if ok else None
+    of_part = keep if keep is not None else gpuc_build.batches(sizes, welded)
+    out = np.repeat(np.asarray(of_part, np.int64), sizes)
+    big = int(np.bincount(out).max(initial=0))
+    if big > limit:
+        notes.append(f"A batch holds {big} particles; batches usually hold up to {limit}, a single large Part "
+                     f"sometimes more. If the cloth does not simulate in game, split the Part")
+    return out
+
+
+def _one_batch(outputs, batch_of, notes) -> None:
+    """Keep each driven joint's particles in the batch of its heaviest; a joint that loses some sums to 1 again."""
+    dropped = 0
+    for o in outputs:
+        if not o["particles"]:
+            continue
+        b = batch_of[o["particles"][int(np.argmax(o["weights"]))]]
+        keep = [(p, w) for p, w in zip(o["particles"], o["weights"]) if batch_of[p] == b]
+        if len(keep) == len(o["particles"]):
+            continue
+        dropped += len(o["particles"]) - len(keep)
+        total = sum(w for _, w in keep)
+        o["particles"], o["weights"] = [p for p, _ in keep], [w / total for _, w in keep]
+    if dropped:
+        notes.append(f"{dropped} particles left out of driven joints: they were in another batch than the joint's "
+                     f"heaviest particle")
 
 
 def _build_keep(coll, head, cfg_objs, part_objs, from_mesh=False, mesh_coll=None, mesh_file="",

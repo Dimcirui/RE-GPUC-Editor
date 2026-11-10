@@ -43,9 +43,12 @@ class ClothSpec:
                 dict(palette=index in the mesh's weighted bone list, world=4x4 row-major
                 bind matrix (translation in row 3), particles=[ids], weights=[floats])
     diagonal_bend (P,) bool, optional: off where a quad diagonal starting at that particle has no bend link
+    batch_of    (P,) int, optional: each particle's batch (``batches``), not decreasing; none is one batch. An
+                output joint's particles must all be in one batch.
     """
 
-    def __init__(self, positions, sim_weight, skin_bones, skin_w, faces, face_uv, outputs, diagonal_bend=None):
+    def __init__(self, positions, sim_weight, skin_bones, skin_w, faces, face_uv, outputs, diagonal_bend=None,
+                 batch_of=None):
         self.positions = np.asarray(positions, float)
         self.sim_weight = np.asarray(sim_weight, float)
         self.skin_bones = np.asarray(skin_bones, int)
@@ -54,6 +57,23 @@ class ClothSpec:
         self.face_uv = face_uv
         self.outputs = outputs
         self.diagonal_bend = None if diagonal_bend is None else np.asarray(diagonal_bend, bool)
+        self.batch_of = None if batch_of is None else np.asarray(batch_of, np.int64)
+
+
+BATCH_LIMIT = 512                 # particles a batch takes before the next Part starts another
+
+
+def batches(part_sizes, welded_pairs, limit=BATCH_LIMIT):
+    """Each Part's batch: consecutive Parts fill a batch up to ``limit`` particles; a batch ends only between two
+    Parts no weld spans, since particles are stored batch by batch."""
+    out, b, filled = [], 0, 0
+    for k, size in enumerate(part_sizes):
+        spanned = any(min(pa, pb) < k <= max(pa, pb) for pa, pb in welded_pairs)
+        if k and not spanned and filled + size > limit:
+            b, filled = b + 1, 0
+        out.append(b)
+        filled += size
+    return out
 
 
 def _triangles(spec):
@@ -246,16 +266,26 @@ def build(spec, template, skin_table, capsules=None, particle_radius=None, link_
     tp = _template_particles(t)
     pos = spec.positions
     P = len(pos)
-    tris = _triangles(spec)
-    # links, coloured
+    batch_of = np.zeros(P, np.int64) if getattr(spec, "batch_of", None) is None else spec.batch_of
+    B = int(batch_of.max()) + 1 if P else 1
+    # triangles, links and edges are stored batch by batch, each batch's links and edges coloured on their own
+    tris = sorted(_triangles(spec), key=lambda t: batch_of[t[0]])
     weld_tail = {(a, b, typ): tail for a, b, typ, tail in welds or ()}
-    link_order, link_batches = _colour(_links(spec) + [((a, b), typ, "weld") for a, b, typ in sorted(weld_tail)],
-                                       key=lambda x: x[0])
-    # edges = unique triangle edges, coloured; CSR in edge-file order
+    items = _links(spec) + [((a, b), typ, "weld") for a, b, typ in sorted(weld_tail)]
     edge_set = set()
     for i, j, k, _ in tris:
         edge_set |= {tuple(sorted((i, j))), tuple(sorted((j, k))), tuple(sorted((i, k)))}
-    edge_order, edge_batches = _colour(sorted(edge_set))
+    link_order, link_batches, edge_order, edge_batches, rows = [], [], [], [], []
+    for b in range(B):
+        lo, lb = _colour([x for x in items if batch_of[x[0][0]] == b], key=lambda x: x[0])
+        eo, eb = _colour([e for e in sorted(edge_set) if batch_of[e[0]] == b])
+        link_order += lo
+        link_batches += lb
+        edge_order += eo
+        edge_batches += eb
+        rows.append([int((batch_of == b).sum()), sum(1 for t in tris if batch_of[t[0]] == b), len(lo), len(eo),
+                     len(lb), len(eb), sum(1 for o in spec.outputs if batch_of[o["particles"][0]] == b)])
+    # CSR in edge-file order
     adj = collections.defaultdict(list)
     for a, b in edge_order:
         adj[a].append(b)
@@ -343,9 +373,15 @@ def build(spec, template, skin_table, capsules=None, particle_radius=None, link_
     # triangle / edge-edge contact descs), the same 9 offsets, 2 padding; sec 10 a CPU-side tally no shader reads;
     # sec 13 one SimulationLodInfo: (offset, count) of particles, triangles, links, edges and the two contact descs,
     # 2 padding, deform infos, interpolation / restriction offsets, batch info offset / count (0 runs no constraint)
-    sec7 = struct.pack("<20I", P, T, L, E, nb1, nb2, J, *([0] * 13))
-    sec10 = struct.pack("<24I", 0, P, T, L, E, 0, J, *([0] * 17))
-    sec13 = struct.pack("<20I", 0, P, 0, T, 0, L, 0, E, 0, 0, 0, 0, 0, 0, 0, J, 0, 0, 0, 1)
+    # sec 10, per batch: its first particle, its counts, then the first particle, triangle, link, edge and joint
+    # and the first joint slot (twice), each followed by a 0
+    sec7, sec10, first = b"", b"", [0] * 7
+    for r in rows:
+        sec7 += struct.pack("<20I", *r, 0, 0, *first, 0, 0, 0, 0)
+        sec10 += struct.pack("<24I", first[0], *r[:4], 0, r[6], 0, first[0], 0, first[1], 0, first[2], 0, first[3], 0,
+                             0, 0, first[6], 0, first[6] * S, 0, first[6] * S, 0)
+        first = [a + b for a, b in zip(first, r)]
+    sec13 = struct.pack("<20I", 0, P, 0, T, 0, L, 0, E, 0, 0, 0, 0, 0, 0, 0, J, 0, 0, 0, B)
 
     new = {0: sec0, 1: sec1, 2: sec2, 3: sec3, 4: sec4, 5: sec5, 7: sec7, 10: sec10, 11: sec11, 13: sec13,
            23: sec23, 24: sec24, 25: sec25, 26: sec26, 28: sec28, 29: sec29}

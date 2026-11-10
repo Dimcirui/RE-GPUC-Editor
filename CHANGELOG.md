@@ -10,6 +10,7 @@
 - **Force Export** — in the export dialog: exports without a matching `.mesh`, the joints taken from the scene's weights.
 
 ### Changed
+- **Batches** — a cloth of several Parts is split into batches of up to 512 particles between Parts, as the game's files are; it was one batch however large.
 - **Export needs the exported `.mesh`** — a cloth made from bones, and From Mesh joints, are checked against it: Mesh File, else the same-name `.mesh` beside the `.gpuc`, else the one other `.mesh` there with the cloth's skeleton, whose name the `.gpuc` then takes. Without one the export is refused unless Force Export is on.
 - **RE4 Header, Config and Part values** — named by what they may do; their tooltips say their effect is unknown. A new RE4 Config starts at values that move the cloth.
 - **Onimusha files that drive mesh vertices** — now import with Keep Structure instead of being refused.
