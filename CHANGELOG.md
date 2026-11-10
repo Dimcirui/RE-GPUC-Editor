@@ -20,6 +20,9 @@
 - **Onimusha files that drive mesh vertices** — now import with Keep Structure instead of being refused.
 - **Rebuild from Bones** — says plainly when a part is no bone grid.
 
+### Fixed
+- **Collision planes and spheres of some game files** — they were read as other data: they now import, and a rebuilt file keeps them.
+
 ## 0.4.1
 
 ### New

@@ -6,7 +6,7 @@
 File layout:
   0x000  header (magic GCLO; counts, bounds), size per layout
   +hdr   30 x u64 section offsets (0 = absent)
-  +0xF0  sections, laid out in a fixed order; several entries may share an offset (empty ones)
+  +0xF0  sections, laid out in a fixed order (LAYOUT_ORDER); several entries may share an offset (empty ones)
 
 Sections are addressed by their Wilds/RE9 table index in every layout ("section index"), so code
 written against Wilds indices (11 bone table, 23 weighted bones, 25 bindings, 26 frames, ...)
@@ -113,6 +113,12 @@ def detect(raw):
     return RE9
 
 
+# the order the game's files lay their sections out in (9 and 17 never hold data)
+LAYOUT_ORDER = [6, 7, 8, 9, 10, 11, 12, 13, 0, 2, 1, 3, 4, 5, 19, 20, 14, 15, 16, 17, 18, 21, 22, 23, 24, 25, 26, 27,
+                28, 29]
+LAYOUT_RANK = {s: k for k, s in enumerate(LAYOUT_ORDER)}
+
+
 class Section:
     def __init__(self, index, offset, data, align):
         self.index = index
@@ -145,19 +151,13 @@ class Gpuc:
             if L.slots[i] is not None:
                 offsets[L.slots[i]] = o
         self.present = [bool(offsets.get(s)) for s in range(TABLE_COUNT)]
-        # Order: by offset; among equal offsets keep section order (empty entries come first,
-        # the last one at an offset carries the data).
-        order = sorted((o, s) for s, o in offsets.items() if o)
+        # Order: by offset; among equal offsets in the game's section order (LAYOUT_ORDER): an empty section takes
+        # the start of the next one that carries data, so the last at an offset carries it.
+        order = sorted(((o, s) for s, o in offsets.items() if o), key=lambda x: (x[0], LAYOUT_RANK[x[1]]))
         if order[0][0] != L.data_start:
             raise ValueError("first section at 0x%X, expected 0x%X" % (order[0][0], L.data_start))
         starts = sorted(set(o for o, _ in order)) + [len(raw)]
         owner = {o: s for o, s in order}                    # last section at each start
-        # except the capsules: with a nonzero count, section 16 owns its start even when empty sections 19 and 20
-        # share it, so it is ordered last among them
-        caps = next(o for o, n in L.counts.items() if n == "capsules")
-        if offsets.get(CAPSULE_SECTION) and struct.unpack_from("<I", self.header, caps)[0]:
-            owner[offsets[CAPSULE_SECTION]] = CAPSULE_SECTION
-            order.sort(key=lambda x: (x[0], owner[x[0]] == x[1], x[1]))
         self.sections = {}
         self.order = []
         for o, s in order:
@@ -209,17 +209,15 @@ class Gpuc:
 
     def set_planes_spheres(self, planes, spheres):
         """Set sections 14 (collision planes) and 15 (collision spheres), 32 bytes a record; the record count is the
-        section's size. A missing one is inserted 16-aligned before section 19 (15 after 14): an empty 19 or 20
-        sharing its start would take its data when the file is read. Empty data empties it and adds none."""
+        section's size. A missing one is inserted 16-aligned in LAYOUT_ORDER. Empty data empties it and adds
+        none."""
         for sec, data in ((14, planes), (15, spheres)):
             if not data:
                 if sec in self.sections:
                     self.sections[sec].data = bytearray()
                 continue
             if sec not in self.sections:
-                at = next(k for k, s in enumerate(self.order) if s in (19, 20, 16, 18, 21))
-                if sec == 15 and 14 in self.order:
-                    at = self.order.index(14) + 1
+                at = next(k for k, s in enumerate(self.order) if LAYOUT_RANK[s] > LAYOUT_RANK[sec])
                 self.order.insert(at, sec)
                 self.sections[sec] = Section(sec, 0, bytearray(), 16)
                 self.present[sec] = True
