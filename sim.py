@@ -84,19 +84,18 @@ def batches(d: dict):
 def colliders(scene) -> list:
     """Every visible collider, world space, each ending in (source, index): ("SPHERE", centre, radius, ...),
     ("CAPSULE", a, b, radius at a, radius at b, ...), ("PLANE", origin, unit normal, drawn size, x axis, ...),
-    ("BOX", centre, unit axes (3 x 3, columns), half sizes, ...). source: OWN for the .gpuc's own capsules
-    (RE4's own spheres as SPHERE) and RE4 planes (UNBOUND while an end has no bone), ("CLSP", flag A, flag B) for the Reference CLSP's shapes, TEST for the
+    ("BOX", centre, unit axes (3 x 3, columns), half sizes, ...). source: OWN for the .gpuc's own capsules,
+    spheres (capsules whose ends meet) and planes (UNBOUND while an end has no bone), ("CLSP", flag A, flag B) for the Reference CLSP's shapes, TEST for the
     test colliders. index: the shape's place among its kind (own first, then CLSP, as the game orders them, then
     test, each by name), which is the bit of the Part's collision bits that takes it."""
     from . import collision
     cloth = scene.ree_gpuc.target
-    re4_own = props.is_re4(cloth)               # RE4's own spheres are spheres in the file (others are capsules)
     out = []
     for root, a, b, ra, rb in sorted(collision.geometry(scene), key=lambda g: g[0].name):
         if cloth is not None and root.name not in cloth.all_objects:     # the active cloth's own only
             continue
         source = "OWN" if collision.bound(root) else "UNBOUND"
-        out.append(("SPHERE", a, ra, source) if re4_own and collision.is_sphere(root.ree_gpuc_capsule)
+        out.append(("SPHERE", a, ra, source) if collision.is_sphere(root.ree_gpuc_capsule)
                    else ("CAPSULE", a, b, ra, rb, source))
     for obj, p, n, x in sorted(collision.plane_geometry(scene), key=lambda g: g[0].name):
         if cloth is None or obj.name in cloth.all_objects:

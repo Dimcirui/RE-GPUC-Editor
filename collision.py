@@ -1,13 +1,14 @@
-"""Builds the .gpuc's own collision capsules (section 16: two joints, an offset and a radius at each end) as the
-RE Chain Editor builds a chain2 capsule, and keeps their objects and values in sync.
+"""Builds the .gpuc's own collision capsules (section 16: two joints, an offset and a radius at each end), spheres
+and planes as the RE Chain Editor builds a chain2 capsule, and keeps their objects and values in sync.
 
 Maintenance constraints:
 - A ROOT object holds the values, with a BEGIN and an END object held on their joints by a Child Of constraint
   named ``BoneName``: an end's location is its offset from the joint, its scale its radius.
 - The ends are authoritative: ``sync`` copies them into the ROOT's values; ``apply`` moves them when a value is
-  set. A sphere is a capsule whose two ends meet.
-- An RE4 plane (section 11) is one object on its joint, held as a capsule end is: its +Z the normal, its location
-  on the plane (normal . p = distance in the joint's space). Its object is authoritative as the ends are."""
+  set. A sphere is a capsule whose two ends meet; it is written apart from the capsules (section 15, RE4 12).
+- A plane (section 14, RE4 11) is one object on its joint, held as a capsule end is: its +Z the normal, its
+  location on the plane (normal . p = distance in the joint's space). Its object is authoritative as the ends
+  are."""
 import bpy
 import numpy as np
 from mathutils import Matrix, Vector
@@ -43,9 +44,11 @@ def planes(scene) -> list:
 
 
 def is_sphere(capsule) -> bool:
-    """Whether a capsule's ends meet (RE4 writes it to its spheres, section 12)."""
+    """Whether a capsule's ends meet (written to the spheres, section 15, RE4 12). The hashes are compared too: ends
+    on no bone have no joint name."""
     c = capsule
-    return c.joint_a == c.joint_b and tuple(c.offset_a) == tuple(c.offset_b) and c.radius_a == c.radius_b
+    return (c.joint_a == c.joint_b and c.hash_a == c.hash_b and tuple(c.offset_a) == tuple(c.offset_b)
+            and c.radius_a == c.radius_b)
 
 
 def ends(root):
@@ -145,8 +148,7 @@ def new_capsule(coll, arm, bone_a, offset_a, radius_a, bone_b, offset_b, radius_
 
 
 def new_plane(coll, arm, bone, normal=(0.0, 1.0, 0.0), distance=0.0):
-    """An RE4 plane on bone, facing normal (the joint's space), in the cloth's
-    collisions collection."""
+    """A plane on bone, facing normal (the joint's space), in the cloth's collisions collection."""
     from .generate import unique_name
     sub = collection(coll)
     obj = _end(unique_name("COL_", f"_PLANE - {bone}"), PLANE_TYPE, None, arm, bone, (0.0, 0.0, 0.0), 1.0, sub, coll)

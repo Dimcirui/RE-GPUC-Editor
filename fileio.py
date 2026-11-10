@@ -1246,8 +1246,8 @@ def _build_restructured(coll, head, cfg_objs, part_objs, g, f_part, from_mesh=Fa
         rebuilt.sections[i].align = 4
     _write_blocks(rebuilt, head.ree_gpuc_header, cfg_objs, part_objs, vals, notes, arm, run)
     _write_capsules(rebuilt, coll, arm, notes)
-    # the file's own collision planes and spheres name joints alone: kept as they are
-    rebuilt.set_planes_spheres(*(bytes(g.sections[k].data) if k in g.sections else b"" for k in (14, 15)))
+    if not own_shapes(coll):                   # the file's planes and spheres, not imported: kept as they are
+        rebuilt.set_planes_spheres(*(bytes(g.sections[k].data) if k in g.sections else b"" for k in (14, 15)))
     left = [name for name in ("interpolations", "restrictions", "point_triangle_contacts", "edge_edge_contacts")
             if struct.unpack_from("<I", g.header, gp.offset_of(ext, name))[0]]
     B = int(batch_of.max()) + 1
@@ -1393,14 +1393,54 @@ def mesh_armature_or(mesh_coll, arm):
     return found or arm
 
 
-def capsule_records(coll, arm, notes) -> list:
-    """Return the cloth's capsules as section 16 records; a joint on no bone falls back to its imported hash, and a
-    capsule with neither, or a radius <= 0, is left out. Both cases add a note."""
-    out = []
-    if any(o.name in coll.all_objects for o in collision.planes(bpy.context.scene)):
-        notes.append("Collision planes left out: only RE4 cloth has them")
+def _joint_hash(coll, arm, joint, stored, what, notes):
+    """A joint's hash: its name's while it is a bone (mesh or reference skeleton), else the imported one, else None."""
+    if reference.bone_owner(coll, arm, joint) is not None:
+        return gpuc_build.name_hash(joint)
+    if stored:
+        notes.append(f"{what}: {joint} written by its hash (it takes effect if the game's skeleton has that bone)")
+        return stored & 0xFFFFFFFF
+    return None
+
+
+def shape_records(coll, arm, notes) -> tuple:
+    """(section 14, section 15): the cloth's own planes and spheres, each kind by name; one on no joint, a sphere's
+    radius <= 0 or a plane's normal 0 is left out with a note."""
+    planes, spheres = b"", b""
     for root in by_name(r for r in collision.roots(bpy.context.scene) if r.name in coll.all_objects):
         c = root.ree_gpuc_capsule
+        if not collision.is_sphere(c):
+            continue
+        h = _joint_hash(coll, arm, c.joint_a, c.hash_a, root.name, notes)
+        if h is None or c.radius_a <= 0:
+            notes.append(f"{root.name}: left out (a joint on no bone, or a radius not over 0)")
+            continue
+        spheres += struct.pack("<II8x3ff", h, root.get(PAIR_KEY, NO_JOINT) & 0xFFFFFFFF, *c.offset_a, c.radius_a)
+    for obj in by_name(o for o in collision.planes(bpy.context.scene) if o.name in coll.all_objects):
+        pl = obj.ree_gpuc_plane
+        n = np.asarray(pl.normal, float)
+        h = _joint_hash(coll, arm, pl.joint, pl.joint_hash, obj.name, notes)
+        if h is None or np.linalg.norm(n) < 1e-9:
+            notes.append(f"{obj.name}: left out (a plane's joint must be a bone, its normal not zero)")
+            continue
+        if abs(np.linalg.norm(n) - 1.0) > 1e-6:          # a unit normal is written as it is
+            n = n / np.linalg.norm(n)
+        planes += struct.pack("<II8x3ff", h, NO_JOINT, *n, pl.distance)
+    return planes, spheres
+
+
+def capsule_records(coll, arm, notes) -> list:
+    """Return the cloth's capsules as section 16 records (its spheres too while ``own_shapes`` is off); a joint on no
+    bone falls back to its imported hash, and a capsule with neither, or a radius <= 0, is left out. Both cases add
+    a note."""
+    out = []
+    native = own_shapes(coll)
+    if not native and any(o.name in coll.all_objects for o in collision.planes(bpy.context.scene)):
+        notes.append("Collision planes left out: import the file again to write planes")
+    for root in by_name(r for r in collision.roots(bpy.context.scene) if r.name in coll.all_objects):
+        c = root.ree_gpuc_capsule
+        if native and collision.is_sphere(c):
+            continue
         hashes = []
         for joint, stored in ((c.joint_a, c.hash_a), (c.joint_b, c.hash_b)):
             if reference.bone_owner(coll, arm, joint) is not None:
@@ -1419,9 +1459,12 @@ def capsule_records(coll, arm, notes) -> list:
 
 
 def _write_capsules(g, coll, arm, notes) -> None:
+    """Write the cloth's own capsules, and its spheres and planes when ``own_shapes`` (else the file's stay)."""
     caps = capsule_records(coll, arm, notes)
     g.set_capsules(b"".join(struct.pack("<II8x3ff3ff", ha, hb, *oa, ra, *ob, rb) for ha, hb, oa, ra, ob, rb in caps))
     struct.pack_into("<I", g.header, gp.offset_of(gp.ext_of(g.layout), "capsules"), len(caps))
+    if own_shapes(coll):
+        g.set_planes_spheres(*shape_records(coll, arm, notes))
 
 
 def _contiguous(part_of) -> bool:
@@ -1534,6 +1577,8 @@ def file_parts(raw: bytes) -> dict:
         out = re4.File(raw).geometry()
         for field in gp.SEC28_VALUES:                  # RE4 has no section 28
             out["values"][field] = np.full(out["count"], canon.DEFAULTS[field], np.float32)
+        out.setdefault("planes", [])                    # RE4 keeps its own in the file
+        out.setdefault("spheres", [])
         return out
     g = gpuc.Gpuc(raw)
     game = gp.ext_of(g.layout)
@@ -1577,11 +1622,17 @@ def file_parts(raw: bytes) -> dict:
         ha, hb = struct.unpack_from("<II", s16, k * 48)
         v = struct.unpack_from("<8f", s16, k * 48 + 16)
         caps.append((ha, hb, v[0:3], v[3], v[4:7], v[7]))
+    shapes = {}
+    for sec, name in ((14, "planes"), (15, "spheres")):     # (joint hash, second joint hash, xyz, w)
+        data = bytes(g.sections[sec].data) if sec in g.sections else b""
+        shapes[name] = [(*struct.unpack_from("<II", data, k * 32), struct.unpack_from("<3f", data, k * 32 + 16),
+                         struct.unpack_from("<f", data, k * 32 + 28)[0]) for k in range(len(data) // 32)]
     frames = np.frombuffer(bytes(g.sections[26].data)[:P * 48], "<f4").reshape(-1, 3, 4) if joints else None
     return {"g": g, "game": game, "count": P, "pos": p0[:, 0x48:0x54].copy().view("<f4").astype(float),
             "part_of": p0[:, 0x28:0x2C].copy().view("<u4")[:, 0].astype(np.int64), "normal": normal,
             "skin": np.array(skin_idx, np.int64), "skin_w": np.array(skin_w, float), "tris": tris,
-            "tri_uv": tri_uv, "tri_flags": tri_flags, "links": links, "joints": joints, "caps": caps, "frames": frames,
+            "tri_uv": tri_uv, "tri_flags": tri_flags, "links": links, "joints": joints, "caps": caps, **shapes,
+            "frames": frames,
             "flags": flags, "vertex": None if flags & 4 else vertex_drive_info(raw),
             "values": {**{field: p0[:, off:off + 4].copy().view("<f4")[:, 0].astype(np.float32)
                           for field, off in gp.PARTICLE_VALUES.items()}, **_sec28_values(g, P)}}
@@ -1821,6 +1872,7 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
         if block["use_root_joint"] and block["root_hash"] not in by_hash:
             obj[ROOT_HASH_KEY] = gp.signed(block["root_hash"])
     _keep_capsules(coll, arm, f["caps"], by_hash, notes)
+    _keep_shapes(coll, arm, f, by_hash, notes)
     _keep_welds(coll, f, notes)                       # after the collisions: the chain editor's order
     if f.get("vertex"):
         J, S, V, L, _ = f["vertex"]
@@ -1891,6 +1943,37 @@ def _keep_capsules(coll, arm, caps, by_hash, notes) -> None:
         notes.append(f"{missing} capsule ends name joints the armature lacks: kept at its origin with their hashes")
 
 
+SHAPES_KEY = "ree_gpuc_own_shapes"        # on a header: its file's planes and spheres were imported as objects
+PAIR_KEY = "ree_gpuc_pair_hash"          # on a sphere: the second joint hash its file holds (effect unknown)
+NO_JOINT = gpuc_build.name_hash("")      # a second joint hash naming none
+
+
+def _keep_shapes(coll, arm, f, by_hash, notes) -> None:
+    """Create the file's own spheres and planes (after its capsules, so each kind keeps the file's order)."""
+    missing = 0
+    for ha, hb, off, r in f["spheres"]:
+        a = by_hash.get(ha, f"HASH_{ha}")
+        missing += ha not in by_hash
+        root = collision.new_capsule(coll, arm, a, off, r, a, off, r, gp.signed(ha), gp.signed(ha), shape="SPHERE")
+        if hb != NO_JOINT:
+            root[PAIR_KEY] = gp.signed(hb)
+    for ha, _, normal, d in f["planes"]:
+        a = by_hash.get(ha, f"HASH_{ha}")
+        missing += ha not in by_hash
+        obj = collision.new_plane(coll, arm, a, normal, d)
+        obj.ree_gpuc_plane.joint_hash = gp.signed(ha)
+    if missing:
+        notes.append(f"{missing} spheres and planes name joints the armature lacks: kept at its origin with their "
+                     f"hashes")
+    props.header(coll)[SHAPES_KEY] = 1
+
+
+def own_shapes(coll) -> bool:
+    """Whether the cloth writes its spheres and planes to their own sections (else, a Keep Structure cloth imported
+    before they were imported, its file's sections stay and its spheres are capsules)."""
+    return not keeps_structure(coll) or SHAPES_KEY in props.header(coll).keys()
+
+
 # --- Rebuild from Bones -------------------------------------------------------------------------------------
 
 def _recognise(f: dict, i: int, bones: list) -> tuple:
@@ -1951,7 +2034,8 @@ def _other_diagonal(f, sel, rows, cols, closed) -> bool:
 
 def _joint_hashes(f, r) -> list:
     """Return the hashes of the file's capsule ends and part root joints."""
-    return [h for c in f["caps"] for h in c[:2]] + [p["root_hash"] for p in r["parts"] if p["use_root_joint"]]
+    return [h for c in f["caps"] for h in c[:2]] + [c[0] for c in f["spheres"] + f["planes"]] \
+        + [p["root_hash"] for p in r["parts"] if p["use_root_joint"]]
 
 
 def _remove_cloth(coll) -> None:
@@ -2059,6 +2143,7 @@ def import_rebuild(path: str, mesh_coll, force: bool = False) -> tuple:
             notes.append(f"part {i}: {own} links keep their own tails from the file (setting a link shape gives "
                          f"all its links that tail)")
     _keep_capsules(coll, arm, f["caps"], by_hash, notes)
+    _keep_shapes(coll, arm, f, by_hash, notes)
     for name in _keep_welds(coll, f, notes):         # after the collisions: the chain editor's order
         changed.append(f"{name}: its links have more than one tail or type (the commonest taken)")
     for obj in weld.objects(coll):                   # a rebuilt weld's pairs are its Parts' shared bones'
@@ -2216,9 +2301,18 @@ def update_existing(path: str, coll, mesh_coll=None) -> list:
         canon.store(obj, d)
         canon.write_groups(obj)
     roots = by_name(rt for rt in collision.roots(bpy.context.scene) if rt.name in coll.all_objects)
-    for root, (_, _, oa, ra, ob, rb) in zip(roots, f["caps"]):
+    native = own_shapes(coll)
+    for root, (_, _, oa, ra, ob, rb) in zip([rt for rt in roots if not (native and collision.is_sphere(
+            rt.ree_gpuc_capsule))], f["caps"]):
         c = root.ree_gpuc_capsule
         c.offset_a, c.radius_a, c.offset_b, c.radius_b = oa, ra, ob, rb
+    if native:
+        for root, (_, _, off, r) in zip([rt for rt in roots if collision.is_sphere(rt.ree_gpuc_capsule)], f["spheres"]):
+            c = root.ree_gpuc_capsule
+            c.offset_a, c.radius_a, c.offset_b, c.radius_b = off, r, off, r
+        planes = by_name(o for o in collision.planes(bpy.context.scene) if o.name in coll.all_objects)
+        for obj, (_, _, normal, d) in zip(planes, f["planes"]):
+            obj.ree_gpuc_plane.normal, obj.ree_gpuc_plane.distance = normal, d
     _update_welds(coll, f, part_objs, notes)
     if keeps_structure(coll):
         head[RAW_KEY] = base64.b64encode(raw).decode("ascii")

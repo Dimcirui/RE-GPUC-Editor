@@ -651,7 +651,9 @@ class REE_GPUC_PT_object_plane(_ObjectPanel, bpy.types.Panel):
         pl = obj.ree_gpuc_plane
         con = obj.constraints.get("BoneName")
         arm = con.target if con is not None and con.target is not None and con.target.type == "ARMATURE" else None
-        if con is None or not con.subtarget:
+        if (con is None or not con.subtarget) and pl.joint_hash and not props.is_re4_object(obj):
+            self.layout.label(text="The joint has no bone: written by the file's hash", icon="INFO")
+        elif con is None or not con.subtarget:
             self.layout.label(text="The joint has no bone: set one, or the plane is left out of the export",
                               icon="ERROR")
         col = _split(self.layout)

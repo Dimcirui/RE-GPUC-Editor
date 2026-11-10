@@ -9,9 +9,11 @@
 - **RE4 collision planes** — Collision From Bones adds a Plane for RE4 cloth; spheres are written as spheres.
 - **Force Export** — in the export dialog: exports without a matching `.mesh`, the joints taken from the scene's weights.
 - **Edit Keep Structure Parts** — move, add, remove and reconnect particles of an imported cloth in Edit Mode, cut slits and repaint its skin; the export writes the file again from the Parts. Works on game files that Rebuild from Bones cannot take. **Import a cloth again to edit it if an earlier version imported it.**
+- **Collision planes and spheres for Wilds, RE9 and Onimusha** — a file's own planes and spheres import as objects and export to their own sections, chosen by the Part's Plane and Sphere Bits; Collision From Bones makes planes for every game.
 - **Unkn Particle 0–5** — six more per-particle values a file holds, kept, painted and exported like the others. Effect unknown.
 
 ### Changed
+- **Spheres** — written as spheres, chosen by Sphere Bits, instead of as capsules whose ends meet. **Check the Capsule and Sphere Bits of a cloth that has spheres.**
 - **Batches** — a cloth of several Parts is split into batches of up to 512 particles between Parts, as the game's files are; it was one batch however large.
 - **Export needs the exported `.mesh`** — a cloth made from bones, and From Mesh joints, are checked against it: Mesh File, else the same-name `.mesh` beside the `.gpuc`, else the one other `.mesh` there with the cloth's skeleton, whose name the `.gpuc` then takes. Without one the export is refused unless Force Export is on.
 - **RE4 Header, Config and Part values** — named by what they may do; their tooltips say their effect is unknown. A new RE4 Config starts at values that move the cloth.

@@ -676,14 +676,8 @@ def _field_items(self, context):
     return _RE4_FIELDS if is_re4(self.target) else _ALL_FIELDS
 
 
-_COLLIDER_KINDS = [("SPHERE", "Sphere", ""), ("CAPSULE", "Capsule", "")]
-_COLLIDER_KINDS_RE4 = _COLLIDER_KINDS + [
-    ("PLANE", "Plane", "An endless plane through the joint facing its +Y, such as a ground")]
-
-
-def _collider_kinds(self, context):
-    """RE4 alone has planes."""
-    return _COLLIDER_KINDS_RE4 if is_re4(self.target) else _COLLIDER_KINDS
+_COLLIDER_KINDS = [("SPHERE", "Sphere", ""), ("CAPSULE", "Capsule", ""),
+                   ("PLANE", "Plane", "An endless plane through the joint facing its +Y, such as a ground")]
 
 
 class REE_GPUC_Settings(bpy.types.PropertyGroup):
@@ -745,7 +739,7 @@ class REE_GPUC_Settings(bpy.types.PropertyGroup):
                                 items=[("WEIGHT", "Weight Paint", "Paint a value's group with the weight brushes"),
                                        ("VIEW_3D", "3D Viewport", "Select particles in the 3D view, set a value"),
                                        ("UV", "UV Editor", "Select particles on the grid UV, set a value")])
-    collider_kind: EnumProperty(name="Collision Shape", items=_collider_kinds)
+    collider_kind: EnumProperty(name="Collision Shape", items=_COLLIDER_KINDS)
     test_collider_kind: EnumProperty(name="Collider", items=TEST_KINDS)
 
 
@@ -781,9 +775,12 @@ def _plane(self, context):
 
 
 class REE_GPUC_Plane(bpy.types.PropertyGroup):
-    """One of an RE4 .gpuc's own collision planes (section 11): the points p of the joint's space with
+    """One of a .gpuc's own collision planes (RE4 section 11, else 14): the points p of the joint's space with
     normal . p = distance, pushed out to the normal's side. Kept in step with its object (collision.py)."""
     joint: StringProperty(name="Joint", update=_plane, description="The joint the plane is on")
+    joint_hash: IntProperty(name="Joint Hash", default=0,
+                            description="The joint's hash as the imported file has it, written while Joint is no "
+                                        "bone. 0: none")
     normal: FloatVectorProperty(name="Normal", size=3, subtype="XYZ", default=(0.0, 1.0, 0.0), update=_plane,
                                 description="The side particles are kept on, in the joint's space. Usually "
                                             "(0, 1, 0)")
