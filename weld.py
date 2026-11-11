@@ -54,10 +54,17 @@ class REE_GPUC_Weld(bpy.types.PropertyGroup):
 
 def node_particles(d) -> dict:
     """Each bone's particle on a Part made from bones: its lattice node's, the one the export uses."""
+    from .modules import grid
+    first = grid.shape(d["rows"], d["cols"], d["closed"], d.get("mask", ()), d.get("slits", ())).first         if "rows" in d else None
     out = {}
     for j, name in enumerate(d["nodes"]):
         r, c = divmod(j, d["node_cols"])
-        out[name] = (d.get("anchor_rows", 0) + r * (d["sub_rows"] + 1)) * d["cols"] + c * (d["sub_cols"] + 1)
+        k = (d.get("anchor_rows", 0) + r * (d["sub_rows"] + 1)) * d["cols"] + c * (d["sub_cols"] + 1)
+        if first is not None:
+            k = int(first[k])
+            if k < 0:                                        # its cells left out
+                continue
+        out[name] = k
     return out
 
 
@@ -74,7 +81,9 @@ def _layout(part) -> dict:
     from . import canon
     c = part[canon.RECIPE_KEY]
     return {"nodes": [str(b) for b in c["nodes"]], "node_cols": int(c["node_cols"]), "sub_rows": int(c["sub_rows"]),
-            "sub_cols": int(c["sub_cols"]), "cols": int(c["cols"]), "anchor_rows": int(c.get("anchor_rows", 0))}
+            "sub_cols": int(c["sub_cols"]), "cols": int(c["cols"]), "anchor_rows": int(c.get("anchor_rows", 0)),
+            "rows": int(c["rows"]), "closed": bool(c["closed"]), "mask": [int(k) for k in c.get("mask", ())],
+            "slits": [(int(f[k]), int(f[k + 1])) for f in [list(c.get("slits", ()))] for k in range(0, len(f), 2)]}
 
 
 def pairs(obj) -> list:

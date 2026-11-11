@@ -1108,6 +1108,67 @@ class REE_GPUC_OT_reset_rest_offsets(bpy.types.Operator):
         return {"FINISHED"}
 
 
+SHAPE_EDITS = [("SLIT", "Cut Slit", "Cut the grid down the selected particles' column, from below the top one "
+                                     "selected to the bottom: the particles there are doubled, one for each side"),
+               ("REMOVE", "Remove Faces", "Leave the selected faces out of the grid; particles no face uses go"),
+               ("RESTORE", "Restore Shape", "Close every slit and bring back every face left out")]
+
+
+class REE_GPUC_OT_part_shape(bpy.types.Operator):
+    """Change the shape of a Part that follows its bones: cut a slit, leave faces out, or restore it. It keeps
+    following its bones, and the shape carries over a change of density"""
+    bl_idname = "ree_gpuc.part_shape"
+    bl_label = "Part Shape"
+    bl_options = {"REGISTER", "UNDO"}
+
+    action: bpy.props.EnumProperty(items=SHAPE_EDITS, options={"SKIP_SAVE"})
+
+    @classmethod
+    def description(cls, context, properties):
+        return next(d for k, _, d in SHAPE_EDITS if k == properties.action)
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return context.mode == "EDIT_MESH" and props.is_part(obj) and canon.attached(obj)
+
+    def execute(self, context):
+        obj = context.active_object
+        d = canon.recipe(obj)
+        sh = canon.shape(d)
+        mask, slits = list(sh.mask), list(sh.slits)
+        if self.action == "RESTORE":
+            mask, slits = [], []
+        else:
+            bm = bmesh.from_edit_mesh(obj.data)
+            layer = bm.verts.layers.int.get(canon.PARTICLE_ID)
+            if layer is None or len(bm.verts) != len(sh) or len(bm.faces) != len(sh.faces):
+                return refused(self, "The particle mesh was changed. Leave Edit Mode to restore it first")
+            if self.action == "SLIT":
+                picked = {divmod(int(sh.point[v[layer]]), d["cols"]) for v in bm.verts if v.select}
+                cols = {c for _, c in picked}
+                if len(cols) != 1:
+                    return refused(self, "Select particles down one column: the slit runs below the top one")
+                col, top = cols.pop(), min(r for r, _ in picked)
+                slits = [x for x in slits if x[0] != col] + [(col, top)]
+            else:
+                gone = {sh.cells[f.index] for f in bm.faces if f.select}
+                if not gone:
+                    return refused(self, "Select the faces to leave out")
+                mask = sorted(set(mask) | gone)
+        bpy.ops.object.mode_set(mode="OBJECT")
+        try:
+            generate.regenerate(obj, mask=mask, slits=slits)
+        except (generate.GenerateError, ValueError) as e:
+            bpy.ops.object.mode_set(mode="EDIT")
+            return refused(self, str(e))
+        bpy.ops.object.mode_set(mode="EDIT")
+        after = canon.shape(canon.recipe(obj))
+        self.report({"INFO"}, f"{obj.name}: {len(after.slits)} slits, {len(after.mask)} faces left out, "
+                              f"{len(after)} particles")
+        return {"FINISHED"}
+
+
 class REE_GPUC_OT_set_value(bpy.types.Operator):
     """Set the chosen particle value on the selected particles"""
     bl_idname = "ree_gpuc.set_value"
@@ -1708,7 +1769,7 @@ CLASSES = (REE_GPUC_OT_import, REE_GPUC_FH_import, REE_GPUC_OT_export, REE_GPUC_
            REE_GPUC_OT_add_collider, REE_GPUC_OT_remove_collider, REE_GPUC_OT_collider_from_bones, REE_GPUC_OT_copy, REE_GPUC_OT_paste,
            REE_GPUC_OT_set_bits, REE_GPUC_OT_curve_key_add, REE_GPUC_OT_curve_key_remove, REE_GPUC_OT_curve_sort,
            REE_GPUC_OT_curve_reset, REE_GPUC_OT_edit_particles,
-           REE_GPUC_OT_reset_rest_offsets, REE_GPUC_OT_set_value, REE_GPUC_OT_paint, REE_GPUC_OT_normalize_skin,
+           REE_GPUC_OT_reset_rest_offsets, REE_GPUC_OT_part_shape, REE_GPUC_OT_set_value, REE_GPUC_OT_paint, REE_GPUC_OT_normalize_skin,
            REE_GPUC_OT_edit_as_mesh, REE_GPUC_OT_back_to_bones, REE_GPUC_OT_driven_add,
            REE_GPUC_OT_driven_remove, REE_GPUC_OT_driven_from_skin, REE_GPUC_OT_part_from_mesh,
            REE_GPUC_OT_attach_to_bones, REE_GPUC_OT_fit_to_mesh,

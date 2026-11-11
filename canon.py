@@ -7,7 +7,8 @@ Maintenance constraints:
   name and normals. ``count``, ``faces``, ``face_uvs``, ``links`` and ``particle_uv`` read it, or a bone grid.
 - A Part made from bones also stores its bone grid under ``RECIPE_KEY`` (row by row, row 0 at the top, the
   bones' rest heads in armature space; ``sub_rows`` / ``sub_cols`` particles between bones, ``anchor_rows`` over the
-  top row and ``hem_rows`` under the bottom one; 4 node indices of skin per particle). While ``ATTACHED_KEY`` is set it follows the grid: ``store`` of a grid writes the grid and
+  top row and ``hem_rows`` under the bottom one, ``mask`` and ``slits`` its ``grid.Shape``; its per-particle arrays
+  are its shape's particles, 4 node indices of skin each). While ``ATTACHED_KEY`` is set it follows the grid: ``store`` of a grid writes the grid and
   its mesh (``_bake``), valid rest-position edits are committed as offsets from ``base_co`` (the faces keep their
   winding), and changes to topology, particle IDs or UV are undone by ``restore``. ``load`` then also holds the
   grid's ``GRID_KEYS``. ``locked``: a Part that does not follow a grid.
@@ -120,7 +121,7 @@ def has(obj) -> bool:
 
 
 GRID_KEYS = ("rows", "cols", "closed", "sub_rows", "sub_cols", "node_rows", "node_cols", "node_co", "base_co",
-             "rest_offset", "centre", "diagonal_bend", "anchor_rows", "anchor_gap", "hem_rows")
+             "rest_offset", "centre", "diagonal_bend", "anchor_rows", "anchor_gap", "hem_rows", "mask", "slits")
 
 
 def load(obj) -> dict:
@@ -152,13 +153,17 @@ def _load_grid(c, obj, vals) -> dict:
     centre = f32(c["centre"]) if len(c["centre"]) else None
     base = f32(c.get("base_co", co)).reshape(-1, 3)
     offset = f32(c.get("rest_offset", np.zeros_like(co))).reshape(-1, 3)
-    return {"locked": False, "count": rows * cols, "base_co": base, "rest_offset": offset,
+    mask = [int(k) for k in c.get("mask", ())]
+    flat = [int(k) for k in c.get("slits", ())]
+    slits = [(flat[k], flat[k + 1]) for k in range(0, len(flat), 2)]
+    n = len(grid.shape(rows, cols, bool(c["closed"]), mask, slits))
+    return {"locked": False, "count": n, "base_co": base, "rest_offset": offset, "mask": mask, "slits": slits,
             "rows": rows, "cols": cols, "closed": bool(c["closed"]), "tile": int(c["tile"]), "co": co,
             "nodes": nodes, "node_rows": nr, "node_cols": nc, "sub_rows": sr, "sub_cols": sc, "node_co": node_co,
             "anchor_rows": int(c.get("anchor_rows", 0)), "anchor_gap": float(c.get("anchor_gap", 0.01)),
             "hem_rows": int(c.get("hem_rows", 0)),
             "skin": skin, "skin_w": skin_w, "centre": centre, "diagonal_bend": obj.ree_gpuc_part.diagonal_bend,
-            **{n: f32(vals[n]) if n in vals else np.full(rows * cols, DEFAULTS[n], np.float32) for n in FIELD_NAMES}}
+            **{f: f32(vals[f]) if f in vals else np.full(n, DEFAULTS[f], np.float32) for f in FIELD_NAMES}}
 
 
 def _load_locked(c) -> dict:
@@ -212,6 +217,8 @@ def store(obj, data: dict) -> None:
                        "sub_rows": int(data["sub_rows"]), "sub_cols": int(data["sub_cols"]),
                        "anchor_rows": int(data.get("anchor_rows", 0)), "anchor_gap": float(data.get("anchor_gap", 0.01)),
                        "hem_rows": int(data.get("hem_rows", 0)),
+                       "mask": [int(k) for k in data.get("mask", ())],
+                       "slits": [int(x) for cut in data.get("slits", ()) for x in cut],
                        "node_co": fl(data["node_co"]), "skin": [int(x) for x in np.asarray(data["skin"]).ravel()],
                        "skin_w": fl(data["skin_w"]), "centre": [] if data["centre"] is None else fl(data["centre"]),
                        **{n: fl(data[n]) for n in FIELD_NAMES}}
@@ -222,22 +229,31 @@ def store(obj, data: dict) -> None:
 def _bake(obj, g) -> None:
     """Write a bone grid as the Part's mesh, as the export writes it: faces wound outward and split at Other
     Diagonal, UVs on the unorm16 steps, the grid's skin, its links with their tails (``OVERRIDES_KEY`` kept per
-    link), new-triangle tangent flags."""
+    link), new-triangle tangent flags. While it keeps its file's grid, the file's particle order, skin and quad
+    splits (``FILE_ORDER_KEY``, ``FILE_SKIN_KEY``, ``FILE_SPLIT_KEY``)."""
     from . import fileio
     from .modules import topology
-    faces, corners = fileio.grid_faces(obj, g, obj.ree_gpuc_part.armature)
+    file_grid = obj.get(FILE_GRID_KEY)                 # another density or shape: no particle is the file's any more
+    same = file_grid is None or list(file_grid) == file_grid_key(g)
+    flip = [int(k) for k in obj.get(FILE_SPLIT_KEY, ())] if same else ()
+    faces, corners = fileio.grid_faces(obj, g, obj.ree_gpuc_part.armature, flip)
     corners = [[(round(u * 65535) / 65535, round(v * 65535) / 65535) for u, v in f] for f in corners]
     face_uv = f32([p for f in corners for p in f]).reshape(-1, 2)
     tris, tri_uv = topology.triangles(faces, face_uv)
     co = g["co"]
     own = overrides(obj, g)
-    file_grid = obj.get(FILE_GRID_KEY)                 # another density: no particle is the file's any more
-    same = file_grid is None or list(file_grid) == [g["rows"], g["cols"], int(g["closed"])]
-    src = np.arange(count(g)) if same else np.full(count(g), -1)
+    order = obj.get(FILE_ORDER_KEY)
+    src = (np.asarray(order, np.int64) if order is not None else np.arange(count(g))) if same         else np.full(count(g), -1)
+    nodes, skin, skin_w = g["nodes"], g["skin"], g["skin_w"]
+    kept = obj.get(FILE_SKIN_KEY) if same else None
+    if kept is not None:
+        nodes = [str(b) for b in kept["nodes"]]
+        skin = np.asarray(kept["skin"], np.int64).reshape(count(g), -1)
+        skin_w = f32(kept["skin_w"]).reshape(count(g), -1)
     obj[EDITED_KEY] = [n for k, n in enumerate(s.lower() for s in grid.SHAPES) if k not in own]
     store(obj, {"locked": True, "count": count(g), "tile": g["tile"], "co": co, "tris": tris, "tri_uv": tri_uv,
-                "links": links(g), "tails": link_tails(obj, g), "nodes": g["nodes"], "skin": g["skin"],
-                "skin_w": g["skin_w"], "normal": topology.normals(co, tris), "faces": faces, "face_uv": face_uv,
+                "links": links(g), "tails": link_tails(obj, g), "nodes": nodes, "skin": skin,
+                "skin_w": skin_w, "normal": topology.normals(co, tris), "faces": faces, "face_uv": face_uv,
                 "src": src, "tri_flags": gpuc_build.tangent_flags(faces, corners), "editable": True,
                 **{n: g[n] for n in FIELD_NAMES}})
 
@@ -266,7 +282,16 @@ def attached(obj) -> bool:
     return has(obj) and ATTACHED_KEY in obj.keys()
 
 
-FILE_GRID_KEY = "ree_gpuc_file_grid"   # on a file Part attached to bones: (rows, cols, closed) of its file grid
+FILE_GRID_KEY = "ree_gpuc_file_grid"   # on a file Part attached to bones: its file grid (``file_grid_key``)
+FILE_ORDER_KEY = "ree_gpuc_file_order"  # ... and, when they differ, each particle's index in the file part
+FILE_SKIN_KEY = "ree_gpuc_file_skin"    # ... and its file's skin ({nodes, skin, skin_w}), when not the grid's
+FILE_SPLIT_KEY = "ree_gpuc_file_split"  # ... and its quads split at the other diagonal than Other Diagonal gives
+
+
+def file_grid_key(d: dict) -> list:
+    """(rows, cols, closed), then a shaped grid's ``_grid_key`` rest: what a grid the file's particles are must
+    have."""
+    return [int(d["rows"]), int(d["cols"]), int(bool(d["closed"]))] + _grid_key(d)[4:]
 MESH_KEY = "ree_gpuc_from_mesh"          # on a Part made from a mesh (``structure.from_mesh``)
 FILE_KEY = "ree_gpuc_file_part"          # on a Part imported from its file: its part's index in the file
 
@@ -300,13 +325,23 @@ def count(d: dict) -> int:
     return d["count"]
 
 
+def shape(d: dict) -> grid.Shape:
+    """A bone grid's ``grid.Shape``."""
+    return grid.shape(d["rows"], d["cols"], d["closed"], d.get("mask", ()), d.get("slits", ()))
+
+
+def lattice_co(d: dict, co=None) -> np.ndarray:
+    """A bone grid's positions (``co``, else its own) on its lattice points, rows * cols x 3 (``grid.lattice``)."""
+    return grid.lattice(np.asarray(d["co"] if co is None else co, float), shape(d))
+
+
 def faces(d: dict) -> list:
     """The mesh's faces: the grid's quads, or a locked Part's faces (else its triangles)."""
     if d["locked"]:
         if d.get("faces") is not None:
             return list(d["faces"])
         return [tuple(int(v) for v in t) for t in d["tris"]]
-    return grid.faces(d["rows"], d["cols"], d["closed"])
+    return list(shape(d).faces)
 
 
 def editable(d: dict) -> bool:
@@ -320,7 +355,7 @@ def face_uvs(d: dict) -> np.ndarray:
         if d.get("faces") is not None:
             return d["face_uv"] + (d["tile"], 0.0)
         return d["tri_uv"].reshape(-1, 2) + (d["tile"], 0.0)
-    return np.asarray(grid.face_uv(d["rows"], d["cols"], d["closed"], d["tile"]), np.float32).reshape(-1, 2)
+    return np.asarray(grid.face_uv(d["rows"], d["cols"], d["closed"], d["tile"], shape(d)), np.float32).reshape(-1, 2)
 
 
 _grid_links: dict = {}
@@ -330,7 +365,8 @@ def links(d: dict) -> np.ndarray:
     """Every link as (a, b, type, shape index into ``grid.SHAPES``)."""
     if d["locked"]:
         return d["links"]
-    key = (d["rows"], d["cols"], d["closed"], d.get("diagonal_bend", True))
+    sh = shape(d)
+    key = (d["rows"], d["cols"], d["closed"], d.get("diagonal_bend", True), sh.mask, sh.slits)
     if key not in _grid_links:
         _grid_links[key] = grid.links(*key)
     return _grid_links[key]
@@ -344,7 +380,11 @@ OVERRIDES_KEY = "ree_gpuc_link_overrides"
 
 
 def _grid_key(d: dict) -> list:
-    return [int(d["rows"]), int(d["cols"]), int(bool(d["closed"])), int(bool(d.get("diagonal_bend", True)))]
+    key = [int(d["rows"]), int(d["cols"]), int(bool(d["closed"])), int(bool(d.get("diagonal_bend", True)))]
+    sh = shape(d)
+    if not sh.plain:                                    # a grid with a shape: its mask and slits too
+        key += [len(sh.mask), *sh.mask, *(x for cut in sh.slits for x in cut)]
+    return key
 
 
 def set_overrides(obj, d: dict, tails, default) -> int:
@@ -395,7 +435,7 @@ def link_tails(obj, d: dict) -> np.ndarray:
 def particle_uv(d: dict) -> np.ndarray:
     """Each particle's place on the UV (a locked Part's: the mean of its triangle corners')."""
     if not d["locked"]:
-        return grid.particle_uv(d["rows"], d["cols"], d["closed"], d["tile"])
+        return grid.particle_uv(d["rows"], d["cols"], d["closed"], d["tile"], shape(d))
     uv, n = np.zeros((d["count"], 2)), np.zeros(d["count"])
     np.add.at(uv, d["tris"].ravel(), d["tri_uv"].reshape(-1, 2))
     np.add.at(n, d["tris"].ravel(), 1.0)
@@ -533,8 +573,8 @@ def build_mesh(obj) -> None:
             me.attributes.remove(me.attributes[PARTICLE_ID])
         me.attributes.new(PARTICLE_ID, "INT", "POINT").data.foreach_set("value", np.arange(count(d), dtype=np.int32))
     if d.get("attached"):
-        cols = recipe(obj)["cols"]
-        r, c = np.divmod(np.arange(count(d), dtype=np.int32), cols)
+        g = recipe(obj)
+        r, c = np.divmod(shape(g).point.astype(np.int32), g["cols"])
         me.attributes.new(ROW, "INT", "POINT").data.foreach_set("value", r)
         me.attributes.new(COL, "INT", "POINT").data.foreach_set("value", c)
     me.update()

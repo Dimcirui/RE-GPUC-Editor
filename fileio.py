@@ -223,31 +223,34 @@ def weighted_bones(arm, mesh_coll) -> list[str]:
     return [b.name for b in arm.data.bones if b.name in used]
 
 
-def _outward(co, rows, cols, closed, centre, inside) -> bool:
-    """Whether ``grid.faces``' winding gives outward normals for this Part."""
-    tri = np.asarray(grid.faces(rows, cols, closed)[0][:3])
+def _outward(co, rows, cols, closed, centre, inside, first=0) -> bool:
+    """Whether ``grid.faces``' winding gives outward normals for this Part (``co`` on its lattice points; ``first``:
+    a quad of ``grid.faces`` its shape keeps)."""
+    tri = np.asarray(grid.faces(rows, cols, closed)[first][:3])
     n = np.cross(co[tri[1]] - co[tri[0]], co[tri[2]] - co[tri[0]])
     out = grid.normals(co, rows, cols, closed)[tri[0]] * grid.normal_sign(co, grid.normals(co, rows, cols, closed),
                                                                            centre, inside)
     return float(n @ out) > 0
 
 
-def grid_faces(obj, d, arm) -> tuple:
+def grid_faces(obj, d, arm, flip=()) -> tuple:
     """(faces, each face's corner UVs in [0, 1]) of a Part made from bones as the export writes them: wound so that
-    the normals point outward, split at the diagonal Other Diagonal names (``gpuc_build`` splits at a-c)."""
+    the normals point outward, split at the diagonal Other Diagonal names (``gpuc_build`` splits at a-c), the
+    quads ``flip`` lists at the other one."""
     rows, cols, closed = d["rows"], d["cols"], d["closed"]
-    co = np.asarray(d["co"], float)
+    sh = canon.shape(d)
+    co = canon.lattice_co(d)
     root = arm.data.bones.get(obj.ree_gpuc_part.root_joint) if arm is not None else None
     inside = np.array(root.head_local, float) if root is not None else np.zeros(3)
-    quads = grid.faces(rows, cols, closed)
+    quads = list(sh.faces)
     quad_uv = [[(min(max(u, 0.0), 1.0), min(max(v, 0.0), 1.0)) for u, v in f]
-               for f in grid.face_uv(rows, cols, closed, 0)]
-    if not _outward(co, rows, cols, closed, d["centre"], inside):
+               for f in grid.face_uv(rows, cols, closed, 0, sh)]
+    if not _outward(co, rows, cols, closed, d["centre"], inside, sh.cells[0]):
         quads = [(a, dd, c, b) for a, b, c, dd in quads]
         quad_uv = [[f[0], f[3], f[2], f[1]] for f in quad_uv]
-    if obj.ree_gpuc_part.other_diagonal:
-        quads = [q[1:] + q[:1] for q in quads]
-        quad_uv = [f[1:] + f[:1] for f in quad_uv]
+    turn = set(flip) ^ (set(range(len(quads))) if obj.ree_gpuc_part.other_diagonal else set())
+    quads = [q[1:] + q[:1] if k in turn else q for k, q in enumerate(quads)]
+    quad_uv = [f[1:] + f[:1] if k in turn else f for k, f in enumerate(quad_uv)]
     return [tuple(q) for q in quads], quad_uv
 
 
@@ -2183,77 +2186,260 @@ def own_shapes(coll) -> bool:
 
 NOT_ATTACHED = "Not attached ("           # starts the first note of a file no Part of which attached (``ops``)
 
-def _recognise(f: dict, i: int, bones: list) -> tuple:
+def ancestors(arm) -> dict:
+    """Each bone's ancestors' names."""
+    return {b.name: {p.name for p in b.parent_recursive} for b in arm.data.bones}
+
+
+def _down_chains(names: list, nc: int, ancestors: dict) -> bool:
+    """Whether a lattice of bones (row by row, ``nc`` a row) runs down its chains: neighbours down a column share
+    more ancestors than neighbours along a row (a chain's bones, or bones hung off one chain, as RE9's are)."""
+    def shared(a, b):
+        return len((ancestors.get(a, set()) | {a}) & (ancestors.get(b, set()) | {b}))
+    down = [shared(names[j], names[j + nc]) for j in range(len(names) - nc)]
+    along = [shared(names[j], names[j + 1]) for j in range(len(names) - 1) if j % nc != nc - 1]
+    return not down or not along or float(np.mean(down)) > float(np.mean(along))
+
+
+def _placements(faces, n: int, pos):
+    """Each way the part's quads lie on a rows-by-columns lattice (``topology.unfold``, either axis down the
+    columns, either way along each, a ring started at each column): (rows, cols, closed, each particle's lattice
+    point, its row): the file's own order first, then the top row highest and the columns in ``grid.order_columns``'
+    order."""
+    coord, seams = topology.unfold(faces)
+    if len(coord) != n:
+        return
+    ring = None
+    if seams:
+        offsets = {(abs(x), abs(y)) for x, y in seams}
+        if len(offsets) != 1 or 0 not in next(iter(offsets)):
+            return
+        ring = next(iter(offsets))
+    xy = np.array([coord[k] for k in range(n)], np.int64)
+    found = []
+    for ax in (0, 1):
+        if ring is not None and ring[ax]:              # the ring goes round the rows, not down the columns
+            continue
+        for flip_r in (1, -1):
+            r = xy[:, ax] * flip_r
+            r = r - r.min()
+            rows = int(r.max()) + 1
+            for flip_c in (1, -1):
+                c = xy[:, 1 - ax] * flip_c
+                if ring is None:
+                    c = c - c.min()
+                    found.append((rows, int(c.max()) + 1, False, r * (int(c.max()) + 1) + c, r))
+                    continue
+                period = ring[1 - ax]
+                for s in range(period):
+                    cc = (c - s) % period
+                    found.append((rows, period, True, r * period + cc, r))
+
+    def lower(cand):                                   # the top row lower than the bottom one
+        return float(np.mean(pos[cand[4] == 0, 1])) < float(np.mean(pos[cand[4] == cand[4].max(), 1]))
+
+    def unlike_columns(cand):
+        """How far the columns' order is from ``grid.order_columns``' (game space: x across, z to the front)."""
+        rows, cols, closed, point, r = cand
+        top = [pos[(r == 0) & (point % cols == c)] for c in range(cols)]
+        if any(not len(t) for t in top):
+            return (1, 0)
+        top = np.array([t.mean(axis=0) for t in top])
+        if not closed:
+            return (int(top[0, 0] > top[-1, 0]), 0)
+        angle = np.arctan2(top[:, 0], top[:, 2]) % (2 * np.pi)
+        turning = float(np.mean((np.diff(np.append(angle, angle[0])) % (2 * np.pi)) < np.pi))
+        return (int(turning < 0.5), int(np.argsort(np.argsort(angle))[0]))
+    found.sort(key=lambda cand: (not (cand[3] == np.arange(n)).all(), lower(cand), unlike_columns(cand)))
+    yield from found
+
+
+def _shape_of(faces, n: int, rows: int, cols: int, closed: bool, point) -> tuple:
+    """The ``grid.Shape`` a placement of the part's quads makes (cells without a quad left out, two particles on a
+    point a slit's copies) and each particle's index in it; (None, None) when the quads are not that shape's."""
+    span = cols if closed else cols - 1
+    if rows < 2 or cols < 2 or (closed and cols < 3):
+        return None, None
+    on = collections.defaultdict(list)
+    for k in range(n):
+        on[int(point[k])].append(k)
+    if any(len(v) > 2 for v in on.values()):
+        return None, None
+    cell_of = []
+    for q in faces:
+        r = sorted({int(point[v]) // cols for v in q})
+        c = sorted({int(point[v]) % cols for v in q})
+        if len(r) != 2 or r[1] != r[0] + 1 or len(c) != 2:
+            return None, None
+        left = c[0] if c[1] == c[0] + 1 else (c[1] if closed and c == [0, cols - 1] else None)
+        if left is None:
+            return None, None
+        cell_of.append(r[0] * span + left)
+    if len(set(cell_of)) != len(cell_of):
+        return None, None
+    mask = sorted(set(range((rows - 1) * span)) - set(cell_of))
+    copy = np.zeros(n, np.int64)
+    cut = collections.defaultdict(set)
+    for p, ks in on.items():
+        if len(ks) == 2:
+            right = [k for k in ks if any(k in q and cell % span == p % cols for q, cell in zip(faces, cell_of))]
+            if len(right) != 1:
+                return None, None
+            copy[right[0]] = 1
+            cut[p % cols].add(p // cols)
+    slits = []
+    for c, rs in cut.items():
+        top = min(rs) - 1
+        if rs != set(range(top + 1, rows)):
+            return None, None
+        slits.append((c, top))
+    try:
+        sh = grid.shape(rows, cols, closed, mask, slits)
+    except grid.GridError:
+        return None, None
+    index = {(int(p), int(c)): i for i, (p, c) in enumerate(zip(sh.point, sh.copy))}
+    to = [index.get((int(point[k]), int(copy[k]))) for k in range(n)]
+    if len(sh) != n or None in to or len(set(to)) != n:
+        return None, None
+    if {frozenset(to[v] for v in q) for q in faces} != {frozenset(q) for q in sh.faces}:
+        return None, None
+    return sh, np.array(to, np.int64)
+
+
+def _recognise(f: dict, i: int, bones: list, above=None) -> tuple:
     """Return (layout, links {(a, b, type): tail}, ``grid.links``) for a file part the generator could make, else
-    (None, reason, None). Particles skinned to a single bone are the bone nodes and must lie on a sub-lattice; up to
-    3 rows over it and under it skinned as its top and bottom rows are anchor and hem rows."""
+    (None, reason, None). Its quads are laid out on a lattice by unfolding them, whatever its particles' order: cells
+    without a quad are left out of its shape, two particles on a point are a slit's. The layout's ``order`` gives
+    the file part's particle for each of the layout's, and the links are in the layout's indices. Particles skinned
+    to a single bone are the bone nodes and must lie on a sub-lattice, each column's down its chain when ``above``
+    (each bone's ancestors) is given; up to 3 rows over it and under it whose particles on its columns follow its
+    top and bottom rows' bones are anchor and hem rows."""
     sel = np.where(f["part_of"] == i)[0]
     base, n = int(sel[0]), len(sel)
-    mine = {(min(a, b) - base, max(a, b) - base, t): tail for a, b, t, tail in f["links"]
-            if base <= a < base + n and base <= b < base + n}
-    found = None
-    for bend in (True, False):
-        for closed in (False, True):
-            for cols in range(2, n // 2 + 1):
-                if n % cols == 0:
-                    gl = grid.links(n // cols, cols, closed, bend)
-                    if len(gl) == len(mine) and {(int(a), int(b), int(t)) for a, b, t, _ in gl} == set(mine):
-                        found = (n // cols, cols, closed, bend, gl)
-                        break
-            if found:
+    own = {(min(a, b) - base, max(a, b) - base, t): tail for a, b, t, tail in f["links"]
+           if base <= a < base + n and base <= b < base + n}
+    keep = [k for k, t in enumerate(f["tris"]) if base <= t[0] < base + n]
+    q = topology.quads(f["tris"][keep] - base, f["tri_uv"][keep], [(a, b, t) for a, b, t in own])
+    alone = int(((f["skin_w"][sel] > 0).sum(1) == 1).sum())
+    free = "" if alone else " (a free-form mesh: no particle follows one bone alone)"
+    if q is None or any(len(fc) != 4 for fc in q[0]):
+        return None, "its links are not the ones its quads make" + free, None
+    faces = [tuple(int(v) for v in fc) for fc in q[0]]
+    skin, sw, pos = f["skin"][sel], f["skin_w"][sel], f["pos"][sel]
+    why = f"its {n} particles and their quads lie on no rows-by-columns grid" + free
+    rank = 0                                           # how far the best placement got: its reason is given
+    for rows, cols, closed, point, _ in _placements(faces, n, pos):
+        sh, to = _shape_of(faces, n, rows, cols, closed, point)
+        if sh is None:
+            continue
+        order = np.empty(n, np.int64)
+        order[to] = np.arange(n)
+        mine = {(int(min(to[a], to[b])), int(max(to[a], to[b])), t): tail for (a, b, t), tail in own.items()}
+        gl = None
+        for bend in (True, False):
+            cand = grid.links(rows, cols, closed, bend, sh.mask, sh.slits)
+            if len(cand) == len(mine) and {(int(a), int(b), int(t)) for a, b, t, _ in cand} == set(mine):
+                gl = cand
                 break
-        if found:
-            break
-    if found is None:
-        alone = int(((f["skin_w"][sel] > 0).sum(1) == 1).sum())
-        why = (f"its {n} particles and their links form no rows-by-columns grid of the kind the editor makes from "
-               f"bone chains")
-        return None, why + ("" if alone else " (a free-form mesh: no particle follows one bone alone)"), None
-    rows, cols, closed, bend, gl = found
-    skin, sw = f["skin"][sel], f["skin_w"][sel]
-    pos = f["pos"][sel]
-    span = cols if closed else cols - 1
+        if gl is None:
+            if rank < 1:
+                rank, why = 1, "its links are not the ones its grid makes"
+            continue
+        lay, why_not = _lattice(skin[order], sw[order], pos[order], sh, bones, bend, above)
+        if lay is None:
+            step = 2 + _LATTICE_STEPS.index(why_not)
+            if step > rank:
+                rank, why = step, why_not
+            continue
+        lay.update(mask=list(sh.mask), slits=[tuple(x) for x in sh.slits], order=order.tolist())
+        return lay, mine, gl
+    return None, why, None
 
-    def row_skin(r):
-        return [sorted((int(b), int(x)) for b, x in zip(skin[r * cols + c], sw[r * cols + c]) if x > 0)
-                for c in range(cols)]
+
+def _left_out_bone(p: int, sh, skin, sw, taken: set, sr: int, sc: int):
+    """The bone of a lattice node with no particle: the one bone the particles within a bone's step of it are
+    skinned to that no node there is, else None."""
+    rows, cols = sh.rows, sh.cols
+    r0, c0 = divmod(p, cols)
+    near = set()
+    for r in range(max(r0 - sr - 1, 0), min(r0 + sr + 2, rows)):
+        for dc in range(-sc - 1, sc + 2):
+            c = (c0 + dc) % cols if sh.closed else c0 + dc
+            if 0 <= c < cols and sh.first[r * cols + c] >= 0:
+                k = sh.first[r * cols + c]
+                near.update(int(b) for b, x in zip(skin[k], sw[k]) if x > 0)
+    left = near - taken
+    return left.pop() if len(left) == 1 else None
+
+
+_LATTICE_STEPS = ("its particles skinned to one bone alone lie on no lattice of its grid",
+                  "a bone sits on two of its particles", "its bones down a column are not one chain")
+
+
+def _lattice(skin, sw, pos, sh, bones: list, bend: bool, ancestors=None) -> tuple:
+    """The bone layout of a part laid out as ``sh``: its anchor and hem rows and its bone nodes' sub-lattice;
+    (layout, "") or (None, why not)."""
+    rows, cols, closed = sh.rows, sh.cols, sh.closed
+    span = cols if closed else cols - 1
+    first = sh.first
+
+    def bone(p):                                       # the one bone a lattice point's particle follows, else None
+        k = first[p]
+        return int(skin[k][int(np.argmax(sw[k]))]) if k >= 0 and (sw[k] > 0).sum() == 1 else None
 
     why = "its particles skinned to one bone alone lie on no lattice of its grid"
-    # anchor rows over the top and hem rows under the bottom are skinned as the row they extend (generate.layout)
+    # anchor rows over the top and hem rows under the bottom follow the bones of the row they extend (generate.layout)
     for above, below in sorted(((a, b) for a in range(4) for b in range(4) if a + b < rows - 1), key=sum):
         body = rows - above - below
-        if above and any(row_skin(r) != row_skin(above) for r in range(above)):
-            continue
-        if below and any(row_skin(r) != row_skin(above + body - 1) for r in range(above + body, rows)):
-            continue
-        single = {k for k in range(above * cols, (above + body) * cols) if (sw[k] > 0).sum() == 1}
+        single = {p for p in range(above * cols, (above + body) * cols) if bone(p) is not None}
         for sr in range(body - 1):
             if (body - 1) % (sr + 1):
                 continue
             for sc in range(span):
                 if span % (sc + 1):
                     continue
-                at = [(above + r, c) for r in range(0, body, sr + 1) for c in range(0, cols, sc + 1)]
-                if {r * cols + c for r, c in at} != single:
+                at = [(above + r) * cols + c for r in range(0, body, sr + 1) for c in range(0, cols, sc + 1)]
+                if {p for p in at if first[p] >= 0} != single:
                     continue
-                names = [bones[int(skin[r * cols + c][int(np.argmax(sw[r * cols + c]))])] for r, c in at]
+                top, bottom = above * cols, (above + body - 1) * cols
+                node_cols = range(0, cols, sc + 1)
+                if any(bone(r * cols + c) != bone(top + c) for r in range(above) for c in node_cols):
+                    continue
+                if any(bone(r * cols + c) != bone(bottom + c) for r in range(above + body, rows) for c in node_cols):
+                    continue
+                found = {p: bone(p) for p in at if first[p] >= 0}
+                gone = [p for p in at if first[p] < 0]
+                for p in gone:                         # a node its shape left out: the one other bone round it
+                    found[p] = _left_out_bone(p, sh, skin, sw, set(found.values()), sr, sc)
+                if None in found.values():
+                    continue
+                names = [bones[found[p]] for p in at]
                 if len(set(names)) != len(names):
                     why = "a bone sits on two of its particles"
                     continue
-                gap = float(np.median(np.linalg.norm(pos[(above - 1) * cols:above * cols] - pos[above * cols:(above + 1) * cols],
-                                                     axis=1))) if above else 0.01
+                if ancestors is not None and not _down_chains(names, len(node_cols), ancestors):
+                    why = "its bones down a column are not one chain"
+                    continue
+                gap = 0.01
+                if above:
+                    both = [(first[(above - 1) * cols + c], first[above * cols + c]) for c in range(cols)]
+                    both = [(a, b) for a, b in both if a >= 0 and b >= 0]
+                    gap = float(np.median([np.linalg.norm(pos[a] - pos[b]) for a, b in both])) if both else 0.01
                 lay = {"node_rows": (body - 1) // (sr + 1) + 1, "node_cols": len(range(0, cols, sc + 1)),
                        "sub_rows": sr, "sub_cols": sc, "closed": closed, "nodes": names, "diagonal_bend": bend,
                        "anchor_rows": above, "anchor_gap": gap, "hem_rows": below}
-                return lay, mine, gl
-    return None, why, None
+                return lay, ""
+    return None, why
 
 
-def _other_diagonal(f, sel, rows, cols, closed) -> bool:
-    """Whether every quad of the part is split at the second-fourth corner diagonal; a mixed split returns False."""
+def _other_diagonal(f, sel, lay) -> bool:
+    """Whether every quad of the part, laid out as ``lay`` (``_recognise``), is split at the second-fourth corner
+    diagonal; a mixed split returns False."""
     base, n = int(sel[0]), len(sel)
-    mine = {tuple(sorted(int(v) - base for v in t)) for t in f["tris"] if base <= t[0] < base + n}
-    quads = grid.faces(rows, cols, closed)
+    to = np.empty(n, np.int64)
+    to[np.asarray(lay.get("order", np.arange(n)), np.int64)] = np.arange(n)
+    mine = {tuple(sorted(int(to[int(v) - base]) for v in t)) for t in f["tris"] if base <= t[0] < base + n}
+    quads = grid.shape(lay["rows"], lay["cols"], lay["closed"], lay.get("mask", ()), lay.get("slits", ())).faces
     other = {tuple(sorted(t)) for a, b, c, d in quads for t in ((a, b, d), (b, c, d))}
     return mine == other
 
@@ -2350,7 +2536,7 @@ def _rebuild_generated(path: str, mesh_coll, force: bool = False) -> tuple:
 
     found = []
     for i in range(len(r["parts"])):
-        lay, links, gl = _recognise(f, i, bones)
+        lay, links, gl = _recognise(f, i, bones, ancestors(arm))
         if lay is None:
             return keep(f"part {i} {r['parts'][i]['part_name']}: {links}")
         found.append((lay, links, gl))
@@ -2382,16 +2568,16 @@ def _rebuild_generated(path: str, mesh_coll, force: bool = False) -> tuple:
         _set_part(obj, block, common, None, cfg_objs, notes)
         p = obj.ree_gpuc_part
         p.link_preset = _preset_of(p)
-        p.other_diagonal = _other_diagonal(f, sel, lay["rows"], lay["cols"], lay["closed"])
+        p.other_diagonal = _other_diagonal(f, sel, lay)
         p.diagonal_bend = lay["diagonal_bend"]
         if block["use_root_joint"] and block["root_hash"] not in by_hash:
             obj[ROOT_HASH_KEY] = gp.signed(block["root_hash"])
         d = canon.recipe(obj)
-        canon.fit_ranges(obj, {field: f["values"][field][sel] for field in canon.FIELD_NAMES})
+        mine = sel[np.asarray(lay["order"], np.int64)]             # the file's particles in the layout's order
+        canon.fit_ranges(obj, {field: f["values"][field][mine] for field in canon.FIELD_NAMES})
         for field in canon.FIELD_NAMES:
-            v = f["values"][field][sel]
-            d[field] = v
-        d["rest_offset"] = (f["pos"][sel] @ to_arm[:3, :3].T + to_arm[:3, 3]) - d["base_co"]   # the file's rest pose
+            d[field] = f["values"][field][mine]
+        d["rest_offset"] = (f["pos"][mine] @ to_arm[:3, :3].T + to_arm[:3, 3]) - d["base_co"]   # the file's rest pose
         canon.store(obj, d)
         canon.write_groups(obj)
         far = float(np.linalg.norm(d["rest_offset"], axis=1).max())

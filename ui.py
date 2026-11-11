@@ -165,6 +165,19 @@ class REE_GPUC_PT_particles(_Sidebar, bpy.types.Panel):
             row = body.row(align=True)
             row.operator("ree_gpuc.reset_rest_offsets", text="Reset Selected").selected_only = True
             row.operator("ree_gpuc.reset_rest_offsets", text="Reset All").selected_only = False
+        obj = context.active_object
+        if props.is_part(obj) and canon.attached(obj):
+            header, body = layout.panel("ree_gpuc_particle_shape")
+            header.label(text="Shape")
+            if body is not None:
+                g = canon.recipe(obj)
+                body.label(text=f"{len(g['slits'])} slits, {len(g['mask'])} faces left out")
+                if context.mode != "EDIT_MESH":
+                    body.label(text="Select particles or faces in Edit Mode", icon="INFO")
+                col = body.column(align=True)
+                col.active = context.mode == "EDIT_MESH"
+                for key, label in (("SLIT", "Cut Slit"), ("REMOVE", "Remove Faces"), ("RESTORE", "Restore Shape")):
+                    col.operator("ree_gpuc.part_shape", text=label).action = key
         header, body = layout.panel("ree_gpuc_particle_weights")
         header.label(text="Weight Strength")
         if body is None:

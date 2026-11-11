@@ -118,3 +118,41 @@ def normals(co, tris) -> np.ndarray:
     for k in range(3):
         np.add.at(out, t[:, k], n)
     return out / np.maximum(np.linalg.norm(out, axis=1, keepdims=True), 1e-12)
+
+
+def unfold(faces) -> tuple:
+    """Lay quads out on integer cells by walking them across their shared edges with one winding, not by particle
+    index. Returns (each particle's (x, y), how often each offset was met where the walk reached a particle it had
+    placed elsewhere): a ring meets one offset, its circumference, both ways; quads the walk cannot reach from the
+    first are not placed."""
+    turn = lambda d: (-d[1], d[0])  # noqa: E731
+    by_edge = collections.defaultdict(list)
+    for k, q in enumerate(faces):
+        for i in range(4):
+            by_edge[frozenset((q[i], q[(i + 1) % 4]))].append(k)
+    coord, start, seams = {}, {}, collections.Counter()
+    if not faces:
+        return coord, seams
+    coord[faces[0][0]] = (0, 0)
+    start[0] = (0, (1, 0))
+    queue = collections.deque([0])
+    while queue:
+        k = queue.popleft()
+        q = faces[k]
+        j0, d = start[k]
+        for s in range(4):
+            i = (j0 + s) % 4
+            a, b = q[i], q[(i + 1) % 4]
+            nb = (coord[a][0] + d[0], coord[a][1] + d[1])
+            if b in coord and coord[b] != nb:
+                seams[(coord[b][0] - nb[0], coord[b][1] - nb[1])] += 1
+            coord.setdefault(b, nb)
+            for m in by_edge[frozenset((a, b))]:
+                if m == k or m in start:
+                    continue
+                other = faces[m]
+                j = next(j for j in range(4) if {other[j], other[(j + 1) % 4]} == {a, b})
+                start[m] = (j, (-d[0], -d[1])) if other[j] == b else (j, d)
+                queue.append(m)
+            d = turn(d)
+    return coord, seams

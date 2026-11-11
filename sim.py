@@ -73,7 +73,7 @@ def batches(d: dict):
     """The links coloured into batches: (a, b, type, shape, index into canon.links) rows, batch sizes."""
     ln = draw.links(d)
     key = ("L", hash(ln.tobytes())) if d["locked"] else (d["rows"], d["cols"], d["closed"],
-                                                         d.get("diagonal_bend", True))
+                                                         d.get("diagonal_bend", True), hash(ln.tobytes()))
     if key not in _batches:
         rows = np.column_stack([ln, np.arange(len(ln))])
         ordered, sizes = gpuc_build._colour([tuple(r) for r in rows.tolist()], key=lambda r: (r[0], r[1]))

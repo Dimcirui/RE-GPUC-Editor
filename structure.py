@@ -254,8 +254,8 @@ def edit_as_mesh(obj) -> None:
     canon.restore(obj)
     if not canon.attached(obj):
         raise ValueError(f"{obj.name} does not follow its bones")
-    g = canon.recipe(obj)
-    idx, u8 = fileio.grid_skin(g, max(_game_slots(obj), g["skin"].shape[1]))
+    d = canon.load(obj)                               # the skin it has: its grid's, or the file's (FILE_SKIN_KEY)
+    idx, u8 = fileio.grid_skin(d, max(_game_slots(obj), d["skin"].shape[1]))
     pairs = []                         # (weld, its pairs, their bones when both Parts follow their bones)
     for w in weld.objects(reference.cloth_of(obj)):
         a, b = w.ree_gpuc_weld.part_a, w.ree_gpuc_weld.part_b
@@ -326,9 +326,14 @@ def attach_to_bones(obj, force: bool = False) -> str:
     f = fileio.file_parts(fileio.stored_file(coll))
     i = int(obj[canon.FILE_KEY])
     sel = np.where(f["part_of"] == i)[0]
-    lay, links, gl = fileio._recognise(f, i, [b.name for b in arm.data.bones])
+    lay, links, gl = fileio._recognise(f, i, [b.name for b in arm.data.bones], fileio.ancestors(arm))
     if lay is None:
         raise ValueError(links)
+    order = np.asarray(lay.pop("order"), np.int64)       # the file part's particle for each of the grid's
+    to = np.empty(len(order), np.int64)
+    to[order] = np.arange(len(order))
+    old_file = old
+    old = _reordered(old, order, to)
     p = obj.ree_gpuc_part
     keys = (canon.KEY, canon.EDITED_KEY, canon.OVERRIDES_KEY, canon.MAPPING_KEY)
     saved = {k: obj[k].to_dict() if hasattr(obj[k], "to_dict") else list(obj[k]) for k in keys if k in obj.keys()}
@@ -336,11 +341,12 @@ def attach_to_bones(obj, force: bool = False) -> str:
     settings = {"other_diagonal": p.other_diagonal, "diagonal_bend": p.diagonal_bend, "link_preset": p.link_preset,
                 "root_joint": p.root_joint, **{k: getattr(p, k) for k in grid_props}}
     tails = {s: tuple(getattr(getattr(p, s), n) for n in ("k", "k2", "lo", "hi", "conditional")) for s in gp.SHAPES}
-    own ={(int(a), int(b), int(t)): gp.tail_bytes(*map(float, tail))
-           for (a, b, t, _), tail in zip(canon.links(old), canon.link_tails(obj, old))}
+    own = {(int(min(to[a], to[b])), int(max(to[a], to[b])), int(t)): gp.tail_bytes(*map(float, tail))
+           for (a, b, t, _), tail in zip(canon.links(old_file), canon.link_tails(obj, old_file))}
 
     def undo():
-        for k in (canon.RECIPE_KEY, canon.ATTACHED_KEY, canon.FILE_GRID_KEY) + keys:
+        for k in (canon.RECIPE_KEY, canon.ATTACHED_KEY, canon.FILE_GRID_KEY, canon.FILE_ORDER_KEY,
+                  canon.FILE_SKIN_KEY, canon.FILE_SPLIT_KEY) + keys:
             if k in obj.keys():
                 del obj[k]
         for k, v in saved.items():
@@ -364,10 +370,12 @@ def attach_to_bones(obj, force: bool = False) -> str:
         node_co = generate.heads(arm, lay["nodes"])
         lay["centre"] = grid.order_columns(node_co[:lay["node_cols"]], "CLOSED" if lay["closed"] else "OPEN")[2]
         lay.update(generate._particles(lay, node_co))
-        p.other_diagonal = fileio._other_diagonal(f, sel, lay["rows"], lay["cols"], lay["closed"])
+        p.other_diagonal = fileio._other_diagonal(f, sel, {**lay, "order": order})
         for k in grid_props:
             setattr(p, k, lay[k])
-        obj[canon.FILE_GRID_KEY] = [int(lay["rows"]), int(lay["cols"]), int(lay["closed"])]
+        obj[canon.FILE_GRID_KEY] = canon.file_grid_key(lay)
+        if (order != np.arange(len(order))).any():
+            obj[canon.FILE_ORDER_KEY] = order.tolist()
         if not p.root_joint:                 # the bone a Part made from these chains takes, unused till ticked
             parent = arm.data.bones[lay["nodes"][0]].parent
             p.root_joint = parent.name if parent is not None else lay["nodes"][0]
@@ -381,7 +389,7 @@ def attach_to_bones(obj, force: bool = False) -> str:
             t.k, t.k2, t.lo, t.hi = k, k2, lo, min(hi, props.HI_MAX)
             t.conditional = gp.tail_bytes(k, k2, lo, hi) != gp.tail_bytes(k, 1.0, 1.0, 1.0)
         p.link_preset = fileio._preset_of(p)
-        values = canon.values(obj, old)
+        values = {k: v[order] for k, v in canon.values(obj, old_file).items()}
         d = {**lay, "tile": old["tile"], **values}
         d["base_co"] = canon.f32(lay["co"])
         d["rest_offset"] = old["co"] - d["base_co"]
@@ -393,12 +401,28 @@ def attach_to_bones(obj, force: bool = False) -> str:
         canon.build_mesh(obj)
         new = canon.load(obj)
         why = _attach_differences(obj, old, new, own)
+        if why == "triangles":               # the file's quad splits are kept while the Part keeps its file's grid
+            split = _file_splits(obj, old)
+            if split:
+                obj[canon.FILE_SPLIT_KEY] = split
+                canon.rebake(obj)
+                canon.build_mesh(obj)
+                new = canon.load(obj)
+                why = _attach_differences(obj, old, new, own)
+        if why == "skin":                    # the file's skin is kept while the Part keeps its file's grid
+            obj[canon.FILE_SKIN_KEY] = {"nodes": list(old["nodes"]), "skin": [int(x) for x in old["skin"].ravel()],
+                                        "skin_w": [float(x) for x in canon.f32(old["skin_w"]).ravel()]}
+            canon.rebake(obj)
+            canon.build_mesh(obj)
+            new = canon.load(obj)
+            why = _attach_differences(obj, old, new, own)
     except Exception:
         undo()
         raise
     if why and not force:
         undo()
         raise ValueError(f"its bone grid would change it ({why})")
+    _renumber_welds(obj, coll, to)
     loose = _name_weld_bones(obj, coll)
     from . import sim
     sim.invalidate(obj)
@@ -408,6 +432,56 @@ def attach_to_bones(obj, force: bool = False) -> str:
     if loose:
         text += f"; {loose} welds hold particles between its bones and stop at a change of density"
     return text
+
+
+def _file_splits(obj, old) -> list:
+    """The quads of a Part just attached to bones that its file splits at the other diagonal (``canon._bake``);
+    [] when its file's triangles are not its quads split one way or the other."""
+    from . import fileio
+    quads, _ = fileio.grid_faces(obj, canon.recipe(obj), obj.ree_gpuc_part.armature)
+    have = {tuple(sorted(t)) for t in np.asarray(old["tris"]).tolist()}
+    out = []
+    for k, (a, b, c, d) in enumerate(quads):
+        if tuple(sorted((a, b, c))) in have and tuple(sorted((a, c, d))) in have:
+            continue
+        if tuple(sorted((a, b, d))) in have and tuple(sorted((b, c, d))) in have:
+            out.append(k)
+            continue
+        return []
+    return out
+
+
+def _reordered(d: dict, order, to) -> dict:
+    """A locked Part's data with its particles in another order (``order``: the old index of each, ``to`` its
+    inverse)."""
+    out = dict(d)
+    for k in ("co", "skin", "skin_w", "normal", "src", *canon.FIELD_NAMES):
+        if d.get(k) is not None:
+            out[k] = np.asarray(d[k])[order]
+    out["tris"] = to[np.asarray(d["tris"], np.int64)]
+    if d.get("faces") is not None:
+        out["faces"] = [tuple(int(to[v]) for v in fc) for fc in d["faces"]]
+    ln = np.asarray(d["links"], np.int64).copy()
+    a, b = to[ln[:, 0]], to[ln[:, 1]]
+    ln[:, 0], ln[:, 1] = np.minimum(a, b), np.maximum(a, b)
+    out["links"] = ln
+    return out
+
+
+def _renumber_welds(obj, coll, to) -> None:
+    """Give the welds holding a Part's particles their new indices (``to``: the new index of each old one)."""
+    if (to == np.arange(len(to))).all():
+        return
+    for w in weld.objects(coll):
+        a, b = w.ree_gpuc_weld.part_a, w.ree_gpuc_weld.part_b
+        if obj not in (a, b) or weld.PAIRS_KEY not in w.keys():
+            continue
+        flat = [int(x) for x in w[weld.PAIRS_KEY]]
+        for k in range(0 if a == obj else 1, len(flat), 2):
+            flat[k] = int(to[flat[k]])
+        if a == obj and b == obj:
+            flat = [int(to[x]) for x in w[weld.PAIRS_KEY]]
+        w[weld.PAIRS_KEY] = flat
 
 
 def _name_weld_bones(obj, coll) -> int:

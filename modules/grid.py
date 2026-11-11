@@ -1,7 +1,10 @@
 """Lay out a cloth part's particle grid without Blender: columns of particles (one per bone at 1:1), rows from
 the top (row 0) down, joined into quads; the grid UV the editor selects on; the distance links and their shapes.
 
-Particle i is row i // cols, column i % cols. A closed grid (a skirt ring) joins the last column to the
+Particle i is row i // cols, column i % cols, unless the grid has a ``shape``: cells left out (``mask``) and slits,
+lattice columns cut from below a row down to the bottom, whose points each have two particles (the cells on the
+left take the first, those on the right the second). Its particles are then the lattice points some cell uses, in
+lattice order, a slit's second copy after its first. A closed grid (a skirt ring) joins the last column to the
 first; an open one (a cape, a front panel) does not. The links follow ``gpuc_build._relations`` and
 ``LINK_TYPES``: a quad edge gives a structural link (type 0), a quad diagonal a shear (1) and a bend (2) link
 (the shear alone without ``diagonal_bend``), two steps straight along quad edges a bend link (2). The game's solver does not read the type number; what a link
@@ -143,9 +146,98 @@ def faces(rows: int, cols: int, closed: bool) -> list[tuple[int, int, int, int]]
     return out
 
 
-def face_uv(rows: int, cols: int, closed: bool, tile: int = 0) -> list[list[tuple[float, float]]]:
+class Shape:
+    """A grid's particles and quads (see the module): ``point`` each particle's lattice point (r * cols + c),
+    ``copy`` 0, or 1 for a slit's second, ``faces`` the quads in particle indices as ``faces`` has them, ``cells`` the
+    index into ``faces(rows, cols, closed)`` of each, ``first`` each lattice point's first particle (-1: none)."""
+
+    def __init__(self, rows, cols, closed, mask=(), slits=()):
+        self.rows, self.cols, self.closed = rows, cols, closed
+        self.mask, self.slits = tuple(sorted({int(k) for k in mask})), tuple(sorted((int(c), int(t)) for c, t in slits))
+        span = cols if closed else cols - 1
+        cut = set()
+        for c, top in self.slits:
+            if not (0 <= top < rows - 1) or not (0 <= c < cols) or (not closed and c in (0, cols - 1)):
+                raise GridError(f"no slit can be cut at column {c} from row {top}: a {rows} x {cols} grid")
+            cut.update(r * cols + c for r in range(top + 1, rows))
+        gone = set(self.mask)
+        corners, used = [], set()
+        for k, q in enumerate(faces(rows, cols, closed)):
+            if k in gone:
+                continue
+            left = k % span
+            corner = [(p, int(p in cut and p % cols == left)) for p in q]
+            corners.append((k, corner))
+            used.update(corner)
+        if not corners:
+            raise GridError("every cell of the grid is left out")
+        index = {}
+        for p in range(rows * cols):
+            for copy in (0, 1):
+                if (p, copy) in used:
+                    index[(p, copy)] = len(index)
+        self.point = np.array([p for p, _ in index], np.int64)
+        self.copy = np.array([c for _, c in index], np.int64)
+        self.faces = [tuple(index[x] for x in corner) for _, corner in corners]
+        self.cells = [k for k, _ in corners]
+        self.first = np.full(rows * cols, -1, np.int64)
+        for (p, copy), i in index.items():
+            if copy == 0 or self.first[p] < 0:
+                self.first[p] = i
+        self.plain = not self.mask and not self.slits
+
+    def __len__(self):
+        return len(self.point)
+
+
+_shapes: dict = {}
+
+
+def shape(rows: int, cols: int, closed: bool, mask=(), slits=()) -> Shape:
+    """The grid's ``Shape`` (cached)."""
+    key = (int(rows), int(cols), bool(closed), tuple(sorted({int(k) for k in mask})),
+           tuple(sorted((int(c), int(t)) for c, t in slits)))
+    if key not in _shapes:
+        _shapes[key] = Shape(*key)
+    return _shapes[key]
+
+
+def lattice(values, sh: Shape, fill=None) -> np.ndarray:
+    """Per-particle values on the lattice points (rows * cols): each point its first particle's; a point no cell
+    uses takes ``fill``, or with none its nearest used neighbour's along the row, else down the column."""
+    values = np.asarray(values)
+    out = values[np.maximum(sh.first, 0)].copy()
+    missing = sh.first < 0
+    if not missing.any():
+        return out
+    if fill is not None:
+        out[missing] = fill
+        return out
+    r, c = np.divmod(np.arange(sh.rows * sh.cols), sh.cols)
+    have = np.where(~missing)[0]
+    for p in np.where(missing)[0]:
+        same_row = have[r[have] == r[p]]
+        pool = same_row if len(same_row) else have
+        q = pool[np.argmin(np.abs(c[pool] - c[p]) + 1000 * np.abs(r[pool] - r[p]))]
+        out[p] = values[sh.first[q]]
+    return out
+
+
+def particles(lattice_values, sh: Shape, second=None) -> np.ndarray:
+    """Lattice point values on the particles; a slit's second copies take ``second``'s, when given."""
+    out = np.asarray(lattice_values)[sh.point].copy()
+    if second is not None:
+        out[sh.copy == 1] = np.asarray(second)[sh.point[sh.copy == 1]]
+    return out
+
+
+def face_uv(rows: int, cols: int, closed: bool, tile: int = 0, sh: Shape | None = None) -> list[list[tuple[float, float]]]:
     """Each quad's corners on the grid UV: u = column over the columns (a closed grid's seam column at both
-    0 and 1), v = 1 at the top row, 0 at the bottom; each part on its own UV tile (u + tile)."""
+    0 and 1), v = 1 at the top row, 0 at the bottom; each part on its own UV tile (u + tile). With a ``Shape``, its
+    quads'."""
+    if sh is not None and not sh.plain:
+        every = face_uv(rows, cols, closed, tile)
+        return [every[k] for k in sh.cells]
     span = cols if closed else cols - 1
     out = []
     for r in range(rows - 1):
@@ -156,28 +248,29 @@ def face_uv(rows: int, cols: int, closed: bool, tile: int = 0) -> list[list[tupl
     return out
 
 
-def particle_uv(rows: int, cols: int, closed: bool, tile: int = 0) -> np.ndarray:
-    """Each particle's place on the grid UV (a closed grid's seam column at u = 0)."""
+def particle_uv(rows: int, cols: int, closed: bool, tile: int = 0, sh: Shape | None = None) -> np.ndarray:
+    """Each particle's place on the grid UV (a closed grid's seam column at u = 0); with a ``Shape``, its
+    particles'."""
     span = cols if closed else cols - 1
-    r, c = np.divmod(np.arange(rows * cols), cols)
+    r, c = np.divmod(np.arange(rows * cols) if sh is None else sh.point, cols)
     return np.column_stack([tile + c / span, 1.0 - r / (rows - 1)])
 
 
-def links(rows: int, cols: int, closed: bool, diagonal_bend: bool = True) -> np.ndarray:
+def links(rows: int, cols: int, closed: bool, diagonal_bend: bool = True, mask=(), slits=()) -> np.ndarray:
     """Every link as (a, b, type, shape index into SHAPES), a < b, in the generator's order; without
-    ``diagonal_bend`` the diagonals carry no bend link."""
+    ``diagonal_bend`` the diagonals carry no bend link. With a ``mask`` or ``slits``, of the grid's ``shape``."""
     out = []
-    bend = None if diagonal_bend else np.zeros(rows * cols, bool)
-    for (a, b), typ, rel in gpuc_build._links(_Spec(faces(rows, cols, closed), bend)):
-        ra, ca = divmod(a, cols)
-        rb, cb = divmod(b, cols)
+    sh = shape(rows, cols, closed, mask, slits)
+    bend = None if diagonal_bend else np.zeros(len(sh), bool)
+    for (a, b), typ, rel in gpuc_build._links(_Spec(sh.faces, bend)):
+        ca, cb = sh.point[a] % cols, sh.point[b] % cols
         if rel == "Q":
-            shape = 0 if ca == cb else 1
+            kind = 0 if ca == cb else 1
         elif rel == "diag":
-            shape = 2 if typ == 1 else 3
+            kind = 2 if typ == 1 else 3
         else:
-            shape = 3
-        out.append((a, b, typ, shape))
+            kind = 3
+        out.append((a, b, typ, kind))
     return np.array(out, np.int64).reshape(-1, 4)
 
 

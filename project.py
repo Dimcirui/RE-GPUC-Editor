@@ -18,19 +18,15 @@ TURN = 0.5           # cos 60 deg: a face turned further from the grid's normal 
 THICK = 0.03         # m: two layers this close are one cloth's outside and lining
 
 
-def _neighbours(rows, cols, closed) -> list:
-    out = []
-    for r in range(rows):
-        for c in range(cols):
-            nb = []
-            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                rr, cc = r + dr, c + dc
-                if closed:
-                    cc %= cols
-                if 0 <= rr < rows and 0 <= cc < cols and (rr, cc) != (r, c):
-                    nb.append(rr * cols + cc)
-            out.append(nb)
-    return out
+def _neighbours(faces, n) -> list:
+    """Each particle's neighbours along its quads' edges."""
+    out = [set() for _ in range(n)]
+    for f in faces:
+        for k in range(len(f)):
+            a, b = f[k], f[(k + 1) % len(f)]
+            out[a].add(b)
+            out[b].add(a)
+    return [sorted(x) for x in out]
 
 
 def _surface(obj, bones) -> tuple:
@@ -103,8 +99,8 @@ def project_part(obj) -> str:
     if verts is None:
         raise ValueError("no mesh skinned to its bones: the armature's mesh collection has none")
     base = np.asarray(d["base_co"], float)
-    rows, cols, closed = d["rows"], d["cols"], d["closed"]
-    nb = _neighbours(rows, cols, closed)
+    rows, cols = d["rows"], d["cols"]
+    nb = _neighbours(canon.faces(d), len(base))
     normal = topology.normals(base, canon.load(obj)["tris"])
     gaps = [np.linalg.norm(base[i] - base[j]) for i, js in enumerate(nb) for j in js]
     spacing = float(np.median(gaps)) if gaps else 0.05

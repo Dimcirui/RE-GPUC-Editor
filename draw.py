@@ -142,8 +142,10 @@ def particle_normals(obj, d, pos) -> np.ndarray:
     if d["centre"] is None and arm is not None and arm.type == "ARMATURE":
         bone = arm.data.bones.get(part.root_joint)
         inside = np.array(bone.head_local, float) if bone is not None else np.zeros(3)
+    sh = canon.shape(d)
+    rest, pos = grid.lattice(rest, sh), grid.lattice(np.asarray(pos, float), sh)
     sign = grid.normal_sign(rest, grid.normals(rest, rows, cols, closed), d["centre"], inside)
-    return grid.normals(pos, rows, cols, closed) * (-sign if part.flip_normals else sign)
+    return grid.normals(pos, rows, cols, closed)[sh.point] * (-sign if part.flip_normals else sign)
 
 
 def _triangle_normals(d, pos) -> np.ndarray:
@@ -588,7 +590,7 @@ def _draw_uv():
         uv = canon.particle_uv(g if g is not None else d)
         c = particle_colours(obj, {**d, **canon.values(obj, d)}, s.colour_by)
         if g is not None and g["closed"]:              # the seam column also at u = tile + 1
-            seam = np.arange(0, g["rows"] * g["cols"], g["cols"])
+            seam = np.where(canon.shape(g).point % g["cols"] == 0)[0]
             uv = np.vstack([uv, uv[seam] + (1.0, 0.0)])
             c = np.vstack([c, c[seam]])
         px = [region.view2d.view_to_region(float(u), float(v), clip=False) for u, v in uv]

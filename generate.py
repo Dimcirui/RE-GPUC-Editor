@@ -109,7 +109,10 @@ def _particles(lay: dict, node_co) -> dict:
     rows, cols = grid.dims(nr, nc, lay["sub_rows"], lay["sub_cols"], lay["closed"])
     above, below = lay.get("anchor_rows", 0), lay.get("hem_rows", 0)
     pos, skin, weight = grid.extend(pos, skin, weight, cols, above, lay.get("anchor_gap", 0.01), below)
-    return {"rows": rows + above + below, "cols": cols, "node_co": node_co, "co": pos, "skin": skin, "skin_w": weight}
+    rows += above + below
+    sh = grid.shape(rows, cols, lay["closed"], lay.get("mask", ()), lay.get("slits", ()))
+    return {"rows": rows, "cols": cols, "node_co": node_co, "co": pos[sh.point], "skin": skin[sh.point],
+            "skin_w": weight[sh.point]}
 
 
 def unique_name(prefix: str, suffix: str = "") -> str:
@@ -207,10 +210,10 @@ def new_part(coll, arm, lay: dict, config=None) -> bpy.types.Object:
     p.root_joint = parent.name if parent is not None else first
     p.config = config                                   # and under it
     p.link_preset = LINK_PRESET
-    n = lay["rows"] * lay["cols"]
+    n = len(lay["co"])
     values = {name: np.full(n, default, np.float32) for name, _, _, default in canon.PARTICLE_FIELDS}
     pinned = lay.get("anchor_rows", 0) or 1              # the anchor rows, else the top row: they follow the skinning
-    values["sim_weight"][:lay["cols"] * pinned] = 0.0
+    values["sim_weight"][_rows_of(lay) < pinned] = 0.0
     canon.store(obj, {**lay, "tile": tile, **values})
     canon.build_mesh(obj)
     return obj
@@ -236,10 +239,28 @@ def check(obj) -> list[str]:
     return []
 
 
+def _rows_of(d: dict) -> np.ndarray:
+    """Each particle's lattice row."""
+    return canon.shape(d).point // d["cols"]
+
+
 def resample(values, old: dict, new: dict) -> np.ndarray:
     """A particle value carried from the old grid to the new one: each new particle takes the old grid's value at
-    its place on the bone grid (bilinear; round the ring when the old grid closed)."""
+    its place on the bone grid (bilinear; round the ring when the old grid closed). A slit's second copies take
+    the old second copies' (the first's where it had none); a point the old shape left out, its neighbour's."""
+    sh_o, sh_n = canon.shape(old), canon.shape(new)
     values = np.asarray(values, float)
+    first = grid.lattice(values, sh_o)
+    out = _resample_lattice(first, old, new)
+    if not (sh_n.copy == 1).any():
+        return out[sh_n.point].astype(np.float32)
+    second = first.copy()
+    second[sh_o.point[sh_o.copy == 1]] = values[sh_o.copy == 1]
+    return grid.particles(out, sh_n, _resample_lattice(second, old, new)).astype(np.float32)
+
+
+def _resample_lattice(values, old: dict, new: dict) -> np.ndarray:
+    """``resample`` on the lattice points: rows * cols values of the old grid to the new one's."""
     trailing = values.shape[1:]
     v = values.reshape(old["rows"], old["cols"], *trailing)
     r_new, c_new = np.divmod(np.arange(new["rows"] * new["cols"]), new["cols"])
@@ -264,7 +285,7 @@ def resample(values, old: dict, new: dict) -> np.ndarray:
     fc = fc.reshape((-1,) + (1,) * len(trailing))
     top = v[r0, c0] * (1 - fc) + v[r0, c1] * fc
     bottom = v[r1, c0] * (1 - fc) + v[r1, c1] * fc
-    return (top * (1 - fr) + bottom * fr).astype(np.float32)
+    return top * (1 - fr) + bottom * fr
 
 
 def _old_rows(r_new, old: dict, new: dict) -> np.ndarray:
@@ -282,8 +303,38 @@ def _old_rows(r_new, old: dict, new: dict) -> np.ndarray:
     return out
 
 
+def _carry_shape(old: dict, new: dict) -> tuple:
+    """The old grid's mask and slits on the new grid (another density, ring or extra rows): a new cell is left out
+    when its middle lies in a cell the old left out; a slit keeps its place between the chains and its top row's
+    place down them, and is dropped where the new grid cannot have it."""
+    sh = canon.shape(old)
+    if sh.plain:
+        return [], []
+    rows, cols, closed = new["rows"], new["cols"], new["closed"]
+    span_o, span_n = (old["cols"] if old["closed"] else old["cols"] - 1), (cols if closed else cols - 1)
+    scale = (old["sub_cols"] + 1) / (new["sub_cols"] + 1)
+    mid = _old_rows(np.arange(rows - 1) + 0.5, old, new) if rows > 1 else np.zeros(0)
+    gone = set(sh.mask)
+    mask = []
+    for r in range(rows - 1):
+        ro = min(int(np.floor(mid[r])), old["rows"] - 2)
+        for c in range(span_n):
+            co = int(np.floor((c + 0.5) * scale)) % span_o if old["closed"] else min(int(np.floor((c + 0.5) * scale)), span_o - 1)
+            if ro * span_o + co in gone:
+                mask.append(r * span_n + c)
+    at = _old_rows(np.arange(rows), old, new)
+    slits = []
+    for c, top in sh.slits:
+        cn = int(round(c / scale))
+        cn = cn % cols if closed else cn
+        tn = int(np.argmin(np.abs(at - top)))
+        if 0 <= tn < rows - 1 and 0 <= cn < cols and (closed or 0 < cn < cols - 1):
+            slits.append((cn, tn))
+    return mask, sorted(set(slits))
+
+
 def regenerate(obj, closed=None, sub_rows=None, sub_cols=None, anchor_rows=None, anchor_gap=None,
-               hem_rows=None) -> None:
+               hem_rows=None, mask=None, slits=None) -> None:
     """The particles made again from the bones' rest heads, with a new ring or density if given; every value kept
     (the groups' latest first; carried over the grid when its size changes)."""
     if not canon.attached(obj):
@@ -308,6 +359,11 @@ def regenerate(obj, closed=None, sub_rows=None, sub_cols=None, anchor_rows=None,
                              ("hem_rows", hem_rows, int)):
         if value is not None:
             d[key] = kind(value)
+    d["rows"], d["cols"] = grid.dims(d["node_rows"], d["node_cols"], d["sub_rows"], d["sub_cols"], d["closed"])
+    d["rows"] += d["anchor_rows"] + d["hem_rows"]
+    carried = _carry_shape(old, d) if (d["rows"], d["cols"], d["closed"]) != (old["rows"], old["cols"], old["closed"])         or (d["anchor_rows"], d["hem_rows"]) != (old["anchor_rows"], old["hem_rows"]) else (old["mask"], old["slits"])
+    d["mask"] = list(mask) if mask is not None else carried[0]
+    d["slits"] = [tuple(x) for x in slits] if slits is not None else carried[1]
     node_co = heads(arm, d["nodes"])
     if d["closed"] or d["centre"] is not None:          # the axis again from the new top row
         _, _, d["centre"] = grid.order_columns(node_co[:d["node_cols"]], "CLOSED" if d["closed"] else "OPEN")
@@ -318,11 +374,12 @@ def regenerate(obj, closed=None, sub_rows=None, sub_cols=None, anchor_rows=None,
     from .modules.gpuc_build import validate_geometry
     validate_geometry(d["co"], [(f[0], f[k], f[k + 1]) for f in canon.faces(d) for k in range(1, len(f) - 1)])
     if ((d["rows"], d["cols"]) != (old["rows"], old["cols"]) or d["closed"] != old["closed"]
-            or (d["anchor_rows"], d["hem_rows"]) != (old["anchor_rows"], old["hem_rows"])):
+            or (d["anchor_rows"], d["hem_rows"]) != (old["anchor_rows"], old["hem_rows"])
+            or (canon.shape(d).mask, canon.shape(d).slits) != (canon.shape(old).mask, canon.shape(old).slits)):
         for name in canon.FIELD_NAMES:
             d[name] = resample(old[name], old, d)
         if d["anchor_rows"] > old["anchor_rows"]:              # new anchor rows are pinned, as new Parts' are
-            d["sim_weight"][:d["cols"] * d["anchor_rows"]] = 0.0
+            d["sim_weight"][_rows_of(d) < d["anchor_rows"]] = 0.0
     canon.store(obj, d)
     canon.remember_mapping(obj, {field: resample(w, old, d) for field, w in masks.items()
                                 if w is not None and np.isfinite(w).all()})
