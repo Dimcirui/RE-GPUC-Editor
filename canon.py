@@ -477,6 +477,23 @@ def build_mesh(obj) -> None:
     obj.vertex_groups.active_index = obj.vertex_groups[group_name(FIELD_NAMES[0])].index
 
 
+def skin_bones(d) -> list:
+    """The bones a Part is skinned to: a Part made from bones its every node bone, a locked Part those with a
+    weight."""
+    if not d["locked"]:
+        return list(d["nodes"])
+    used = set(np.unique(d["skin"][d["skin_w"] > 0]).tolist())
+    return [n for k, n in enumerate(d["nodes"]) if k in used]
+
+
+def driven_names(obj, d) -> list:
+    """The bones the Part drives (its Driven Bones setting): its skin bones, or the bones listed."""
+    p = obj.ree_gpuc_part
+    if p.driven_bones == "LISTED":
+        return list(dict.fromkeys(b.name for b in p.driven_list if b.name))
+    return skin_bones(d)
+
+
 def skin_armature(obj):
     """The armature an editable Part's skin groups deform by (``SKIN_MODIFIER``), None without one."""
     arm = obj.ree_gpuc_part.armature

@@ -101,6 +101,7 @@ A Part imported with Keep Structure, or made from bones and turned with Edit as 
 * The file's Parts cannot be removed, and Update Existing is refused, once a Part is edited.
 * A Keep Structure cloth (not RE4) also takes new Parts made from bones, as is or edited as a mesh. The export then writes the whole file again, the file's particles first. A new Part on bones the file already drives exports As Imported; one on other bones needs Joint Indices From Mesh, and those bones are driven as in a cloth made from bones.
 * Not editable: RE4 Keep Structure cloth, files that drive mesh vertices, and the few parts whose links are not the ones their faces give (the import says which).
+* Driven Bones (Part panel) chooses which bones the Part's particles drive: Skin Bones, every bone it is skinned to (a Part made from bones: its own bones), or only the Listed ones. List the bones selected on the armature with +, or every skin bone at once and remove the ones the cloth must not move, such as body bones in weights taken from the body. A listed bone that skins no particle is not driven, and the export says so.
 * Edit as Mesh writes a Part made from bones as its export would: its faces, skin, links and tails, so it exports as before. It no longer follows its bones; its welds keep their pairs. Regenerate from Bones (Part panel) lays it out from its bones again and loses the edits.
 
 </details>

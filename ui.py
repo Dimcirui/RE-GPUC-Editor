@@ -476,6 +476,40 @@ class REE_GPUC_PT_object_config(_ObjectPanel, bpy.types.Panel):
                 col.prop(cfg, name, text=label)
 
 
+class REE_GPUC_UL_bones(bpy.types.UIList):
+    """A Part's driven bones"""
+
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        arm = data.armature
+        if arm is not None and arm.type == "ARMATURE":
+            layout.prop_search(item, "name", arm.data, "bones", text="", emboss=False)
+        else:
+            layout.prop(item, "name", text="", emboss=False)
+
+
+def _driven_bones(layout, obj):
+    p = obj.ree_gpuc_part
+    header, body = layout.panel("ree_gpuc_driven_bones", default_closed=p.driven_bones == "SKIN")
+    row = header.row()
+    row.label(text="Driven Bones")
+    row.prop(p, "driven_bones", text="")
+    if body is None:
+        return
+    if p.driven_bones == "SKIN":
+        body.label(text="Every bone the Part is skinned to is driven by its particles")
+        body.operator("ree_gpuc.driven_from_skin", icon="BONE_DATA")
+        return
+    row = body.row()
+    row.template_list("REE_GPUC_UL_bones", "", p, "driven_list", p, "driven_index", rows=4)
+    col = row.column(align=True)
+    col.operator("ree_gpuc.driven_add", text="", icon="ADD")
+    col.operator("ree_gpuc.driven_remove", text="", icon="REMOVE")
+    col.separator()
+    col.operator("ree_gpuc.driven_from_skin", text="", icon="BONE_DATA")
+    if not p.driven_list:
+        body.label(text="No bone listed: the Part drives none", icon="INFO")
+
+
 class REE_GPUC_UL_keys(bpy.types.UIList):
     """Keys of a Config curve"""
 
@@ -591,6 +625,8 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
             _bits(col, p, name, f"ree_gpuc_part.{name}")
         if re4_part:
             col.prop(p, "re4_value_30")
+        if not canon.locked(obj) or canon.from_bones(obj):
+            _driven_bones(layout, obj)
         _split(layout).prop(p, "link_preset")
         own = canon.overrides(obj, canon.load(obj)) if canon.has(obj) and not canon.locked(obj) else {}
         if own:
@@ -726,7 +762,7 @@ class REE_GPUC_PT_object_force(_ObjectPanel, bpy.types.Panel):
 
 
 CLASSES = (REE_GPUC_PT_driven_vertices, REE_GPUC_PT_general, REE_GPUC_PT_pose, REE_GPUC_PT_presets, REE_GPUC_PT_clipboard, REE_GPUC_PT_particles, REE_GPUC_UL_colliders, REE_GPUC_PT_simulate,
-           REE_GPUC_PT_display, REE_GPUC_PT_uv, REE_GPUC_PT_object_header, REE_GPUC_UL_keys, REE_GPUC_PT_object_config,
+           REE_GPUC_PT_display, REE_GPUC_PT_uv, REE_GPUC_PT_object_header, REE_GPUC_UL_keys, REE_GPUC_UL_bones, REE_GPUC_PT_object_config,
            REE_GPUC_PT_object_part, REE_GPUC_PT_object_collision, REE_GPUC_PT_object_plane, REE_GPUC_PT_object_collider, REE_GPUC_PT_object_force)
 
 

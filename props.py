@@ -516,10 +516,24 @@ def _in_front(self, context):
     _redraw(self, context)
 
 
+class REE_GPUC_BoneName(bpy.types.PropertyGroup):
+    """A bone of a list, by name (``name``)."""
+
+
+DRIVEN_BONES = [("SKIN", "Skin Bones", "Drive every bone the Part is skinned to; a Part made from bones drives its "
+                                       "own bones"),
+                ("LISTED", "Listed", "Drive only the bones listed. Use when the skin also names bones the cloth "
+                                     "must not move, such as weights taken from the body")]
+
+
 class REE_GPUC_Part(bpy.types.PropertyGroup):
     """A part block of the .gpuc and its particle grid's generation."""
     config: PointerProperty(name="Config", type=bpy.types.Object, poll=_poll_config, update=_part_config)
     armature: PointerProperty(name="Armature", type=bpy.types.Object)
+    driven_bones: EnumProperty(name="Driven Bones", items=DRIVEN_BONES, default="SKIN",
+                               description="Which bones the Part's particles drive")
+    driven_list: bpy.props.CollectionProperty(type=REE_GPUC_BoneName)
+    driven_index: IntProperty()
     re4_value_30: FloatProperty(name="Long Range Attachment Stretchiness", precision=5,
                                description="RE4 only. Effect unknown. Usually 0")
     rows: IntProperty(name="Rows")
@@ -903,7 +917,7 @@ class REE_GPUC_Sim(bpy.types.PropertyGroup):
                                 description="The test collider picked in the panel's list (the active object)")
 
 
-CLASSES = (REE_GPUC_Header, REE_GPUC_Capsule, REE_GPUC_Plane, REE_GPUC_Key, REE_GPUC_Curve, REE_GPUC_Config, REE_GPUC_LinkTail, REE_GPUC_Part, REE_GPUC_Settings, REE_GPUC_Collider, REE_GPUC_Force,
+CLASSES = (REE_GPUC_Header, REE_GPUC_Capsule, REE_GPUC_Plane, REE_GPUC_Key, REE_GPUC_Curve, REE_GPUC_Config, REE_GPUC_LinkTail, REE_GPUC_BoneName, REE_GPUC_Part, REE_GPUC_Settings, REE_GPUC_Collider, REE_GPUC_Force,
            REE_GPUC_Sim)
 
 

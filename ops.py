@@ -1168,6 +1168,76 @@ class REE_GPUC_OT_back_to_bones(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _driven_part(context):
+    obj = context.active_object
+    return obj if props.is_part(obj) and canon.has(obj) and (not canon.locked(obj) or canon.from_bones(obj)) else None
+
+
+class REE_GPUC_OT_driven_add(bpy.types.Operator):
+    """Add the bones selected on the Part's armature to its driven bones, else an empty entry to pick one"""
+    bl_idname = "ree_gpuc.driven_add"
+    bl_label = "Add Driven Bones"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return _driven_part(context) is not None
+
+    def execute(self, context):
+        obj = _driven_part(context)
+        p = obj.ree_gpuc_part
+        arm = p.armature
+        have = {b.name for b in p.driven_list}
+        sel = generate._selected(arm) if arm is not None and arm.type == "ARMATURE" else set()
+        picked = [b.name for b in arm.data.bones if b.name in sel] if sel else []
+        new = [n for n in picked if n not in have]
+        for name in new or [""]:
+            p.driven_list.add().name = name
+        p.driven_index = len(p.driven_list) - 1
+        p.driven_bones = "LISTED"
+        if picked and not new:
+            self.report({"INFO"}, "The selected bones are listed already")
+        return {"FINISHED"}
+
+
+class REE_GPUC_OT_driven_remove(bpy.types.Operator):
+    """Remove the active entry from the Part's driven bones"""
+    bl_idname = "ree_gpuc.driven_remove"
+    bl_label = "Remove Driven Bone"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        obj = _driven_part(context)
+        return obj is not None and 0 <= obj.ree_gpuc_part.driven_index < len(obj.ree_gpuc_part.driven_list)
+
+    def execute(self, context):
+        p = _driven_part(context).ree_gpuc_part
+        p.driven_list.remove(p.driven_index)
+        p.driven_index = min(p.driven_index, len(p.driven_list) - 1)
+        return {"FINISHED"}
+
+
+class REE_GPUC_OT_driven_from_skin(bpy.types.Operator):
+    """List every bone the Part is skinned to as its driven bones, to remove the ones the cloth must not move"""
+    bl_idname = "ree_gpuc.driven_from_skin"
+    bl_label = "List Skin Bones"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return _driven_part(context) is not None
+
+    def execute(self, context):
+        obj = _driven_part(context)
+        p = obj.ree_gpuc_part
+        p.driven_list.clear()
+        for name in canon.skin_bones(canon.load(obj)):
+            p.driven_list.add().name = name
+        p.driven_bones = "LISTED"
+        return {"FINISHED"}
+
+
 class REE_GPUC_OT_normalize_skin(bpy.types.Operator):
     """Make each particle's bone weights as the export writes them: at most the game's number of bones, the
     lightest dropped, summing to 1. Locked groups keep their weights. In Weight Paint with a selection mask, only
@@ -1466,7 +1536,8 @@ CLASSES = (REE_GPUC_OT_import, REE_GPUC_FH_import, REE_GPUC_OT_export, REE_GPUC_
            REE_GPUC_OT_set_bits, REE_GPUC_OT_curve_key_add, REE_GPUC_OT_curve_key_remove, REE_GPUC_OT_curve_sort,
            REE_GPUC_OT_curve_reset, REE_GPUC_OT_edit_particles,
            REE_GPUC_OT_reset_rest_offsets, REE_GPUC_OT_set_value, REE_GPUC_OT_paint, REE_GPUC_OT_normalize_skin,
-           REE_GPUC_OT_edit_as_mesh, REE_GPUC_OT_back_to_bones,
+           REE_GPUC_OT_edit_as_mesh, REE_GPUC_OT_back_to_bones, REE_GPUC_OT_driven_add,
+           REE_GPUC_OT_driven_remove, REE_GPUC_OT_driven_from_skin,
            REE_GPUC_OT_simulate, REE_GPUC_OT_sim_reset, REE_GPUC_OT_import_reference,
            REE_GPUC_OT_drive_vertices, REE_GPUC_OT_drive_select_near, REE_GPUC_OT_drive_spread_lods)
 

@@ -904,7 +904,10 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT, mes
             for j, x in zip(geo["idx"][i], geo["share"][i]):
                 if x > 0:
                     skinned[d["nodes"][j]].append((base + i, float(x)))
-        for name in d["nodes"] if not vertices else ():
+        for name in canon.driven_names(obj, d) if not vertices else ():
+            if name not in bones:
+                notes.append(f"{obj.name}: {name} is not a bone of the armature: it is not driven")
+                continue
             if name not in weighted:
                 notes.append(f"{name} has no weights in the mesh: it is not driven")
                 continue
@@ -926,6 +929,11 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT, mes
         base += n
     # As in game files: each joint is driven by every particle skinned to its bone (any Part), by that skin weight;
     # the heaviest MIN_SLOTS are kept (ties: lower particles), in descending particle order.
+    unskinned = [o["bone"] for o in outputs if not skinned[o["bone"]]]
+    if unskinned:
+        notes.append(f"{len(unskinned)} listed bones skin no particle and are not driven: "
+                     f"{', '.join(unskinned[:3])}{', ...' if len(unskinned) > 3 else ''}")
+        outputs = [o for o in outputs if skinned[o["bone"]]]
     for o in outputs:
         keep = sorted(skinned[o.pop("bone")], key=lambda p: (-p[1], p[0]))[:gpuc_build.MIN_SLOTS]
         keep.sort(key=lambda p: -p[0])
@@ -1266,7 +1274,11 @@ def _build_restructured(coll, head, cfg_objs, part_objs, g, f_part, from_mesh=Fa
                     fresh.add(base + i)
         else:
             fresh.update(range(base, base + n))
-            new_bones.update(idx)
+            for name in canon.driven_names(obj, d):
+                if name in bones or name.startswith("#"):
+                    new_bones.add(full(name))
+                else:
+                    notes.append(f"{obj.name}: {name} is not a bone of the armature: it is not driven")
         base += n
     skinned = collections.defaultdict(list)            # bone -> (particle, its share of the particle's skin)
     for p, (row, w) in enumerate(zip(skin_bones, skin_w)):
@@ -1305,6 +1317,11 @@ def _build_restructured(coll, head, cfg_objs, part_objs, g, f_part, from_mesh=Fa
         outputs.append(dict(palette=x, world=world, particles=[p for p, _ in keep], weights=[s / total for _, s in keep]))
         moved += 1
     added = sorted(b for b in new_bones - driven if skinned[b])
+    unskinned = sorted(b for b in new_bones - driven if not skinned[b])
+    if unskinned:
+        notes.append(f"{len(unskinned)} listed bones skin no particle and are not driven: "
+                     f"{', '.join(bones[b] if 0 <= b < len(bones) else f'#{b}' for b in unskinned[:3])}"
+                     f"{', ...' if len(unskinned) > 3 else ''}")
     if added:
         if not from_mesh:
             raise ExportError(f"its new Parts drive bones its file does not ({', '.join(bones[b] for b in added[:3])}"
