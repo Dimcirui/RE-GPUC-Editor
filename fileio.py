@@ -902,7 +902,7 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
         if not canon.has(obj):
             raise ExportError(f"{obj.name} has no particles")
         if obj in file_objs:
-            if not canon.editable(canon.load(obj)):
+            if not (canon.editable(canon.load(obj)) or canon.attached(obj)):
                 raise ExportError(f"{obj.name} keeps its file's structure as it is (its links are not the ones its "
                                   f"faces give), so the cloth cannot be written again from its Parts")
             continue
@@ -1259,7 +1259,8 @@ def _build_keep(coll, head, cfg_objs, part_objs, from_mesh=False, mesh_coll=None
         notes.append("The armature is posed, but its Parts cannot be written again: they keep the file's rest "
                      "positions. Put the armature in its rest pose to match a mesh exported now")
         posed = False
-    if len(file_objs) < len(part_objs) or any(canon.edited(o) for o in file_objs) or ext != game or posed:
+    if (len(file_objs) < len(part_objs) or any(canon.edited(o) or canon.attached(o) for o in file_objs)
+            or ext != game or posed):
         if len(file_objs) != len(counts):
             raise ExportError(f"it has {len(file_objs)} of its file's {len(counts)} Parts: a Keep Structure cloth "
                               f"cannot remove its file's Parts")
@@ -1320,9 +1321,9 @@ def _write_tangent_flags(g, part_objs, starts) -> None:
 
 
 def file_part_objects(part_objs) -> list:
-    """The Parts of a Keep Structure cloth that are its file's, in the file's part order (by name); the others were
-    made in the editor."""
-    return [o for o in by_name(part_objs) if canon.locked(o) and not canon.made_here(o)]
+    """The Parts of a Keep Structure cloth that are its file's, in the file's part order; the others were made in
+    the editor."""
+    return sorted((o for o in part_objs if canon.file_part(o)), key=lambda o: int(o[canon.FILE_KEY]))
 
 
 def _batch_of(sizes, welded, notes, keep=None) -> np.ndarray:
@@ -1756,8 +1757,7 @@ def stored_part_values(obj, fields) -> dict:
     if coll is None or not keeps_structure(coll) or canon.edited(obj):
         return {}
     f = file_parts(stored_file(coll))
-    parts = by_name(props.parts(coll))
-    sel = np.flatnonzero(f["part_of"] == parts.index(obj)) if obj in parts else []
+    sel = np.flatnonzero(f["part_of"] == int(obj[canon.FILE_KEY])) if canon.file_part(obj) else []
     if len(sel) != int(obj[canon.KEY]["count"]):
         return {}
     return {field: f["values"][field][sel] for field in fields if field in f["values"]}
@@ -1804,7 +1804,9 @@ def locked_problems(obj) -> list:
     if not keeps_structure(coll):
         return []
     f = file_parts(stored_file(coll))
-    k = by_name(props.parts(coll)).index(obj)
+    if not canon.file_part(obj):
+        return []
+    k = int(obj[canon.FILE_KEY])
     names = list(props.header(coll).get(JOINTS_KEY, ()))
     if not f["joints"] or f["frames"] is None or len(names) != len(f["joints"]):
         return []
@@ -1976,6 +1978,7 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
         elif editable:
             fixed.append(block["part_name"] or f"part {i}")
         obj = _new_locked_part(coll, arm, cfg_objs[min(block["config"], len(cfg_objs) - 1)], block, data)
+        obj[canon.FILE_KEY] = i
         if quads is not None:
             obj.ree_gpuc_part.diagonal_bend = bend
         if is_re4:

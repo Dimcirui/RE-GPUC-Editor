@@ -596,6 +596,7 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
                          icon="MESH_DATA")
         elif canon.editable_part(obj):
             layout.label(text="Imported with Keep Structure: edit particles and faces in Edit Mode", icon="UNLOCKED")
+            layout.operator("ree_gpuc.attach_to_bones", icon="BONE_DATA")
         if canon.editable_part(obj):
             _skin_rows(layout, obj)
         elif canon.locked(obj):
@@ -630,7 +631,7 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
             _bits(col, p, name, f"ree_gpuc_part.{name}")
         if re4_part:
             col.prop(p, "re4_value_30")
-        if not canon.locked(obj) or canon.made_here(obj):
+        if (not canon.locked(obj) or canon.made_here(obj)) and not canon.file_part(obj):
             _driven_bones(layout, obj)
         _split(layout).prop(p, "link_preset")
         own = canon.overrides(obj, canon.recipe(obj)) if canon.attached(obj) else {}

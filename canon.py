@@ -260,11 +260,17 @@ def attached(obj) -> bool:
 
 
 MESH_KEY = "ree_gpuc_from_mesh"          # on a Part made from a mesh (``structure.from_mesh``)
+FILE_KEY = "ree_gpuc_file_part"          # on a Part imported with Keep Structure: its part's index in the file
+
+
+def file_part(obj) -> bool:
+    """Whether a Part is one of its Keep Structure cloth's file (also when it was attached to bones since)."""
+    return has(obj) and FILE_KEY in obj.keys()
 
 
 def made_here(obj) -> bool:
     """Whether a Part was made in the editor, from bones or a mesh, rather than imported from a file."""
-    return has(obj) and (RECIPE_KEY in obj.keys() or MESH_KEY in obj.keys())
+    return has(obj) and not file_part(obj) and (RECIPE_KEY in obj.keys() or MESH_KEY in obj.keys())
 
 
 def from_bones(obj) -> bool:

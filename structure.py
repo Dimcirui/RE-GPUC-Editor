@@ -13,7 +13,7 @@ import collections
 import numpy as np
 
 from . import canon, reference, weld
-from .modules import gpuc_build, gpuc_params as gp, topology
+from .modules import gpuc_build, gpuc_params as gp, grid, topology
 
 
 def _read(obj) -> tuple:
@@ -261,7 +261,8 @@ def edit_as_mesh(obj) -> None:
         a, b = w.ree_gpuc_weld.part_a, w.ree_gpuc_weld.part_b
         if obj in (a, b) and not weld.problems(w):
             names = None
-            if canon.attached(a) and canon.attached(b):          # the order weld.shared_pairs gives
+            if canon.attached(a) and canon.attached(b) and not (canon.file_part(a) or canon.file_part(b)):
+                # the order weld.shared_pairs gives
                 names = sorted(set(weld.node_particles(weld._layout(a))) & set(weld.node_particles(weld._layout(b))))
             pairs.append((w, weld.pairs(w), names))
     c, r = obj[canon.KEY], obj[canon.RECIPE_KEY]
@@ -298,6 +299,142 @@ def back_to_bones(obj) -> None:
                     del w[key]
     from . import sim
     sim.invalidate(obj)
+
+
+def attach_to_bones(obj) -> str:
+    """Make a Keep Structure Part follow a bone grid found for it, as Rebuild from Bones finds one: its particles
+    keep their places as offsets from the bones, its values, skin and link tails stay. Returns the notice; raises
+    ``ValueError`` (the Part left as it was) when no grid of the armature's bones makes the same mesh."""
+    from . import fileio, generate, props
+    coll = reference.cloth_of(obj)
+    if not canon.file_part(obj) or canon.attached(obj) or not fileio.keeps_structure(coll):
+        raise ValueError("only a Part imported with Keep Structure is attached to bones")
+    if canon.edited(obj):
+        raise ValueError("its particles or faces were edited: import the file again to attach it")
+    if props.is_re4(coll):
+        raise ValueError("RE4 Parts are not attached to bones")
+    arm = canon.skin_armature(obj)
+    if arm is None:
+        raise ValueError("it has no armature")
+    old = canon.load(obj)
+    if any(n.startswith("#") or n not in arm.data.bones for n in old["nodes"]):
+        raise ValueError("its skin names bones the armature lacks: import it with the mesh collection")
+    f = fileio.file_parts(fileio.stored_file(coll))
+    i = int(obj[canon.FILE_KEY])
+    sel = np.where(f["part_of"] == i)[0]
+    lay, links, gl = fileio._recognise(f, i, [b.name for b in arm.data.bones])
+    if lay is None:
+        raise ValueError(f"no grid of bone chains makes it ({links})")
+    p = obj.ree_gpuc_part
+    keys = (canon.KEY, canon.EDITED_KEY, canon.OVERRIDES_KEY, canon.MAPPING_KEY)
+    saved = {k: obj[k].to_dict() if hasattr(obj[k], "to_dict") else list(obj[k]) for k in keys if k in obj.keys()}
+    settings = {"other_diagonal": p.other_diagonal, "diagonal_bend": p.diagonal_bend, "link_preset": p.link_preset}
+    tails = {s: tuple(getattr(getattr(p, s), n) for n in ("k", "k2", "lo", "hi", "conditional")) for s in gp.SHAPES}
+    own ={(int(a), int(b), int(t)): gp.tail_bytes(*map(float, tail))
+           for (a, b, t, _), tail in zip(canon.links(old), canon.link_tails(obj, old))}
+
+    def undo():
+        for k in (canon.RECIPE_KEY, canon.ATTACHED_KEY) + keys:
+            if k in obj.keys():
+                del obj[k]
+        for k, v in saved.items():
+            obj[k] = v
+        p.other_diagonal, p.diagonal_bend = settings["other_diagonal"], settings["diagonal_bend"]
+        p.link_preset = settings["link_preset"]
+        for s, (k, k2, lo, hi, cond) in tails.items():
+            t = getattr(p, s)
+            t.k, t.k2, t.lo, t.hi, t.conditional = k, k2, lo, hi, cond
+        for k in keys:                       # the tail callbacks above marked shapes again
+            if k in obj.keys():
+                del obj[k]
+        for k, v in saved.items():
+            obj[k] = v
+        canon.build_mesh(obj)
+
+    try:
+        node_co = generate.heads(arm, lay["nodes"])
+        lay["centre"] = grid.order_columns(node_co[:lay["node_cols"]], "CLOSED" if lay["closed"] else "OPEN")[2]
+        lay.update(generate._particles(lay, node_co))
+        p.other_diagonal = fileio._other_diagonal(f, sel, lay["rows"], lay["cols"], lay["closed"])
+        p.diagonal_bend = lay["diagonal_bend"]
+        count = collections.defaultdict(collections.Counter)
+        for a, b, t, s in gl:
+            count[gp.SHAPES[s]][own[(int(a), int(b), int(t))]] += 1
+        common = {s: gp.tail_values(c.most_common(1)[0][0]) for s, c in count.items()}
+        for s, (k, k2, lo, hi) in common.items():
+            t = getattr(p, s)
+            t.k, t.k2, t.lo, t.hi = k, k2, lo, min(hi, props.HI_MAX)
+            t.conditional = gp.tail_bytes(k, k2, lo, hi) != gp.tail_bytes(k, 1.0, 1.0, 1.0)
+        p.link_preset = fileio._preset_of(p)
+        values = canon.values(obj, old)
+        d = {**lay, "tile": old["tile"], **values}
+        d["base_co"] = canon.f32(lay["co"])
+        d["rest_offset"] = old["co"] - d["base_co"]
+        canon.store(obj, d)
+        default = [common.get(s, (0.0, 1.0, 1.0, 1.0)) for s in gp.SHAPES]
+        canon.set_overrides(obj, canon.recipe(obj), [gp.tail_values(own[(int(a), int(b), int(t))])
+                                                     for a, b, t, _ in gl], default)
+        canon.rebake(obj)
+        canon.build_mesh(obj)
+        new = canon.load(obj)
+        why = _attach_differences(obj, old, new, own)
+    except Exception:
+        undo()
+        raise
+    if why:
+        undo()
+        raise ValueError(f"its bone grid would change it ({why})")
+    loose = _name_weld_bones(obj, coll)
+    from . import sim
+    sim.invalidate(obj)
+    text = "Follows its bones: Regenerate rebuilds it from them, Edit as Mesh stops it following them"
+    if loose:
+        text += f"; {loose} welds hold particles between its bones and stop at a change of density"
+    return text
+
+
+def _name_weld_bones(obj, coll) -> int:
+    """Give each welded pair of a Part just attached to bones the bone of its particle there (``weld.BONES_KEY``),
+    so the pair follows the Part regenerated; return how many welds hold a particle that is no bone's."""
+    node = {v: k for k, v in weld.node_particles(weld._layout(obj)).items()}
+    loose = 0
+    for w in weld.objects(coll):
+        a, b = w.ree_gpuc_weld.part_a, w.ree_gpuc_weld.part_b
+        if obj not in (a, b) or weld.PAIRS_KEY not in w.keys():
+            continue
+        flat = list(w[weld.PAIRS_KEY])
+        mine = [int(x) for x in (flat[0::2] if a == obj else flat[1::2])]
+        names = [node.get(i) for i in mine]
+        have = list(w.get(weld.BONES_KEY, ()))
+        if None in names or (have and have != names):
+            loose += 1
+            continue
+        w[weld.BONES_KEY] = names
+    return loose
+
+
+def _attach_differences(obj, old, new, own) -> str:
+    """How a Part attached to bones differs from what it was: triangles, links and their tails, rest positions,
+    skin as exported; "" when it does not."""
+    from . import fileio
+    tri = lambda d: {tuple(sorted(t)) for t in d["tris"].tolist()}  # noqa: E731
+    if tri(old) != tri(new):
+        return "triangles"
+    now = {(int(a), int(b), int(t)): gp.tail_bytes(*map(float, tail))
+           for (a, b, t, _), tail in zip(canon.links(new), canon.link_tails(obj, new))}
+    if set(now) != set(own):
+        return "links"
+    if now != own:
+        return "link tails"
+    far = float(np.linalg.norm(new["co"] - old["co"], axis=1).max())
+    if far > 1e-5:
+        return f"rest positions by {far * 1000:.2f} mm"
+    geo = fileio._part_geometry(obj, new, None)
+    skin = lambda d, idx, u8: [{d["nodes"][j]: int(u) for j, u in zip(r, w) if u} for r, w in zip(idx, u8)]  # noqa: E731
+    old_u8 = np.round(old["skin_w"] * 255).astype(int)
+    if skin(old, old["skin"], old_u8) != skin(new, geo["idx"], geo["u8"]):
+        return "skin"
+    return ""
 
 
 def _read_source(src, arm) -> tuple:

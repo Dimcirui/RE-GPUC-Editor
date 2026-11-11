@@ -79,22 +79,25 @@ def _layout(part) -> dict:
 
 def pairs(obj) -> list:
     """A weld's pairs: its Parts' shared bones' when both are made from bones (made again each time, so a Part
-    regenerated keeps them), else as stored; a Part made from bones takes its particle by the stored bone."""
+    regenerated keeps them), else as stored; a Part that follows its bones takes its particle by each pair's stored
+    bone (``BONES_KEY``)."""
     from . import canon
     w = obj.ree_gpuc_weld
     a, b = w.part_a, w.part_b
     if not (props.is_part(a) and props.is_part(b) and canon.has(a) and canon.has(b)):
         return []
     grid_a, grid_b = canon.attached(a), canon.attached(b)
-    if grid_a and grid_b:
+    if grid_a and grid_b and not (canon.file_part(a) or canon.file_part(b)):
         return shared_pairs(a, b)
     flat = list(obj.get(PAIRS_KEY, ()))
     out = list(zip(flat[0::2], flat[1::2]))
     names = list(obj.get(BONES_KEY, ()))
     if not (grid_a or grid_b) or len(names) != len(out):
         return out
-    nodes = node_particles(_layout(a if grid_a else b))
-    return [(nodes[n], ib) if grid_a else (ia, nodes[n]) for (ia, ib), n in zip(out, names) if n in nodes]
+    na = node_particles(_layout(a)) if grid_a else None
+    nb = node_particles(_layout(b)) if grid_b else None
+    return [(na[n] if grid_a else ia, nb[n] if grid_b else ib) for (ia, ib), n in zip(out, names)
+            if (na is None or n in na) and (nb is None or n in nb)]
 
 
 def problems(obj, coll=None) -> list:
@@ -112,7 +115,7 @@ def problems(obj, coll=None) -> list:
         return ["a Part has no particles"]
     if canon.made_here(a) != canon.made_here(b):
         return ["one Part keeps a file's structure, the other was made in the editor"]
-    if not (canon.attached(a) and canon.attached(b)):
+    if not (canon.attached(a) and canon.attached(b)) or canon.file_part(a) or canon.file_part(b):
         n = {p: len(p[canon.KEY]["co"]) // 3 for p in (a, b)}
         if not pairs(obj):
             return ["it welds no particles"]

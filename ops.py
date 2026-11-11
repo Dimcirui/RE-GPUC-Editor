@@ -1174,6 +1174,30 @@ class REE_GPUC_OT_part_from_mesh(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class REE_GPUC_OT_attach_to_bones(bpy.types.Operator):
+    """Make a Part imported with Keep Structure follow its bones, as Rebuild from Bones makes a Part: found as a
+    grid of bone chains, it is regenerated when they move and its density can change. Refused, the Part left as it
+    is, when no such grid makes the same particles, links and skin"""
+    bl_idname = "ree_gpuc.attach_to_bones"
+    bl_label = "Attach to Bones"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (context.mode == "OBJECT" and props.is_part(obj) and canon.file_part(obj)
+                and not canon.attached(obj) and not props.is_re4_object(obj))
+
+    def execute(self, context):
+        from . import structure
+        obj = context.active_object
+        try:
+            obj["ree_gpuc_notice"] = structure.attach_to_bones(obj)
+        except ValueError as e:
+            return refused(self, f"{obj.name}: {e}")
+        return {"FINISHED"}
+
+
 class REE_GPUC_OT_back_to_bones(bpy.types.Operator):
     """Lay the Part out from its bones again, as before Edit as Mesh: its particle, face and skin edits are lost,
     its values and settings from then are back"""
@@ -1199,7 +1223,8 @@ class REE_GPUC_OT_back_to_bones(bpy.types.Operator):
 
 def _driven_part(context):
     obj = context.active_object
-    return obj if props.is_part(obj) and canon.has(obj) and (not canon.locked(obj) or canon.made_here(obj)) else None
+    return obj if (props.is_part(obj) and canon.has(obj) and (not canon.locked(obj) or canon.made_here(obj))
+                   and not canon.file_part(obj)) else None
 
 
 class REE_GPUC_OT_driven_add(bpy.types.Operator):
@@ -1567,6 +1592,7 @@ CLASSES = (REE_GPUC_OT_import, REE_GPUC_FH_import, REE_GPUC_OT_export, REE_GPUC_
            REE_GPUC_OT_reset_rest_offsets, REE_GPUC_OT_set_value, REE_GPUC_OT_paint, REE_GPUC_OT_normalize_skin,
            REE_GPUC_OT_edit_as_mesh, REE_GPUC_OT_back_to_bones, REE_GPUC_OT_driven_add,
            REE_GPUC_OT_driven_remove, REE_GPUC_OT_driven_from_skin, REE_GPUC_OT_part_from_mesh,
+           REE_GPUC_OT_attach_to_bones,
            REE_GPUC_OT_simulate, REE_GPUC_OT_sim_reset, REE_GPUC_OT_import_reference,
            REE_GPUC_OT_drive_vertices, REE_GPUC_OT_drive_select_near, REE_GPUC_OT_drive_spread_lods)
 

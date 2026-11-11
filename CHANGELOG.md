@@ -13,6 +13,7 @@
 - **Edit Keep Structure Parts** — move, add, remove and reconnect particles of an imported cloth in Edit Mode, cut slits and repaint its skin; the export writes the file again from the Parts. Works on game files that Rebuild from Bones cannot take. **Import a cloth again to edit it if an earlier version imported it.**
 - **Collision planes and spheres for Wilds, RE9 and Onimusha** — a file's own planes and spheres import as objects and export to their own sections, chosen by the Part's Plane and Sphere Bits; Collision From Bones makes planes for every game.
 - **Triangle tangent flags** — on an editable Keep Structure Part's faces, as attributes you can read and set; new triangles whose UVs span no area get the flag the game's files give them.
+- **Attach to Bones** — a Keep Structure Part found to be a grid of bone chains follows its bones, as a rebuilt one does, and stays its file's Part.
 - **Export in a pose** — particles are written where the current pose carries them, as RE Mesh Editor writes the mesh, so a cloth exported with its posed mesh still fits it.
 - **Keep Structure cloths in another game** — a Wilds, RE9 or Onimusha file kept as imported exports for the other two.
 - **Part from Mesh** — make a Part from any mesh with a UV map and bone weights; it exports and edits like an imported one.
