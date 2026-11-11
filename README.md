@@ -52,10 +52,10 @@ After you move bones in Edit Mode, the affected Parts rebuild when you leave it.
   <summary>Import modes</summary>
 
 * **Rebuild from Bones** (default): rebuilds the cloth with the editor's grid model, so it can be regenerated. Needs a Mesh Collection. Files whose structure does not fit the model are imported with Keep Structure instead, with a message saying why.
-* **Keep Structure**: keeps the file's particles, links and skinning, and lets you edit the values, and the particles and faces themselves (see Editing a Part as a mesh). With no edits, the export is byte for byte the original file. It can only be exported for the game the file came from.
+* **Keep Structure**: keeps the file's particles, links and skinning, and lets you edit the values, and the particles and faces themselves (see Editing a Part as a mesh). With no edits, the export is byte for byte the original file. A Wilds, RE9 or Onimusha file can also be exported for the other two (the whole file is then written again from the Parts); an RE4 file only for RE4.
 * **Update Existing**: applies the file's values to an existing GPUC collection.
 
-A cloth generated from bones or imported with Rebuild from Bones can be converted between Wilds, RE9 and Onimusha by changing the Game in its Header.
+Any Wilds, RE9 or Onimusha cloth can be converted between those three games by choosing the game in the export dialog. A particle skinned to more bones than the game takes (RE9 8, Wilds and Onimusha 6) keeps the heaviest, and the export says how many.
 
 </details>
 

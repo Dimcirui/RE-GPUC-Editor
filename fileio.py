@@ -839,142 +839,286 @@ def build_bytes(coll, mesh_coll=None, joints: str = "FILE", game: str = "", mesh
             raise ExportError(f"{obj.name} is in {obj.mode.lower().replace('_', ' ')} mode")
     if keeps_structure(coll):
         own = gp.ext_of(gpuc.Gpuc(stored_file(coll)).layout)
-        if own != game:
-            raise ExportError(f"it keeps a {game_name(own)} file's structure: export it for {game_name(own)}")
-        if own == re4.EXT:
+        if re4.EXT in (own, game):
+            if own != game:
+                raise ExportError(f"it keeps a {game_name(own)} file's structure: export it for {game_name(own)}")
             if joints != "FILE":
                 raise ExportError("RE4 keeps its original skinning and output bindings: use As Imported")
             return _build_re4(coll, head, cfg_objs, part_objs)
-        return _build_keep(coll, head, cfg_objs, part_objs, joints == "MESH", mesh_coll, mesh_file, gpuc_path)
-    return _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, game, mesh_file, gpuc_path)
+        return _build_keep(coll, head, cfg_objs, part_objs, joints == "MESH", mesh_coll, mesh_file, gpuc_path, game)
+    return _build_cloth(coll, head, cfg_objs, part_objs, game, mesh_coll, mesh_file, gpuc_path)
 
 
-def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT, mesh_file="", gpuc_path="") -> tuple:
+def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file="", gpuc_path="",
+                 from_mesh=True, source=None) -> tuple:
+    """Write the cloth as a whole file of the game ``ext`` from its Parts: particles, faces, skin and values from
+    their meshes, links from their faces. ``source``: (the stored file's ``Gpuc``, each of its particles' part) of
+    a Keep Structure cloth, whose Parts come first in the file's order and batches, the new ones after.
+
+    Driven joints: a file's keep its bind, and its particles and weights while they all remain and no new particle
+    is skinned to its bone; otherwise they take the heaviest ``MIN_SLOTS`` particles skinned to that bone, by
+    their skin's share. The other Parts' driven bones (``canon.driven_names``) are driven so, bound at their rest
+    pose and indexed by the .mesh's weighted bones (a file's cloth: From Mesh only)."""
     notes = []
-    layout = gpuc.LAYOUTS[int(ext[1:])]
-    arm = generate._armature(coll)
-    if arm is None or arm.type != "ARMATURE":
-        raise ExportError("the cloth has no armature")
+    is_re4 = ext == re4.EXT
+    layout = None if is_re4 else gpuc.LAYOUTS[int(ext[1:])]
+    g = f = f_part = None
+    if source is not None:
+        g, f_part = source
+        f = file_parts(stored_file(coll))
+        arm = next((o.ree_gpuc_part.armature for o in part_objs if o.ree_gpuc_part.armature), None)
+        arm = arm if arm is not None and arm.type == "ARMATURE" else None
+    else:
+        arm = generate._armature(coll)
+        if arm is None or arm.type != "ARMATURE":
+            raise ExportError("the cloth has no armature")
+    bones = [b.name for b in arm.data.bones] if arm is not None else []
+    to_game = ROTATE_BACK @ np.array(arm.matrix_world, float) if arm is not None else np.eye(4)   # as import_keep
+    file_objs = file_part_objects(part_objs) if source is not None else []
+    new_objs = [o for o in part_objs if o not in file_objs]
     for obj in part_objs:
         if not canon.has(obj):
             raise ExportError(f"{obj.name} has no particles")
+        if obj in file_objs:
+            if not canon.editable(canon.load(obj)):
+                raise ExportError(f"{obj.name} keeps its file's structure as it is (its links are not the ones its "
+                                  f"faces give), so the cloth cannot be written again from its Parts")
+            continue
         if canon.locked(obj) and not canon.made_here(obj):
             raise ExportError(f"{obj.name} keeps a file's structure in a cloth that does not")
-        problems = generate.check(obj)
+        problems = generate.check(obj) if source is None or canon.attached(obj) else []
         if problems:
             raise ExportError(f"{obj.name}: {problems[0]} (regenerate it)")
-    vertices = head.ree_gpuc_header.drive_mode == "VERTICES"
+    vertices = source is None and head.ree_gpuc_header.drive_mode == "VERTICES"
     if vertices and ext not in props.VERTEX_DRIVE_GAMES:
         raise ExportError(f"{game_name(ext)} cloth cannot drive mesh vertices: set Drive to Joints")
-    is_re4 = ext == re4.EXT                  # RE4 skins by the mesh's weighted bones, so it needs them either way
-    weighted = [] if vertices and not is_re4 else export_weighted(coll, arm, mesh_coll, mesh_file, gpuc_path, notes)
-    bones = [b.name for b in arm.data.bones]
-    to_game = ROTATE_BACK @ np.array(arm.matrix_world, float)
+    weighted = None
 
-    positions, sim_weight, skin_bones, skin_w, faces, uvs, outputs, bend = [], [], [], [], [], [], [], []
-    shapes, part_vals, driven, base, starts, tri_flags = {}, [], {}, 0, {}, []
-    skinned = collections.defaultdict(list)            # bone -> (particle, its skin weight to it) of every Part
+    def weighted_bones():                    # the .mesh's weighted bones, read once and only when needed
+        nonlocal weighted
+        if weighted is None:
+            weighted = export_weighted(coll, arm, mesh_coll, mesh_file, gpuc_path, notes)
+        return weighted
+
+    if source is None and (is_re4 or not vertices):      # RE4 skins by the mesh's weighted bones either way
+        weighted_bones()
+
+    def full(name):                          # "#k": imported without a mesh, skin bone k of the file
+        if name.startswith("#"):
+            return int(name[1:])
+        if name not in bones:
+            raise ExportError(f"skin bone {name} is not in the armature")
+        return bones.index(name)
+
+    slots = 8 if is_re4 else gpuc.skin_slots(layout)
+    file_start = {o: int(np.argmax(f_part == k)) for k, o in enumerate(file_objs)}
+    order = sorted(file_objs, key=file_start.get) + new_objs        # the file's runs in its order, then the others
+    positions, sim_weight, skin_bones, skin_w, faces, uvs, bend, tri_flags = [], [], [], [], [], [], [], []
+    vals, run = [None] * len(part_objs), [0] * len(part_objs)
+    shapes, starts, new_of, fresh, base, cut = {}, {}, {}, set(), 0, 0
+    skinned = collections.defaultdict(list)            # bone -> (particle, its share of the particle's skin)
+    driving = {}                                       # a new Part's driven bone -> the Parts that drive it
     for obj, why in weld.skipped(coll):
         notes.append(f"{obj.name} left out: {why}")
     welded = collections.defaultdict(set)              # the Parts each Part is welded to
     for _, pa, _, pb, _ in weld.welds(coll):
         welded[pa].add(pb)
         welded[pb].add(pa)
-    for k, obj in enumerate(part_objs):
-        starts[obj] = base
+    for obj in order:
+        k = part_objs.index(obj)
         d = canon.load(obj)
-        vals = canon.values(obj, d)
-        co = np.asarray(d["co"], float)
-        game = co @ to_game[:3, :3].T + to_game[:3, 3]
+        v = canon.values(obj, d)
+        vals[k] = v
         n = canon.count(d)
-        positions.append(game)
-        sim_weight.append(np.clip(vals["sim_weight"], 0.0, 1.0))
-        part_vals.append(vals)
+        starts[obj] = run[k] = base
+        positions.append(d["co"].astype(float) @ to_game[:3, :3].T + to_game[:3, 3])
+        sim_weight.append(np.clip(v["sim_weight"], 0.0, 1.0))
         geo = _part_geometry(obj, d, arm)
-        bend.append(np.full(n, geo["bend"]))
         tri_flags += geo["flags"]
-        faces += [tuple(base + i for i in f) for f in geo["faces"]]
-        uvs += geo["uv"]
-        node_full = [bones.index(name) for name in d["nodes"]]
-        shared = []
+        for face, uv in zip(geo["faces"], geo["uv"]):
+            faces.append(tuple(base + i for i in face))
+            uvs.append(uv)
+        idx = [full(b) for b in d["nodes"]]
         for i in range(n):
-            skin_bones_i, skin_w_i = _skin_row(node_full, geo, i)
-            skin_bones.append(skin_bones_i)
-            skin_w.append(skin_w_i)
+            row_b, row_w = _skin_row(idx, geo, i)
+            if sum(1 for x in row_w if x) > slots:          # a game of fewer skin bones: the heaviest, again to 1
+                keep = sorted((x, b) for b, x in zip(row_b, row_w) if x)[::-1][:slots]
+                q = np.floor(np.array([x for x, _ in keep]) / sum(x for x, _ in keep) * 255 + 0.5).astype(int)
+                q[int(np.argmax(q))] += 255 - int(q.sum())
+                row_b = [b for _, b in keep] + [keep[0][1]] * (8 - len(keep))
+                row_w = [int(x) for x in q] + [0] * (8 - len(keep))
+                cut += 1
+            skin_bones.append(row_b)
+            skin_w.append(row_w)
             for j, x in zip(geo["idx"][i], geo["share"][i]):
                 if x > 0:
-                    skinned[d["nodes"][j]].append((base + i, float(x)))
-        for name in canon.driven_names(obj, d) if not vertices else ():
-            if name not in bones:
-                notes.append(f"{obj.name}: {name} is not a bone of the armature: it is not driven")
-                continue
-            if name not in weighted:
-                notes.append(f"{name} has no weights in the mesh: it is not driven")
-                continue
-            if name in driven:
-                if not welded[obj] & driven[name]:
+                    skinned[idx[j]].append((base + i, float(x)))
+        bend.append(np.full(n, geo["bend"]))
+        for (a, b, t, _), tail in zip(canon.links(d), canon.link_tails(obj, d)):
+            shapes[(base + int(a), base + int(b), int(t))] = gp.tail_bytes(*map(float, tail))   # float32 rounds
+        if obj in file_start:
+            for i, s in enumerate(d["src"]):
+                if s >= 0:
+                    new_of[file_start[obj] + int(s)] = base + i
+                else:
+                    fresh.add(base + i)
+        else:
+            fresh.update(range(base, base + n))
+            shared = []
+            for name in canon.driven_names(obj, d) if not vertices else ():
+                if name not in bones and not name.startswith("#"):
+                    notes.append(f"{obj.name}: {name} is not a bone of the armature: it is not driven")
+                    continue
+                b = full(name)
+                if b in driving and not welded[obj] & driving[b]:
                     shared.append(name)
-                driven[name].add(obj)
-                continue
-            world = to_game @ np.array(arm.data.bones[name].matrix_local, float)
-            outputs.append(dict(palette=weighted.index(name), world=world.T, particles=[], weights=[],
-                                full=bones.index(name), bone=name))
-            driven[name] = {obj}
-        if shared:
-            notes.append(f"{obj.name}: {len(shared)} of its bones are an earlier Part's too ({', '.join(shared[:3])}"
-                         f"{', ...' if len(shared) > 3 else ''}) and it is not welded to it: their joints follow "
-                         f"both Parts")
-        for (a, b, typ, _), tail in zip(canon.links(d), canon.link_tails(obj, d)):
-            shapes[(base + int(a), base + int(b), int(typ))] = gp.tail_bytes(*map(float, tail))   # float32 rounds
+                driving.setdefault(b, set()).add(obj)
+            if shared:
+                notes.append(f"{obj.name}: {len(shared)} of its bones are an earlier Part's too "
+                             f"({', '.join(shared[:3])}{', ...' if len(shared) > 3 else ''}) and it is not welded to "
+                             f"it: their joints follow both Parts")
         base += n
-    # As in game files: each joint is driven by every particle skinned to its bone (any Part), by that skin weight;
-    # the heaviest MIN_SLOTS are kept (ties: lower particles), in descending particle order.
-    unskinned = [o["bone"] for o in outputs if not skinned[o["bone"]]]
+    if cut:
+        notes.append(f"{cut} particles skinned to more bones than {game_name(ext)} takes ({slots}): the lightest "
+                     f"left out")
+
+    # the file's driven joints, at the file's binds
+    outputs, moved, dropped, driven = [], 0, 0, set()
+    if source is not None:
+        palette = (_mesh_palette(coll, head, arm, len(f["joints"]), mesh_coll, mesh_file, gpuc_path, notes)
+                   if from_mesh else [j["palette"] for j in f["joints"]])
+        for j, x in zip(f["joints"], palette):
+            if not j["drivers"]:
+                dropped += 1
+                continue
+            cp = j["drivers"][0][0]
+            frame = f["frames"][cp][:, :3].astype(float)          # world -> the particle's local axes
+            world = np.eye(4)
+            world[:3, :3] = j["rotations"][0] @ frame
+            world[3, :3] = f["pos"][cp] + frame.T @ j["offsets"][0]
+            score = collections.Counter()
+            for p, w in j["drivers"]:
+                for b, s in zip(f["skin"][p], f["skin_w"][p]):
+                    if s > 0 and b >= 0:
+                        score[int(b)] += w * s
+            bone = score.most_common(1)[0][0] if score else -1
+            driven.add(bone)
+            kept = [new_of.get(p) for p, _ in j["drivers"]]
+            if None not in kept and not any(p in fresh for p, _ in skinned[bone]):
+                outputs.append(dict(palette=x, world=world, particles=kept, weights=[w for _, w in j["drivers"]]))
+                continue
+            keep = sorted(skinned[bone], key=lambda p: (-p[1], p[0]))[:gpuc_build.MIN_SLOTS]
+            if not keep:
+                dropped += 1
+                continue
+            keep.sort(key=lambda p: -p[0])
+            total = sum(s for _, s in keep)
+            outputs.append(dict(palette=x, world=world, particles=[p for p, _ in keep],
+                                weights=[s / total for _, s in keep]))
+            moved += 1
+    # the other Parts' driven bones, at their rest pose
+    added = sorted(b for b in driving if b not in driven)
+    unskinned = [b for b in added if not skinned[b]]
     if unskinned:
         notes.append(f"{len(unskinned)} listed bones skin no particle and are not driven: "
-                     f"{', '.join(unskinned[:3])}{', ...' if len(unskinned) > 3 else ''}")
-        outputs = [o for o in outputs if skinned[o["bone"]]]
-    for o in outputs:
-        keep = sorted(skinned[o.pop("bone")], key=lambda p: (-p[1], p[0]))[:gpuc_build.MIN_SLOTS]
+                     f"{', '.join(bones[b] if 0 <= b < len(bones) else f'#{b}' for b in unskinned[:3])}"
+                     f"{', ...' if len(unskinned) > 3 else ''}")
+    added = [b for b in added if skinned[b]]
+    if added and source is not None and not from_mesh:
+        raise ExportError(f"its new Parts drive bones its file does not ({', '.join(bones[b] for b in added[:3])}"
+                          f"{', ...' if len(added) > 3 else ''}): export with Joint Indices From Mesh")
+    news = 0
+    for b in added:
+        if bones[b] not in weighted_bones():
+            notes.append(f"{bones[b]} has no weights in the mesh: it is not driven")
+            continue
+        # As in game files: each joint is driven by every particle skinned to its bone (any Part), by that skin
+        # share; the heaviest MIN_SLOTS are kept (ties: lower particles), in descending particle order.
+        keep = sorted(skinned[b], key=lambda p: (-p[1], p[0]))[:gpuc_build.MIN_SLOTS]
         keep.sort(key=lambda p: -p[0])
-        total = sum(x for _, x in keep)
-        o["particles"], o["weights"] = [p for p, _ in keep], [x / total for _, x in keep]
-    outputs.sort(key=lambda o: o["full"])
+        total = sum(s for _, s in keep)
+        world = (to_game @ np.array(arm.data.bones[bones[b]].matrix_local, float)).T
+        outputs.append(dict(palette=weighted_bones().index(bones[b]), world=world, particles=[p for p, _ in keep],
+                            weights=[s / total for _, s in keep]))
+        news += 1
+    if source is not None and news:
+        notes.append(Info(f"{news} bones of the new Parts are driven as in a cloth made from bones"))
     if not outputs and not vertices:
         raise ExportError("no bone is driven, so nothing would move: list the bones a Part drives (Driven Bones), "
                           "or give its bones weights in the mesh")
+
     batch_of = None
     if not vertices and not is_re4:                # RE4 splits its own; a cloth driving vertices stays one batch
-        welded = {(part_objs.index(pa), part_objs.index(pb)) for _, pa, _, pb, _ in weld.welds(coll)}
-        batch_of = _batch_of([len(v["sim_weight"]) for v in part_vals], welded, notes)
+        place = {obj: i for i, obj in enumerate(order)}
+        pairs = {(place[pa], place[pb]) for _, pa, _, pb, _ in weld.welds(coll) if pa in place and pb in place}
+        sizes = [canon.count(canon.load(o)) for o in order]
+        keep_batch = None
+        if source is not None:
+            file_batch = np.zeros(len(f_part), np.int64)          # each file particle's batch
+            s7 = bytes(g.sections[7].data)
+            for b in range(len(s7) // 0x50):
+                count, start = struct.unpack_from("<I", s7, b * 0x50)[0], struct.unpack_from("<I", s7, b * 0x50 + 0x24)[0]
+                file_batch[start:start + count] = b
+            keep_batch = [int(file_batch[file_start[o]]) for o in order if o in file_start]
+            b = max(keep_batch, default=0)
+            filled = sum(n for o, n in zip(order, sizes) if o in file_start and file_batch[file_start[o]] == b)
+            for o, size in zip(order, sizes):                      # the others go on filling the file's last batch
+                if o in file_start:
+                    continue
+                if filled and filled + size > gpuc_build.BATCH_LIMIT:
+                    b, filled = b + 1, 0
+                keep_batch.append(b)
+                filled += size
+        batch_of = _batch_of(sizes, pairs, notes, keep_batch)
         _one_batch(outputs, batch_of, notes)
     spec = gpuc_build.ClothSpec(np.vstack(positions), np.concatenate(sim_weight), skin_bones, skin_w, faces, uvs,
                                 outputs, np.concatenate(bend), batch_of, tri_flags)
     skin_table = sorted({b for row, w in zip(skin_bones, skin_w) for b, x in zip(row, w) if x})
     link_tail = lambda typ, a, b: shapes.get((min(a, b), max(a, b), typ))  # noqa: E731
     if is_re4:
-        data = _build_generated_re4(coll, head, arm, cfg_objs, part_objs, part_vals, spec, weighted, bones,
+        part_vals = [vals[part_objs.index(o)] for o in order]
+        data = _build_generated_re4(coll, head, arm, cfg_objs, order, part_vals, spec, weighted_bones(), bones,
                                     link_tail, starts, vertices, mesh_coll, find_mesh(coll, mesh_file, gpuc_path)[0],
                                     notes)
         return data, list(dict.fromkeys(notes))
-    out = gpuc_build.build(spec, layout, skin_table, link_tail=link_tail, welds=_weld_links(coll, starts))
-
-    g = gpuc.Gpuc(out, layout)
+    try:
+        out = gpuc_build.build(spec, layout, skin_table, link_tail=link_tail, welds=_weld_links(coll, starts))
+    except ValueError as e:
+        raise ExportError(str(e)) from e
+    built = gpuc.Gpuc(out, layout)
     for i in gpuc_build.PACKED:                               # parsing infers 16 from a start on 16; these pack at 4
-        g.sections[i].align = 4
-    _write_blocks(g, head.ree_gpuc_header, cfg_objs, part_objs, part_vals, notes, arm, vertices=vertices)
-    _write_capsules(g, coll, arm, notes)
+        built.sections[i].align = 4
+    _write_blocks(built, head.ree_gpuc_header, cfg_objs, part_objs, vals, notes, arm, run, vertices=vertices)
+    _write_capsules(built, coll, arm, notes)
+    left = []
+    if source is not None:
+        if not own_shapes(coll):               # the file's planes and spheres, not imported: kept as they are
+            built.set_planes_spheres(*(bytes(g.sections[k].data) if k in g.sections else b"" for k in (14, 15)))
+        own = gp.ext_of(g.layout)
+        left = [name for name in ("interpolations", "restrictions", "point_triangle_contacts", "edge_edge_contacts")
+                if struct.unpack_from("<I", g.header, gp.offset_of(own, name))[0]]
     # one sim LOD holding every batch; no interpolation, restriction or self-collision contact;
     # simulation deform weights 1, as in game files
     B = int(batch_of.max()) + 1 if batch_of is not None else 1
     for name, v in (("batch_infos", B), ("sim_lods", B), ("sim_lod_one", 1), ("interpolations", 0),
                     ("restrictions", 0), ("sim_deform_weights", 1), ("point_triangle_contacts", 0),
                     ("edge_edge_contacts", 0)):
-        struct.pack_into("<I", g.header, gp.offset_of(ext, name), v)
+        struct.pack_into("<I", built.header, gp.offset_of(ext, name), v)
     if vertices:
-        _drive_vertices(g, head, coll, arm, mesh_coll, find_mesh(coll, mesh_file, gpuc_path)[0], notes)
-    data = g.build()
+        _drive_vertices(built, head, coll, arm, mesh_coll, find_mesh(coll, mesh_file, gpuc_path)[0], notes)
+    data = built.build()
     gpuc.Gpuc(data, layout)                                   # raises if the output does not parse back
+    if source is not None:
+        notes.append(Info("New Parts or edited particles: the file is written again from the Parts"))
+        if gp.ext_of(g.layout) != ext:
+            notes.append(Info(f"Written for {game_name(ext)} from a {game_name(gp.ext_of(g.layout))} file"))
+        if moved:
+            notes.append(Info(f"{moved} driven joints follow new particles (the heaviest skinned to their bones)"))
+        if dropped:
+            notes.append(f"{dropped} driven joints have no particle left and are left out")
+        if left:
+            notes.append(f"The file's {', '.join(n.replace('_', ' ') for n in left)} are left out: they name its old "
+                         f"particles")
     return data, list(dict.fromkeys(notes))
 
 
@@ -1072,9 +1216,10 @@ def _weld_links(coll, starts) -> list:
 
 
 def _build_keep(coll, head, cfg_objs, part_objs, from_mesh=False, mesh_coll=None, mesh_file="",
-                gpuc_path="") -> tuple:
+                gpuc_path="", ext=None) -> tuple:
     """Write a Keep Structure cloth's values over its stored file, the structure unchanged; ``from_mesh`` re-indexes
-    the driven joints by their bones among the mesh's weighted bones (``export_weighted``)."""
+    the driven joints by their bones among the mesh's weighted bones (``export_weighted``). New Parts, an edited
+    Part or another game ``ext`` write the whole file again (``_build_cloth``)."""
     notes = []
     g = gpuc.Gpuc(stored_file(coll))
     game = gp.ext_of(g.layout)
@@ -1083,12 +1228,13 @@ def _build_keep(coll, head, cfg_objs, part_objs, from_mesh=False, mesh_coll=None
     file_objs = file_part_objects(part_objs)
     counts = np.bincount(f_part, minlength=len(file_objs)).tolist()
     mine = [canon.count(canon.load(o)) for o in file_objs]
-    if len(file_objs) < len(part_objs) or any(canon.edited(o) for o in file_objs):
+    ext = ext or game
+    if len(file_objs) < len(part_objs) or any(canon.edited(o) for o in file_objs) or ext != game:
         if len(file_objs) != len(counts):
             raise ExportError(f"it has {len(file_objs)} of its file's {len(counts)} Parts: a Keep Structure cloth "
                               f"cannot remove its file's Parts")
-        return _build_restructured(coll, head, cfg_objs, part_objs, g, f_part, from_mesh, mesh_coll, mesh_file,
-                                   gpuc_path)
+        return _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll, mesh_file, gpuc_path, from_mesh,
+                            (g, f_part))
     if mine != counts:
         raise ExportError(f"its Parts ({mine} particles) are not its file's ({counts}): import it again")
     arm = next((o.ree_gpuc_part.armature for o in part_objs if o.ree_gpuc_part.armature), None)
@@ -1199,194 +1345,6 @@ def _mesh_palette(coll, head, arm, joints, mesh_coll, mesh_file, gpuc_path, note
         raise ExportError(f"{len(lost)} driven joints have no weighted bone in the mesh "
                           f"({', '.join(names[k] or '(none)' for k in lost[:3])}): export As Imported")
     return [weighted.index(n) for n in names]
-
-
-def _build_restructured(coll, head, cfg_objs, part_objs, g, f_part, from_mesh=False, mesh_coll=None, mesh_file="",
-                        gpuc_path="") -> tuple:
-    """Write a Keep Structure cloth whose Parts' structure was edited, or which has Parts made from bones, as a
-    whole file of its game: particles, faces, skin and values from the Parts (the file's in its order, then the new
-    ones), links from their faces, and the file's driven joints at the file's binds.
-
-    A joint keeps the file's particles and weights while they all remain and no new particle is skinned to its bone;
-    otherwise it takes the heaviest ``MIN_SLOTS`` particles skinned to that bone, as a cloth made from bones. A bone
-    of a new Part that no file joint drives is driven as in a cloth made from bones, at its rest pose, indexed by
-    the .mesh's weighted bones (From Mesh only)."""
-    notes = []
-    ext = gp.ext_of(g.layout)
-    f = file_parts(stored_file(coll))
-    arm = next((o.ree_gpuc_part.armature for o in part_objs if o.ree_gpuc_part.armature), None)
-    arm = arm if arm is not None and arm.type == "ARMATURE" else None
-    bones = [b.name for b in arm.data.bones] if arm is not None else []
-    to_game = ROTATE_BACK @ np.array(arm.matrix_world, float) if arm is not None else np.eye(4)   # as import_keep
-
-    def full(name):                          # "#k": imported without a mesh, skin bone k of the file
-        if name.startswith("#"):
-            return int(name[1:])
-        if name not in bones:
-            raise ExportError(f"skin bone {name} is not in the armature")
-        return bones.index(name)
-
-    file_objs = file_part_objects(part_objs)
-    new_objs = [o for o in part_objs if o not in file_objs]
-    file_start = {o: int(np.argmax(f_part == k)) for k, o in enumerate(file_objs)}
-    file_batch = np.zeros(len(f_part), np.int64)          # each file particle's batch
-    s7 = bytes(g.sections[7].data)
-    for b in range(len(s7) // 0x50):
-        count, start = struct.unpack_from("<I", s7, b * 0x50)[0], struct.unpack_from("<I", s7, b * 0x50 + 0x24)[0]
-        file_batch[start:start + count] = b
-    positions, sim_weight, skin_bones, skin_w, faces, uvs, bend, tri_flags = [], [], [], [], [], [], [], []
-    vals, run = [None] * len(part_objs), [0] * len(part_objs)
-    shapes, starts, new_of, fresh, base, new_bones = {}, {}, {}, set(), 0, set()
-    order = sorted(file_objs, key=file_start.get) + new_objs        # the file's runs in its order, then the new
-    for obj in order:
-        k = part_objs.index(obj)
-        d = canon.load(obj)
-        if obj in file_start and not canon.editable(d):
-            raise ExportError(f"{obj.name} keeps its file's structure as it is (its links are not the ones its faces "
-                              f"give), so the cloth cannot be written again from its Parts")
-        if obj not in file_start and d["attached"]:
-            problems = generate.check(obj)
-            if problems:
-                raise ExportError(f"{obj.name}: {problems[0]} (regenerate it)")
-        v = canon.values(obj, d)
-        vals[k] = v
-        n = canon.count(d)
-        starts[obj] = run[k] = base
-        positions.append(d["co"].astype(float) @ to_game[:3, :3].T + to_game[:3, 3])
-        sim_weight.append(np.clip(v["sim_weight"], 0.0, 1.0))
-        geo = _part_geometry(obj, d, arm)
-        tri_flags += geo["flags"]
-        for face, uv in zip(geo["faces"], geo["uv"]):
-            faces.append(tuple(base + i for i in face))
-            uvs.append(uv)
-        idx = [full(b) for b in d["nodes"]]
-        for i in range(n):
-            row_b, row_w = _skin_row(idx, geo, i)
-            skin_bones.append(row_b)
-            skin_w.append(row_w)
-        bend.append(np.full(n, geo["bend"]))
-        for (a, b, t, _), tail in zip(canon.links(d), canon.link_tails(obj, d)):
-            shapes[(base + int(a), base + int(b), int(t))] = gp.tail_bytes(*map(float, tail))
-        if obj in file_start:
-            for i, s in enumerate(d["src"]):
-                if s >= 0:
-                    new_of[file_start[obj] + int(s)] = base + i
-                else:
-                    fresh.add(base + i)
-        else:
-            fresh.update(range(base, base + n))
-            for name in canon.driven_names(obj, d):
-                if name in bones or name.startswith("#"):
-                    new_bones.add(full(name))
-                else:
-                    notes.append(f"{obj.name}: {name} is not a bone of the armature: it is not driven")
-        base += n
-    skinned = collections.defaultdict(list)            # bone -> (particle, its share of the particle's skin)
-    for p, (row, w) in enumerate(zip(skin_bones, skin_w)):
-        for b, x in zip(row, w):
-            if x:
-                skinned[b].append((p, x / 255.0))
-    palette = (_mesh_palette(coll, head, arm, len(f["joints"]), mesh_coll, mesh_file, gpuc_path, notes) if from_mesh
-               else [j["palette"] for j in f["joints"]])
-    outputs, moved, dropped, driven = [], 0, 0, set()
-    for j, x in zip(f["joints"], palette):
-        if not j["drivers"]:
-            dropped += 1
-            continue
-        cp = j["drivers"][0][0]
-        frame = f["frames"][cp][:, :3].astype(float)          # world -> the particle's local axes
-        world = np.eye(4)
-        world[:3, :3] = j["rotations"][0] @ frame
-        world[3, :3] = f["pos"][cp] + frame.T @ j["offsets"][0]
-        score = collections.Counter()
-        for p, w in j["drivers"]:
-            for b, s in zip(f["skin"][p], f["skin_w"][p]):
-                if s > 0 and b >= 0:
-                    score[int(b)] += w * s
-        bone = score.most_common(1)[0][0] if score else -1
-        driven.add(bone)
-        kept = [new_of.get(p) for p, _ in j["drivers"]]
-        if None not in kept and not any(p in fresh for p, _ in skinned[bone]):
-            outputs.append(dict(palette=x, world=world, particles=kept, weights=[w for _, w in j["drivers"]]))
-            continue
-        keep = sorted(skinned[bone], key=lambda p: (-p[1], p[0]))[:gpuc_build.MIN_SLOTS]
-        if not keep:
-            dropped += 1
-            continue
-        keep.sort(key=lambda p: -p[0])
-        total = sum(s for _, s in keep)
-        outputs.append(dict(palette=x, world=world, particles=[p for p, _ in keep], weights=[s / total for _, s in keep]))
-        moved += 1
-    added = sorted(b for b in new_bones - driven if skinned[b])
-    unskinned = sorted(b for b in new_bones - driven if not skinned[b])
-    if unskinned:
-        notes.append(f"{len(unskinned)} listed bones skin no particle and are not driven: "
-                     f"{', '.join(bones[b] if 0 <= b < len(bones) else f'#{b}' for b in unskinned[:3])}"
-                     f"{', ...' if len(unskinned) > 3 else ''}")
-    if added:
-        if not from_mesh:
-            raise ExportError(f"its new Parts drive bones its file does not ({', '.join(bones[b] for b in added[:3])}"
-                              f"{', ...' if len(added) > 3 else ''}): export with Joint Indices From Mesh")
-        weighted = export_weighted(coll, arm, mesh_coll, mesh_file, gpuc_path, notes)
-        for b in sorted(added, key=lambda b: weighted.index(bones[b]) if bones[b] in weighted else -1):
-            if bones[b] not in weighted:
-                notes.append(f"{bones[b]} has no weights in the mesh: it is not driven")
-                continue
-            keep = sorted(skinned[b], key=lambda p: (-p[1], p[0]))[:gpuc_build.MIN_SLOTS]
-            keep.sort(key=lambda p: -p[0])
-            total = sum(s for _, s in keep)
-            world = (to_game @ np.array(arm.data.bones[bones[b]].matrix_local, float)).T
-            outputs.append(dict(palette=weighted.index(bones[b]), world=world, particles=[p for p, _ in keep],
-                                weights=[s / total for _, s in keep]))
-        notes.append(Info(f"{len(added)} bones of the new Parts are driven as in a cloth made from bones"))
-    if not outputs:
-        raise ExportError("no driven joint has a particle left: nothing would move")
-    place = {obj: i for i, obj in enumerate(order)}
-    welded = {(place[pa], place[pb]) for _, pa, _, pb, _ in weld.welds(coll) if pa in place and pb in place}
-    keep_batch = [int(file_batch[file_start[o]]) for o in order if o in file_start]
-    b = max(keep_batch, default=0)
-    filled = sum(canon.count(canon.load(o)) for o in order if o in file_start and file_batch[file_start[o]] == b)
-    for o in new_objs:                                   # new Parts go on filling the file's last batch
-        size = canon.count(canon.load(o))
-        if filled and filled + size > gpuc_build.BATCH_LIMIT:
-            b, filled = b + 1, 0
-        keep_batch.append(b)
-        filled += size
-    batch_of = _batch_of([canon.count(canon.load(o)) for o in order], welded, notes, keep_batch)
-    _one_batch(outputs, batch_of, notes)
-    spec = gpuc_build.ClothSpec(np.vstack(positions), np.concatenate(sim_weight), skin_bones, skin_w, faces, uvs,
-                                outputs, np.concatenate(bend), batch_of, tri_flags)
-    skin_table = sorted({b for row, w in zip(skin_bones, skin_w) for b, x in zip(row, w) if x})
-    link_tail = lambda typ, a, b: shapes.get((min(a, b), max(a, b), typ))  # noqa: E731
-    try:
-        out = gpuc_build.build(spec, g.layout, skin_table, link_tail=link_tail, welds=_weld_links(coll, starts))
-    except ValueError as e:
-        raise ExportError(str(e)) from e
-    rebuilt = gpuc.Gpuc(out, g.layout)
-    for i in gpuc_build.PACKED:                               # parsing infers 16 from a start on 16; these pack at 4
-        rebuilt.sections[i].align = 4
-    _write_blocks(rebuilt, head.ree_gpuc_header, cfg_objs, part_objs, vals, notes, arm, run)
-    _write_capsules(rebuilt, coll, arm, notes)
-    if not own_shapes(coll):                   # the file's planes and spheres, not imported: kept as they are
-        rebuilt.set_planes_spheres(*(bytes(g.sections[k].data) if k in g.sections else b"" for k in (14, 15)))
-    left = [name for name in ("interpolations", "restrictions", "point_triangle_contacts", "edge_edge_contacts")
-            if struct.unpack_from("<I", g.header, gp.offset_of(ext, name))[0]]
-    B = int(batch_of.max()) + 1
-    for name, v in (("batch_infos", B), ("sim_lods", B), ("sim_lod_one", 1), ("interpolations", 0),
-                    ("restrictions", 0), ("sim_deform_weights", 1), ("point_triangle_contacts", 0),
-                    ("edge_edge_contacts", 0)):
-        struct.pack_into("<I", rebuilt.header, gp.offset_of(ext, name), v)
-    data = rebuilt.build()
-    gpuc.Gpuc(data, g.layout)                                 # raises if the output does not parse back
-    notes.append(Info("New Parts or edited particles: the file is written again from the Parts"))
-    if moved:
-        notes.append(Info(f"{moved} driven joints follow new particles (the heaviest skinned to their bones)"))
-    if dropped:
-        notes.append(f"{dropped} driven joints have no particle left and are left out")
-    if left:
-        notes.append(f"The file's {', '.join(n.replace('_', ' ') for n in left)} are left out: they name its old "
-                     f"particles")
-    return data, list(dict.fromkeys(notes))
 
 
 def _re4_properties(pg):
@@ -1947,7 +1905,7 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
         by_hash.update(found)
         notes += more
     inv = np.linalg.inv(ROTATE_BACK @ np.array(arm.matrix_world, float)) if arm is not None else np.eye(4)
-    # rebuilt by _build_restructured, which writes one simulation LOD
+    # rebuilt by _build_cloth, which writes one simulation LOD
     lods = not is_re4 and any(struct.unpack_from("<I", raw, gp.offset_of(r["ext"], n))[0]
                               for n in ("interpolations", "restrictions"))
     editable = not is_re4 and bool(f["flags"] & 4) and f["vertex"] is None and not lods
