@@ -247,48 +247,55 @@ def _game_slots(obj, coll=None) -> int:
 
 
 def edit_as_mesh(obj) -> None:
-    """Make a Part made from bones an editable locked Part as its export writes it: the faces wound and split as
-    exported, the skin in 255ths, each link with its tail, new-triangle tangent flags. Its bone grid is kept for
+    """Stop a Part following its bone grid, so that it takes topology and skin edits: its mesh as it is, its skin
+    widened to the game's slots in 255ths, in one group per bone. The grid stays, with the values of now, for
     ``back_to_bones``; its welds keep their pairs."""
     from . import fileio
     canon.restore(obj)
-    d = canon.load(obj)
-    if d["locked"]:
-        raise ValueError(f"{obj.name} is not made from bones")
-    arm = canon.skin_armature(obj)
-    faces, corners = fileio.grid_faces(obj, d, arm)
-    # on the unorm16 steps the export writes, so that float32 keeps them
-    face_uv = (np.round(np.asarray([p for f in corners for p in f], float) * 65535) / 65535).astype(np.float32)
-    face_uv = face_uv.reshape(-1, 2)
-    tris, tri_uv = topology.triangles(faces, face_uv)
-    slots = max(_game_slots(obj), d["skin"].shape[1])
-    idx, u8 = fileio.grid_skin(d, slots)
-    shapes = [s.lower() for s in gp.SHAPES]
-    own = canon.overrides(obj, d)
-    pairs = []                         # (weld, its pairs, their bones when both Parts are made from bones)
+    if not canon.attached(obj):
+        raise ValueError(f"{obj.name} does not follow its bones")
+    g = canon.recipe(obj)
+    idx, u8 = fileio.grid_skin(g, max(_game_slots(obj), g["skin"].shape[1]))
+    pairs = []                         # (weld, its pairs, their bones when both Parts follow their bones)
     for w in weld.objects(reference.cloth_of(obj)):
         a, b = w.ree_gpuc_weld.part_a, w.ree_gpuc_weld.part_b
         if obj in (a, b) and not weld.problems(w):
             names = None
-            if not canon.locked(a) and not canon.locked(b):          # the order weld.shared_pairs gives
+            if canon.attached(a) and canon.attached(b):          # the order weld.shared_pairs gives
                 names = sorted(set(weld.node_particles(weld._layout(a))) & set(weld.node_particles(weld._layout(b))))
             pairs.append((w, weld.pairs(w), names))
-    values = canon.values(obj, d)
-    recipe = obj[canon.KEY].to_dict()
-    data = {"locked": True, "count": canon.count(d), "tile": d["tile"], "co": d["co"], "tris": tris, "tri_uv": tri_uv,
-            "links": canon.links(d), "tails": canon.link_tails(obj, d), "nodes": list(d["nodes"]), "skin": idx,
-            "skin_w": u8 / 255.0, "normal": topology.normals(d["co"], tris), "faces": faces, "face_uv": face_uv,
-            "src": np.arange(canon.count(d)), "tri_flags": gpuc_build.tangent_flags(faces, corners),
-            "editable": True, **values}
-    obj.ree_gpuc_part.diagonal_bend = bool(d["diagonal_bend"])
-    canon.store(obj, data)
-    obj[canon.RECIPE_KEY] = recipe
-    obj[canon.EDITED_KEY] = [n for k, n in enumerate(shapes) if k not in own]   # shape tails still apply to all
+    c, r = obj[canon.KEY], obj[canon.RECIPE_KEY]
+    for f in canon.FIELD_NAMES:                       # the grid's values to go back to
+        r[f] = list(c[f])
+    c["skin"] = [int(x) for x in idx.ravel()]
+    c["skin_w"] = [float(x) for x in (u8 / 255.0).ravel()]
+    del obj[canon.ATTACHED_KEY]
     for w, p, names in pairs:
         w[weld.PAIRS_KEY] = [int(i) for pair in p for i in pair]
         if names is not None:
             w[weld.BONES_KEY] = names
     canon.build_mesh(obj)
+    from . import sim
+    sim.invalidate(obj)
+
+
+def back_to_bones(obj) -> None:
+    """Make a Part edited as a mesh follow its bone grid again, its edits dropped: the grid's values and settings
+    from when it was edited as a mesh are back."""
+    if not canon.from_bones(obj):
+        raise ValueError(f"{obj.name} was not made from bones")
+    g = canon.recipe(obj)
+    if canon.MAPPING_KEY in obj.keys():
+        del obj[canon.MAPPING_KEY]
+    canon.store(obj, g)
+    canon.fit_ranges(obj, canon.load(obj))
+    canon.build_mesh(obj)
+    for w in weld.objects(reference.cloth_of(obj)):
+        a, b = w.ree_gpuc_weld.part_a, w.ree_gpuc_weld.part_b
+        if obj in (a, b) and canon.attached(a) and canon.attached(b):
+            for key in (weld.PAIRS_KEY, weld.BONES_KEY):
+                if key in w.keys():
+                    del w[key]
     from . import sim
     sim.invalidate(obj)
 
@@ -439,26 +446,6 @@ def bpy_new_part(coll, arm, name, config=None):
     obj.ree_gpuc_part.armature = arm
     obj.ree_gpuc_part.config = config
     return obj
-
-
-def back_to_bones(obj) -> None:
-    """Return a Part edited as a mesh to its bone grid, its edits dropped; the values the grid had are kept."""
-    if not canon.from_bones(obj):
-        raise ValueError(f"{obj.name} was not made from bones")
-    obj[canon.KEY] = obj[canon.RECIPE_KEY].to_dict()
-    for key in (canon.RECIPE_KEY, canon.EDITED_KEY, canon.MAPPING_KEY):
-        if key in obj.keys():
-            del obj[key]
-    canon.fit_ranges(obj, canon.load(obj))
-    canon.build_mesh(obj)
-    for w in weld.objects(reference.cloth_of(obj)):
-        a, b = w.ree_gpuc_weld.part_a, w.ree_gpuc_weld.part_b
-        if obj in (a, b) and not canon.locked(a) and not canon.locked(b):
-            for key in (weld.PAIRS_KEY, weld.BONES_KEY):
-                if key in w.keys():
-                    del w[key]
-    from . import sim
-    sim.invalidate(obj)
 
 
 def adopt(obj) -> str:

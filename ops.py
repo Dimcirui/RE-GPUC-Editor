@@ -500,7 +500,7 @@ class REE_GPUC_OT_part_from_selected(_PartOptions, bpy.types.Operator):
 
 def _part_items(self, context):
     s = _settings(context)
-    return [(o.name, o.name, "") for o in props.parts(s.target) if not canon.locked(o)] or [("", "No part", "")]
+    return [(o.name, o.name, "") for o in props.parts(s.target) if canon.attached(o)] or [("", "No part", "")]
 
 
 def _default_part(context):
@@ -527,7 +527,7 @@ class REE_GPUC_OT_regenerate_part(bpy.types.Operator):
     def poll(cls, context):
         obj = context.active_object
         return (context.mode == "OBJECT" and props.is_part(obj) and obj.select_get()
-                and not canon.locked(obj))
+                and canon.attached(obj))
 
     def invoke(self, context, event):
         self._fill(context.active_object)
@@ -1012,14 +1012,14 @@ class REE_GPUC_OT_reset_rest_offsets(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         objs = context.objects_in_mode if context.mode == "EDIT_MESH" else [context.object]
-        return any(props.is_part(o) and canon.has(o) and not canon.locked(o) for o in objs if o)
+        return any(props.is_part(o) and canon.attached(o) for o in objs if o)
 
     def execute(self, context):
         objs = list(context.objects_in_mode) if context.mode == "EDIT_MESH" else [context.object]
         for obj in objs:
-            if not props.is_part(obj) or not canon.has(obj) or canon.locked(obj):
+            if not props.is_part(obj) or not canon.attached(obj):
                 continue
-            d = canon.load(obj)
+            d = canon.recipe(obj)
             if obj.mode == "EDIT":
                 bm = bmesh.from_edit_mesh(obj.data)
                 layer = bm.verts.layers.int.get(canon.PARTICLE_ID)
@@ -1035,7 +1035,7 @@ class REE_GPUC_OT_reset_rest_offsets(bpy.types.Operator):
                 bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
             else:
                 canon.restore(obj)
-                d = canon.load(obj)
+                d = canon.recipe(obj)
                 co = d["co"].copy()
                 indices = [v.index for v in obj.data.vertices if v.select or not self.selected_only]
                 co[indices] = d["base_co"][indices]
@@ -1128,7 +1128,7 @@ class REE_GPUC_OT_edit_as_mesh(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         obj = context.active_object
-        return (context.mode == "OBJECT" and props.is_part(obj) and canon.has(obj) and not canon.locked(obj)
+        return (context.mode == "OBJECT" and props.is_part(obj) and canon.attached(obj)
                 and canon.skin_armature(obj) is not None)
 
     def execute(self, context):

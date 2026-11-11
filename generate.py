@@ -210,12 +210,12 @@ def new_part(coll, arm, lay: dict, config=None) -> bpy.types.Object:
 
 
 def check(obj) -> list[str]:
-    """What no longer matches the armature: missing bones, or bones whose rest head moved (a locked Part:
-    ``fileio.locked_problems``)."""
-    if canon.locked(obj):
+    """What no longer matches the armature: missing bones, or bones whose rest head moved (a Part that does not
+    follow its bones: ``fileio.locked_problems``)."""
+    if not canon.attached(obj):
         from . import fileio
         return fileio.locked_problems(obj)
-    d = canon.load(obj)
+    d = canon.recipe(obj)
     arm = obj.ree_gpuc_part.armature
     if arm is None or arm.type != "ARMATURE":
         return ["the part has no armature"]
@@ -263,10 +263,10 @@ def resample(values, old: dict, new: dict) -> np.ndarray:
 def regenerate(obj, closed=None, sub_rows=None, sub_cols=None) -> None:
     """The particles made again from the bones' rest heads, with a new ring or density if given; every value kept
     (the groups' latest first; carried over the grid when its size changes)."""
-    if canon.locked(obj):
-        raise GenerateError(f"{obj.name} keeps its .gpuc's structure: it is not regenerated")
+    if not canon.attached(obj):
+        raise GenerateError(f"{obj.name} does not follow its bones: it is not regenerated")
     canon.restore(obj)
-    old = canon.load(obj)
+    old = canon.recipe(obj)
     masks = canon.group_weights(obj, canon.count(old))
     arm = obj.ree_gpuc_part.armature
     if arm is None or arm.type != "ARMATURE":

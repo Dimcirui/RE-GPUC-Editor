@@ -1,6 +1,6 @@
 # RE GPUC Editor
 
-**V0.4.0**
+**V1.0.0**
 
 [Change Log](CHANGELOG.md)
 

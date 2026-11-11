@@ -276,21 +276,21 @@ def _skin_row(full, geo, i) -> tuple:
 def _part_geometry(obj, d, arm) -> dict:
     """What the exports write of a Part, in its own particle indices: faces, each face's corner UVs in [0, 1], the
     triangles' tangent flags, the skin (node indices, 255ths, the shares the driven joints take; ``compact``: drop
-    the empty slots) and the diagonal bend. A locked Part must have faces (``canon.editable``)."""
-    if d["locked"]:
-        faces, corner, at, uv = list(d["faces"]), np.clip(d["face_uv"], 0.0, 1.0), 0, []
-        for f in faces:
-            uv.append([tuple(map(float, p)) for p in corner[at:at + len(f)]])
-            at += len(f)
-        u8 = np.round(d["skin_w"] * 255).astype(int)
-        return {"faces": faces, "uv": uv, "flags": [int(x) for x in d["tri_flags"]], "idx": d["skin"], "u8": u8,
-                "share": u8 / 255.0, "compact": True, "bend": obj.ree_gpuc_part.diagonal_bend}
-    faces, uv = grid_faces(obj, d, arm)
-    idx, u8 = grid_skin(d, 4)
+    the empty slots) and the diagonal bend. A Part from a file must have faces (``canon.editable``)."""
+    faces, corner, at, uv = list(d["faces"]), np.clip(d["face_uv"], 0.0, 1.0), 0, []
+    for f in faces:
+        uv.append([tuple(map(float, p)) for p in corner[at:at + len(f)]])
+        at += len(f)
     w = np.asarray(d["skin_w"], float)
-    return {"faces": faces, "uv": uv, "flags": gpuc_build.tangent_flags(faces, uv), "idx": idx, "u8": u8,
-            "share": w / np.maximum(w.sum(1, keepdims=True), 1e-9),      # the joints take the unrounded shares
-            "compact": False, "bend": d["diagonal_bend"]}
+    u8 = np.zeros(w.shape, np.int64)
+    for i, row in enumerate(w):
+        q = np.floor(row / max(row.sum(), 1e-9) * 255 + 0.5).astype(int)
+        q[int(np.argmax(q))] += 255 - int(q.sum())
+        u8[i] = q
+    # a Part that follows its bones keeps its grid's empty skin slots and gives its joints the unrounded shares
+    return {"faces": faces, "uv": uv, "flags": [int(x) for x in d["tri_flags"]], "idx": d["skin"], "u8": u8,
+            "share": w / np.maximum(w.sum(1, keepdims=True), 1e-9), "compact": not d.get("attached"),
+            "bend": obj.ree_gpuc_part.diagonal_bend}
 
 
 JOINT_INDICES = [("FILE", "As Imported", "Keep the driven joints' indices from the imported file. Use when the "
@@ -1244,7 +1244,7 @@ def _build_restructured(coll, head, cfg_objs, part_objs, g, f_part, from_mesh=Fa
         if obj in file_start and not canon.editable(d):
             raise ExportError(f"{obj.name} keeps its file's structure as it is (its links are not the ones its faces "
                               f"give), so the cloth cannot be written again from its Parts")
-        if obj not in file_start and not d["locked"]:
+        if obj not in file_start and d["attached"]:
             problems = generate.check(obj)
             if problems:
                 raise ExportError(f"{obj.name}: {problems[0]} (regenerate it)")
@@ -2249,7 +2249,7 @@ def import_rebuild(path: str, mesh_coll, force: bool = False) -> tuple:
         p.diagonal_bend = lay["diagonal_bend"]
         if block["use_root_joint"] and block["root_hash"] not in by_hash:
             obj[ROOT_HASH_KEY] = gp.signed(block["root_hash"])
-        d = canon.load(obj)
+        d = canon.recipe(obj)
         canon.fit_ranges(obj, {field: f["values"][field][sel] for field in canon.FIELD_NAMES})
         for field in canon.FIELD_NAMES:
             v = f["values"][field][sel]
@@ -2261,8 +2261,9 @@ def import_rebuild(path: str, mesh_coll, force: bool = False) -> tuple:
         if far > 1e-3:
             notes.append(f"part {i}: particles kept up to {far * 1000:.1f} mm off their bones, as rest offsets")
         default = [common.get(s, (0.0, 1.0, 1.0, 1.0)) for s in gp.SHAPES]
-        own = canon.set_overrides(obj, canon.load(obj), [gp.tail_values(links[(int(a), int(b), int(t))])
-                                                         for a, b, t, _ in gl], default)
+        own = canon.set_overrides(obj, canon.recipe(obj), [gp.tail_values(links[(int(a), int(b), int(t))])
+                                                           for a, b, t, _ in gl], default)
+        canon.rebake(obj)
         if own:
             notes.append(f"part {i}: {own} links keep their own tails from the file (setting a link shape gives "
                          f"all its links that tail)")
@@ -2411,7 +2412,7 @@ def update_existing(path: str, coll, mesh_coll=None) -> list:
         for field in canon.FIELD_NAMES:
             v = f["values"][field][sel]
             d[field] = v
-        if d["locked"]:
+        if d["locked"] and not d["attached"]:
             first = int(sel[0])
             d["tails"] = np.array([gp.tail_values(t) for a, b, _, t in f["links"]
                                    if first <= a < first + len(sel) and first <= b < first + len(sel)],

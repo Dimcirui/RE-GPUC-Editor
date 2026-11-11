@@ -72,10 +72,7 @@ def _layout(part) -> dict:
     """The keys of ``canon.load`` that ``node_particles`` reads, without loading the rest (the overlay asks on
     every redraw)."""
     from . import canon
-    c = part[canon.KEY]
-    if "nodes" not in c:                             # v0.1: one particle per bone
-        return {"nodes": [str(b) for b in c["bones"]], "node_cols": int(c["cols"]), "sub_rows": 0, "sub_cols": 0,
-                "cols": int(c["cols"])}
+    c = part[canon.RECIPE_KEY]
     return {"nodes": [str(b) for b in c["nodes"]], "node_cols": int(c["node_cols"]), "sub_rows": int(c["sub_rows"]),
             "sub_cols": int(c["sub_cols"]), "cols": int(c["cols"])}
 
@@ -88,7 +85,7 @@ def pairs(obj) -> list:
     a, b = w.part_a, w.part_b
     if not (props.is_part(a) and props.is_part(b) and canon.has(a) and canon.has(b)):
         return []
-    grid_a, grid_b = not canon.locked(a), not canon.locked(b)
+    grid_a, grid_b = canon.attached(a), canon.attached(b)
     if grid_a and grid_b:
         return shared_pairs(a, b)
     flat = list(obj.get(PAIRS_KEY, ()))
@@ -113,9 +110,9 @@ def problems(obj, coll=None) -> list:
         return ["a Part is not this cloth's"]
     if not canon.has(a) or not canon.has(b):
         return ["a Part has no particles"]
-    if canon.locked(a) != canon.locked(b) and not canon.made_here(a if canon.locked(a) else b):
-        return ["one Part keeps a file's structure, the other was made from bones"]
-    if canon.locked(a) or canon.locked(b):
+    if canon.made_here(a) != canon.made_here(b):
+        return ["one Part keeps a file's structure, the other was made in the editor"]
+    if not (canon.attached(a) and canon.attached(b)):
         n = {p: len(p[canon.KEY]["co"]) // 3 for p in (a, b)}
         if not pairs(obj):
             return ["it welds no particles"]
@@ -223,8 +220,8 @@ class REE_GPUC_OT_weld_parts(bpy.types.Operator):
         if coll is None:
             self.report({"ERROR"}, "The two Parts are not of one cloth")
             return {"CANCELLED"}
-        if any(canon.locked(o) for o in _selected_parts(context)):
-            self.report({"ERROR"}, "A cloth that keeps a file's structure cannot take a new weld")
+        if not all(canon.attached(o) for o in _selected_parts(context)):
+            self.report({"ERROR"}, "Weld Parts welds Parts that follow their bones, at the bones they share")
             return {"CANCELLED"}
         order = fileio.by_name(props.parts(coll))
         later, earlier = sorted(_selected_parts(context), key=order.index, reverse=True)   # links go from the later Part to the earlier

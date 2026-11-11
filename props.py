@@ -377,15 +377,15 @@ _applying = False
 
 
 def _tail_edit(self, context):
-    """Set the Part's link preset to Custom; on a locked Part, mark the shape so ``canon.link_tails`` applies the
-    tail to every link of that shape; on a Part made from bones, drop the shape's per-link overrides."""
+    """Set the Part's link preset to Custom; mark the shape so ``canon.link_tails`` applies the tail to every link
+    of that shape, and drop the shape's per-link overrides of a Part made from bones."""
     obj = self.id_data
     shape = self.path_from_id().rsplit(".", 1)[-1]
-    if obj.get("ree_gpuc_canon", {}).get("locked"):
+    if "ree_gpuc_canon" in obj.keys():
         edited = list(obj.get("ree_gpuc_tails_edited", ()))
         if shape not in edited:
             obj["ree_gpuc_tails_edited"] = edited + [shape]
-    elif shape in obj.get("ree_gpuc_link_overrides", {}):
+    if shape in obj.get("ree_gpuc_link_overrides", {}):
         over = obj["ree_gpuc_link_overrides"].to_dict()
         del over[shape]
         if len(over) > 1:
@@ -509,6 +509,13 @@ def _range(field):
     return update
 
 
+def _regrid(self, context):
+    """A setting the mesh of a Part that follows its bones is made with changed: write the mesh again."""
+    from . import canon
+    canon.rebake(self.id_data)
+    _redraw(self, context)
+
+
 def _in_front(self, context):
     for obj in context.scene.objects:
         if is_part(obj):
@@ -545,12 +552,12 @@ class REE_GPUC_Part(bpy.types.PropertyGroup):
                                description="Turn the particles' normals the other way (they point away from the "
                                            "cloth's axis or, for a flat piece, from its root joint): the space "
                                            "limits and the backstop are measured along them")
-    other_diagonal: BoolProperty(name="Other Diagonal", default=False,
+    other_diagonal: BoolProperty(name="Other Diagonal", default=False, update=_regrid,
                                  description="Split each quad into its two triangles along the other diagonal (from "
                                              "the lower left to the upper right corner): some files are made so. "
                                              "Rebuild from Bones finds it; the triangles give the particles' frames "
                                              "and the collision edges")
-    diagonal_bend: BoolProperty(name="Diagonal Bend", default=True, update=_redraw,
+    diagonal_bend: BoolProperty(name="Diagonal Bend", default=True, update=_regrid,
                                 description="Give each quad diagonal a bend link (type 2) besides its shear link. "
                                             "Off: the diagonals carry shear links alone, as some files are made. "
                                             "Rebuild from Bones finds it")
@@ -560,7 +567,7 @@ class REE_GPUC_Part(bpy.types.PropertyGroup):
     use_root_joint: BoolProperty(name="Use Root Joint", default=True,
                                  description="The part follows its root joint for the inertia transfer (off: the cloth "
                                              "mesh's first joint)")
-    root_joint: StringProperty(name="Root Joint", description="The joint the part follows")
+    root_joint: StringProperty(name="Root Joint", description="The joint the part follows", update=_regrid)
     friction: FloatProperty(name="Friction", default=0.0, min=0.0, soft_max=1.0, precision=4,
                             description="Usually 0 to 0.5; some Onimusha files use 30 or 100. The preview uses at "
                                         "most 1")

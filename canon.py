@@ -3,16 +3,17 @@
 Maintenance constraints:
 - The particle values live in the vertex groups ``gpuc_<field>``: weight 0-1 maps linearly onto the Part's range
   and is not normalised. ``sync`` copies them back whenever the mesh structure is intact.
-- On a generated Part, valid rest-position edits are committed as offsets from ``base_co``; changes to topology,
-  particle IDs or grid UV, and any position change on a locked Part, are undone by ``restore``.
-- A generated Part stores its bone grid row by row (row 0 at the top) with the bones' rest heads in armature
-  space; ``sub_rows`` / ``sub_cols`` particles go between bones; each particle is skinned to 4 flat node indices.
-- A locked Part (imported with Keep Structure) stores the file's own triangles, UVs, links with their own tails,
-  6-bone skin by name and normals, and is never regenerated. ``count``, ``faces``, ``face_uvs``, ``links`` and
-  ``particle_uv`` serve both kinds.
-- A Part made from bones can be edited as a mesh (``structure.edit_as_mesh``): it becomes an editable locked
-  Part whose bone grid is kept under ``RECIPE_KEY`` for ``structure.back_to_bones``.
-- An editable locked Part also stores its faces (quads split at a-c, ``topology``), each of their triangles'
+- Every Part stores its mesh under ``KEY``: particles, triangles, UVs, links with their own tails, skin by bone
+  name and normals. ``count``, ``faces``, ``face_uvs``, ``links`` and ``particle_uv`` read it, or a bone grid.
+- A Part made from bones also stores its bone grid under ``RECIPE_KEY`` (row by row, row 0 at the top, the
+  bones' rest heads in armature space; ``sub_rows`` / ``sub_cols`` particles between bones; 4 node indices of
+  skin per particle). While ``ATTACHED_KEY`` is set it follows the grid: ``store`` of a grid writes the grid and
+  its mesh (``_bake``), valid rest-position edits are committed as offsets from ``base_co`` (the faces keep their
+  winding), and changes to topology, particle IDs or UV are undone by ``restore``. ``load`` then also holds the
+  grid's ``GRID_KEYS``. ``locked``: a Part that does not follow a grid.
+- A Part from a file, edited as a mesh (``structure.edit_as_mesh``) or made from a mesh never moves with bones;
+  a position change on a Part that cannot be edited is undone.
+- An editable Part also stores its faces (quads split at a-c, ``topology``), each of their triangles'
   tangent flags and each particle's index in the file (``src``, -1 for a new one); its mesh carries
   ``PARTICLE_ID``, one skin group per bone, deforming by ``SKIN_MODIFIER`` so that Blender's normalizing leaves
   the value groups out, and the flags (``TANGENT_FLAGS``, copied back by ``sync``). A change
@@ -118,30 +119,44 @@ def has(obj) -> bool:
     return KEY in obj.keys()
 
 
+GRID_KEYS = ("rows", "cols", "closed", "sub_rows", "sub_cols", "node_rows", "node_cols", "node_co", "base_co",
+             "rest_offset", "centre", "diagonal_bend")
+
+
 def load(obj) -> dict:
-    c = obj[KEY]
-    if c.get("locked"):
-        return _load_locked(c)
+    """The Part's mesh: particles, faces, links, skin and values (``"attached"``: it follows its bone grid, whose
+    ``GRID_KEYS`` it then also holds)."""
+    out = _load_locked(obj[KEY])
+    out["attached"] = attached(obj)
+    if out["attached"]:
+        g = recipe(obj)
+        out.update({k: g[k] for k in GRID_KEYS})
+    return out
+
+
+def recipe(obj) -> dict:
+    """The bone grid of a Part made from bones, with the values its mesh has while it follows the grid (else the
+    ones it had when it was edited as a mesh)."""
+    c = obj[RECIPE_KEY]
+    vals = obj[KEY] if attached(obj) else c
+    return _load_grid(c, obj, vals)
+
+
+def _load_grid(c, obj, vals) -> dict:
     rows, cols = int(c["rows"]), int(c["cols"])
     co = f32(c["co"]).reshape(-1, 3)
-    if "nodes" in c:
-        nodes, nr, nc = [str(b) for b in c["nodes"]], int(c["node_rows"]), int(c["node_cols"])
-        sr, sc = int(c["sub_rows"]), int(c["sub_cols"])
-        node_co = f32(c["node_co"]).reshape(-1, 3)
-        skin, skin_w = np.asarray(c["skin"], np.int64).reshape(-1, 4), f32(c["skin_w"]).reshape(-1, 4)
-        centre = f32(c["centre"]) if len(c["centre"]) else None
-    else:                                    # v0.1: one particle per bone
-        nodes, nr, nc, sr, sc, node_co = [str(b) for b in c["bones"]], rows, cols, 0, 0, co
-        skin = np.repeat(np.arange(rows * cols)[:, None], 4, axis=1)
-        skin_w = np.tile(f32([1, 0, 0, 0]), (rows * cols, 1))
-        centre = None
+    nodes, nr, nc = [str(b) for b in c["nodes"]], int(c["node_rows"]), int(c["node_cols"])
+    sr, sc = int(c["sub_rows"]), int(c["sub_cols"])
+    node_co = f32(c["node_co"]).reshape(-1, 3)
+    skin, skin_w = np.asarray(c["skin"], np.int64).reshape(-1, 4), f32(c["skin_w"]).reshape(-1, 4)
+    centre = f32(c["centre"]) if len(c["centre"]) else None
     base = f32(c.get("base_co", co)).reshape(-1, 3)
     offset = f32(c.get("rest_offset", np.zeros_like(co))).reshape(-1, 3)
     return {"locked": False, "count": rows * cols, "base_co": base, "rest_offset": offset,
             "rows": rows, "cols": cols, "closed": bool(c["closed"]), "tile": int(c["tile"]), "co": co,
             "nodes": nodes, "node_rows": nr, "node_cols": nc, "sub_rows": sr, "sub_cols": sc, "node_co": node_co,
             "skin": skin, "skin_w": skin_w, "centre": centre, "diagonal_bend": obj.ree_gpuc_part.diagonal_bend,
-            **{n: f32(c[n]) if n in c else np.full(rows * cols, DEFAULTS[n], np.float32) for n in FIELD_NAMES}}
+            **{n: f32(vals[n]) if n in vals else np.full(rows * cols, DEFAULTS[n], np.float32) for n in FIELD_NAMES}}
 
 
 def _load_locked(c) -> dict:
@@ -188,39 +203,78 @@ def store(obj, data: dict) -> None:
         return
     base = f32(data.get("base_co", data["co"]))
     offset = f32(data.get("rest_offset", np.zeros_like(base)))
-    obj[KEY] = {"base_co": fl(base), "rest_offset": fl(offset),
-                "rows": int(data["rows"]), "cols": int(data["cols"]), "closed": int(bool(data["closed"])),
-                "tile": int(data["tile"]), "co": fl(base + offset), "nodes": list(data["nodes"]),
-                "node_rows": int(data["node_rows"]), "node_cols": int(data["node_cols"]),
-                "sub_rows": int(data["sub_rows"]), "sub_cols": int(data["sub_cols"]), "node_co": fl(data["node_co"]),
-                "skin": [int(x) for x in np.asarray(data["skin"]).ravel()], "skin_w": fl(data["skin_w"]),
-                "centre": [] if data["centre"] is None else fl(data["centre"]),
-                **{n: fl(data[n]) for n in FIELD_NAMES}}
+    obj[RECIPE_KEY] = {"base_co": fl(base), "rest_offset": fl(offset),
+                       "rows": int(data["rows"]), "cols": int(data["cols"]), "closed": int(bool(data["closed"])),
+                       "tile": int(data["tile"]), "co": fl(base + offset), "nodes": list(data["nodes"]),
+                       "node_rows": int(data["node_rows"]), "node_cols": int(data["node_cols"]),
+                       "sub_rows": int(data["sub_rows"]), "sub_cols": int(data["sub_cols"]),
+                       "node_co": fl(data["node_co"]), "skin": [int(x) for x in np.asarray(data["skin"]).ravel()],
+                       "skin_w": fl(data["skin_w"]), "centre": [] if data["centre"] is None else fl(data["centre"]),
+                       **{n: fl(data[n]) for n in FIELD_NAMES}}
+    obj[ATTACHED_KEY] = 1
+    _bake(obj, _load_grid(obj[RECIPE_KEY], obj, obj[RECIPE_KEY]))
+
+
+def _bake(obj, g) -> None:
+    """Write a bone grid as the Part's mesh, as the export writes it: faces wound outward and split at Other
+    Diagonal, UVs on the unorm16 steps, the grid's skin, its links with their tails (``OVERRIDES_KEY`` kept per
+    link), new-triangle tangent flags."""
+    from . import fileio
+    from .modules import topology
+    faces, corners = fileio.grid_faces(obj, g, obj.ree_gpuc_part.armature)
+    corners = [[(round(u * 65535) / 65535, round(v * 65535) / 65535) for u, v in f] for f in corners]
+    face_uv = f32([p for f in corners for p in f]).reshape(-1, 2)
+    tris, tri_uv = topology.triangles(faces, face_uv)
+    co = g["co"]
+    own = overrides(obj, g)
+    obj[EDITED_KEY] = [n for k, n in enumerate(s.lower() for s in grid.SHAPES) if k not in own]
+    store(obj, {"locked": True, "count": count(g), "tile": g["tile"], "co": co, "tris": tris, "tri_uv": tri_uv,
+                "links": links(g), "tails": link_tails(obj, g), "nodes": g["nodes"], "skin": g["skin"],
+                "skin_w": g["skin_w"], "normal": topology.normals(co, tris), "faces": faces, "face_uv": face_uv,
+                "src": np.arange(count(g)), "tri_flags": gpuc_build.tangent_flags(faces, corners), "editable": True,
+                **{n: g[n] for n in FIELD_NAMES}})
+
+
+def rebake(obj) -> None:
+    """Write a Part that follows its bone grid again from the grid (after a setting the mesh depends on changed)."""
+    if attached(obj):
+        store(obj, recipe(obj))
+        if obj.mode == "OBJECT":
+            build_mesh(obj)
+        from . import sim
+        sim.invalidate(obj)
 
 
 def locked(obj) -> bool:
-    return has(obj) and bool(obj[KEY].get("locked"))
+    """Whether a Part keeps its mesh as it is: it does not follow a bone grid."""
+    return has(obj) and bool(obj[KEY].get("locked")) and ATTACHED_KEY not in obj.keys()
 
 
-RECIPE_KEY = "ree_gpuc_recipe"           # on a Part made from bones and edited as a mesh: its bone grid's data
+RECIPE_KEY = "ree_gpuc_recipe"           # on a Part made from bones: its bone grid's data
+ATTACHED_KEY = "ree_gpuc_attached"       # on a Part made from bones: it follows its bone grid
+
+
+def attached(obj) -> bool:
+    """Whether a Part follows its bone grid: made from bones and not edited as a mesh."""
+    return has(obj) and ATTACHED_KEY in obj.keys()
 
 
 MESH_KEY = "ree_gpuc_from_mesh"          # on a Part made from a mesh (``structure.from_mesh``)
 
 
 def made_here(obj) -> bool:
-    """Whether a locked Part was made in the editor, from bones or a mesh, rather than imported from a file."""
-    return locked(obj) and (RECIPE_KEY in obj.keys() or MESH_KEY in obj.keys())
+    """Whether a Part was made in the editor, from bones or a mesh, rather than imported from a file."""
+    return has(obj) and (RECIPE_KEY in obj.keys() or MESH_KEY in obj.keys())
 
 
 def from_bones(obj) -> bool:
-    """Whether a locked Part was made from bones and edited as a mesh (``structure.edit_as_mesh``)."""
-    return locked(obj) and RECIPE_KEY in obj.keys()
+    """Whether a Part was made from bones and edited as a mesh (``structure.edit_as_mesh``)."""
+    return has(obj) and RECIPE_KEY in obj.keys() and ATTACHED_KEY not in obj.keys()
 
 
 def editable_part(obj) -> bool:
     """``editable`` without loading the Part (the panel asks on every redraw)."""
-    return locked(obj) and bool(obj[KEY].get("editable")) and "faces" in obj[KEY]
+    return locked(obj) and bool(obj[KEY].get("editable")) and "faces" in obj[KEY] and not attached(obj)
 
 
 def edited(obj) -> bool:
@@ -243,7 +297,7 @@ def faces(d: dict) -> list:
 
 def editable(d: dict) -> bool:
     """Whether a change to the Part's mesh structure is taken as its new structure (``structure.adopt``)."""
-    return d["locked"] and d.get("editable", False) and d.get("faces") is not None
+    return d["locked"] and d.get("editable", False) and d.get("faces") is not None and not d.get("attached")
 
 
 def face_uvs(d: dict) -> np.ndarray:
@@ -460,12 +514,13 @@ def build_mesh(obj) -> None:
     me.from_pydata(d["co"].tolist(), [], faces(d))
     uv = me.uv_layers.new(name=UV_LAYER)
     uv.data.foreach_set("uv", face_uvs(d).astype(np.float32).ravel())
-    if not d["locked"] or editable(d):
+    if d.get("attached") or editable(d):
         if PARTICLE_ID in me.attributes:
             me.attributes.remove(me.attributes[PARTICLE_ID])
         me.attributes.new(PARTICLE_ID, "INT", "POINT").data.foreach_set("value", np.arange(count(d), dtype=np.int32))
-    if not d["locked"]:
-        r, c = np.divmod(np.arange(d["rows"] * d["cols"], dtype=np.int32), d["cols"])
+    if d.get("attached"):
+        cols = recipe(obj)["cols"]
+        r, c = np.divmod(np.arange(count(d), dtype=np.int32), cols)
         me.attributes.new(ROW, "INT", "POINT").data.foreach_set("value", r)
         me.attributes.new(COL, "INT", "POINT").data.foreach_set("value", c)
     me.update()
@@ -597,7 +652,7 @@ def mismatch(obj, positions=True) -> str:
     me.vertices.foreach_get("co", co)
     if positions and not np.array_equal(co, d["co"].ravel()):
         return "particles moved"
-    if not d["locked"]:
+    if d.get("attached"):
         attr = me.attributes.get(PARTICLE_ID)
         if attr is None or attr.domain != "POINT" or attr.data_type != "INT":
             return "particle IDs removed"
@@ -664,19 +719,19 @@ def sync(obj) -> None:
 
 
 def set_positions(obj, co) -> None:
-    """Commits rest positions as offsets from ``base_co``; raises ``ValueError`` for a locked Part or invalid
-    geometry."""
+    """Commits rest positions as offsets from the bone grid's ``base_co``; raises ``ValueError`` for a Part that does
+    not follow its bones, or invalid geometry."""
+    if not attached(obj):
+        raise ValueError("only a Part that follows its bones takes rest positions as offsets")
     d = load(obj)
-    if d["locked"]:
-        raise ValueError("Keep Structure Parts cannot edit rest positions")
     co = f32(co).reshape(count(d), 3)
     from .modules.gpuc_build import validate_geometry
-    tris = [(f[0], f[k], f[k + 1]) for f in faces(d) for k in range(1, len(f) - 1)]
-    validate_geometry(co, tris)
-    c = obj[KEY]
-    c["base_co"] = d["base_co"].ravel().tolist()
-    c["rest_offset"] = (co - d["base_co"]).ravel().tolist()
-    c["co"] = co.ravel().tolist()
+    validate_geometry(co, d["tris"])
+    from .modules import topology
+    r, c = obj[RECIPE_KEY], obj[KEY]
+    r["rest_offset"] = (co - f32(r["base_co"]).reshape(-1, 3)).ravel().tolist()
+    r["co"] = c["co"] = co.ravel().tolist()     # the faces keep the winding they were made with
+    c["normal"] = topology.normals(co, d["tris"]).ravel().tolist()
     from . import sim
     sim.invalidate(obj)
 
@@ -685,17 +740,9 @@ _busy = False
 
 
 def upgrade(obj) -> bool:
-    """Migrates a Part from an older version: adds rest offsets, particle IDs and missing particle values at
-    their defaults; returns whether values were added."""
+    """Adds the particle values a Part from an earlier 1.x lacks (a Keep Structure Part takes its file's, others
+    the defaults); returns whether values were added."""
     c = obj[KEY]
-    if not c.get("locked") and "rest_offset" not in c:
-        d = load(obj)
-        c["base_co"] = d["co"].ravel().tolist()
-        c["rest_offset"] = np.zeros_like(d["co"]).ravel().tolist()
-        # Only a mesh from before rest offsets gets IDs here; on a newer Part ``mismatch`` reports a missing layer.
-        me = obj.data
-        if len(me.vertices) == count(d) and PARTICLE_ID not in me.attributes:
-            me.attributes.new(PARTICLE_ID, "INT", "POINT").data.foreach_set("value", np.arange(count(d), dtype=np.int32))
     missing = [f for f in FIELD_NAMES if f not in c]
     if not missing:
         return False
@@ -719,8 +766,8 @@ def restore(obj) -> str:
     _busy = True
     try:
         upgrade(obj)
-        why = mismatch(obj, positions=locked(obj)) if obj.mode == "OBJECT" else ""
-        if not why and obj.mode == "OBJECT" and not locked(obj):
+        why = mismatch(obj, positions=not attached(obj)) if obj.mode == "OBJECT" else ""
+        if not why and obj.mode == "OBJECT" and attached(obj):
             co = np.array([tuple(v.co) for v in obj.data.vertices], np.float32)
             if not np.array_equal(co, load(obj)["co"]):
                 try:

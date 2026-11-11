@@ -57,7 +57,7 @@ class REE_GPUC_PT_general(_Sidebar, bpy.types.Panel):
         _collections(layout, s)
         layout.operator("ree_gpuc.new_config")
         obj = context.active_object
-        if props.is_part(obj) and obj.select_get() and not canon.locked(obj):
+        if props.is_part(obj) and obj.select_get() and canon.attached(obj):
             layout.operator("ree_gpuc.regenerate_part")
             layout.operator("ree_gpuc.edit_as_mesh", icon="EDITMODE_HLT")
         layout.operator("ree_gpuc.part_from_mesh", icon="MESH_DATA")
@@ -584,7 +584,9 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
             text = obj.get(key)
             if text and text != "ok":
                 layout.label(text=text, icon=icon)
-        if canon.from_bones(obj):
+        if canon.attached(obj):
+            pass
+        elif canon.from_bones(obj):
             layout.label(text="Edited as a mesh: it no longer follows its bones", icon="MESH_DATA")
             layout.operator("ree_gpuc.back_to_bones", icon="LOOP_BACK")
         elif canon.made_here(obj):
@@ -600,7 +602,7 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
             layout.label(text="Imported with Keep Structure: values can be edited, but not regenerated",
                          icon="LOCKED")
         re4_part = props.is_re4_object(obj)
-        re4_kept = re4_part and canon.locked(obj)          # RE4 Keep Structure: Parts and Configs stay the file's
+        re4_kept = re4_part and canon.locked(obj) and not canon.made_here(obj)          # RE4 Keep Structure: Parts and Configs stay the file's
         col = _split(layout)
         identity = col.column()
         identity.enabled = not re4_kept
@@ -631,7 +633,7 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
         if not canon.locked(obj) or canon.made_here(obj):
             _driven_bones(layout, obj)
         _split(layout).prop(p, "link_preset")
-        own = canon.overrides(obj, canon.load(obj)) if canon.has(obj) and not canon.locked(obj) else {}
+        own = canon.overrides(obj, canon.recipe(obj)) if canon.attached(obj) else {}
         if own:
             layout.label(text="Links with their own tail (set the shape to clear):", icon="INFO")
         for k, (name, label, _) in enumerate(props.LINK_SHAPES):

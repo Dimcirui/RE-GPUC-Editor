@@ -1,6 +1,8 @@
 # Change Log
 
-## Unreleased
+## 1.0.0
+
+**Scenes saved with 0.x are not read: import their .gpuc files again.**
 
 ### New
 - **Drive Mesh Vertices** — a Header setting: the cloth moves the mesh's vertices near it directly instead of its bones. Experimental for Wilds and RE9.
@@ -20,6 +22,7 @@
 - **Unkn Particle 0–5** — six more per-particle values a file holds, kept, painted and exported like the others. Effect unknown.
 
 ### Changed
+- **Parts are meshes** — every Part keeps its particles and faces as the export writes them; a Part made from bones also keeps its bones and follows them until edited as a mesh. Its faces now show the export's winding and diagonal.
 - **Spheres** — written as spheres, chosen by Sphere Bits, instead of as capsules whose ends meet. **Check the Capsule and Sphere Bits of a cloth that has spheres.**
 - **Batches** — a cloth of several Parts is split into batches of up to 512 particles between Parts, as the game's files are; it was one batch however large.
 - **Export needs the exported `.mesh`** — a cloth made from bones, and From Mesh joints, are checked against it: Mesh File, else the same-name `.mesh` beside the `.gpuc`, else the one other `.mesh` there with the cloth's skeleton, whose name the `.gpuc` then takes. Without one the export is refused unless Force Export is on.

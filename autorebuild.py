@@ -35,9 +35,9 @@ def _refresh(scene, objects):
             _pending_parts.discard(obj.name)
             try:
                 problems = generate.check(obj)
-                if problems and not canon.locked(obj):
+                if problems and canon.attached(obj):
                     if (arm is not None and arm.type == "ARMATURE"
-                            and all(n in arm.data.bones for n in canon.load(obj)["nodes"])):
+                            and all(n in arm.data.bones for n in canon.recipe(obj)["nodes"])):
                         generate.regenerate(obj)
                         problems = generate.check(obj)
                 _status(obj, "; ".join(problems) if problems else "ok")

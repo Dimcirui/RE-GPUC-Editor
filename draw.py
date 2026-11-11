@@ -128,11 +128,13 @@ def world(obj, d, follow_pose: bool):
 
 
 def particle_normals(obj, d, pos) -> np.ndarray:
-    """Unit normals of the particles at ``pos`` (world), outward: the grid's (``grid.normals``), turned by the rest
-    pose's sign (away from the cloth's axis, or for a flat piece from its root joint) and the Part's Flip Normals."""
+    """Unit normals of the particles at ``pos`` (world), outward, turned by the Part's Flip Normals: a Part that
+    follows its bones takes its grid's (``grid.normals``), turned by the rest pose's sign (away from the cloth's
+    axis, or for a flat piece from its root joint); any other its triangles'."""
     part = obj.ree_gpuc_part
-    if d["locked"]:
+    if not d.get("attached"):
         return _triangle_normals(d, pos) * (-1.0 if part.flip_normals else 1.0)
+    d = canon.recipe(obj)
     rows, cols, closed = d["rows"], d["cols"], d["closed"]
     rest = d["co"].astype(float)
     inside = None
@@ -375,10 +377,10 @@ def _draw_3d():
         sel = _selection(obj, len(pos))
         keep = shown(sel, s.selected_only_edit)
         every = np.ones(len(pos), bool) if keep is None else keep
-        if s.show_base_positions and not d["locked"]:
-            base_d = {**d, "co": d["base_co"]}
+        if s.show_base_positions and d["attached"]:
+            base_d = {**d, "co": canon.recipe(obj)["base_co"]}
             base_pos = world(obj, base_d, s.follow_pose)[0] if obj.mode != "EDIT" else (
-                d["base_co"] @ np.array(obj.matrix_world, float)[:3, :3].T + np.array(obj.matrix_world, float)[:3, 3])
+                base_d["co"] @ np.array(obj.matrix_world, float)[:3, :3].T + np.array(obj.matrix_world, float)[:3, 3])
             # The reference lines compare rest positions, never the simulation's deformation.
             rest_pos = world(obj, d, s.follow_pose)[0]
             base_points.append(base_pos[every])
@@ -582,10 +584,11 @@ def _draw_uv():
         if not props.is_part(obj) or not canon.has(obj):
             continue
         d = canon.load(obj)
-        uv = canon.particle_uv(d)
+        g = canon.recipe(obj) if d["attached"] else None
+        uv = canon.particle_uv(g if g is not None else d)
         c = particle_colours(obj, {**d, **canon.values(obj, d)}, s.colour_by)
-        if not d["locked"] and d["closed"]:          # the seam column also at u = tile + 1
-            seam = np.arange(0, d["rows"] * d["cols"], d["cols"])
+        if g is not None and g["closed"]:              # the seam column also at u = tile + 1
+            seam = np.arange(0, g["rows"] * g["cols"], g["cols"])
             uv = np.vstack([uv, uv[seam] + (1.0, 0.0)])
             c = np.vstack([c, c[seam]])
         px = [region.view2d.view_to_region(float(u), float(v), clip=False) for u, v in uv]
