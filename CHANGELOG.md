@@ -10,32 +10,32 @@
 - **RE4 cloth from bones** — a cloth created for RE4 now exports for RE4, driving joints or LOD0's vertices.
 - **RE4 collision planes** — Collision From Bones adds a Plane for RE4 cloth; spheres are written as spheres.
 - **Force Export** — in the export dialog: exports without a matching `.mesh`, the joints taken from the scene's weights.
-- **Edit Keep Structure Parts** — move, add, remove and reconnect particles of an imported cloth in Edit Mode, cut slits and repaint its skin; the export writes the file again from the Parts. Works on game files that Rebuild from Bones cannot take. **Import a cloth again to edit it if an earlier version imported it.**
+- **Edit imported Parts** — move, add, remove and reconnect particles of an imported cloth in Edit Mode, cut slits and repaint its skin; the export writes the file again from the Parts. Works on game files whose parts do not attach to bones. **Import a cloth again to edit it if an earlier version imported it.**
 - **Collision planes and spheres for Wilds, RE9 and Onimusha** — a file's own planes and spheres import as objects and export to their own sections, chosen by the Part's Plane and Sphere Bits; Collision From Bones makes planes for every game.
-- **Triangle tangent flags** — on an editable Keep Structure Part's faces, as attributes you can read and set; new triangles whose UVs span no area get the flag the game's files give them.
-- **Rebuild from Bones keeps the file** — it imports with Keep Structure and attaches each part to its bones, so a part that is no bone grid no longer sends the whole file to Keep Structure, and driven joints keep the file's binds.
-- **Attach to Bones** — a Keep Structure Part found to be a grid of bone chains follows its bones, as a rebuilt one does, and stays its file's Part.
+- **Triangle tangent flags** — on an editable imported Part's faces, as attributes you can read and set; new triangles whose UVs span no area get the flag the game's files give them.
+- **Attach to Bones** — an imported Part found to be a grid of bone chains follows its bones, and stays its file's Part.
 - **Export in a pose** — particles are written where the current pose carries them, as RE Mesh Editor writes the mesh, so a cloth exported with its posed mesh still fits it.
-- **Keep Structure cloths in another game** — a Wilds, RE9 or Onimusha file kept as imported exports for the other two.
+- **Imported cloths in another game** — a Wilds, RE9 or Onimusha file kept as imported exports for the other two.
 - **Part from Mesh** — make a Part from any mesh with a UV map and bone weights; it exports and edits like an imported one.
 - **Driven Bones** — a Part setting: drive every bone it is skinned to, or only the bones listed.
-- **New Parts in Keep Structure cloths** — add Parts made from bones to an imported Wilds, RE9 or Onimusha cloth; bones its file does not drive are driven From Mesh.
-- **Edit as Mesh** — a Part made from bones becomes an editable mesh, as a Keep Structure Part is, and exports as before; Regenerate from Bones goes back.
+- **New Parts in imported cloths** — add Parts made from bones to an imported Wilds, RE9 or Onimusha cloth; bones its file does not drive are driven From Mesh.
+- **Edit as Mesh** — a Part made from bones becomes an editable mesh, as an imported Part is, and exports as before; Regenerate from Bones goes back.
 - **Normalize Skin** — in the Part panel of an editable Part: each particle keeps at most the game's number of bones, summing to 1, as the export writes them. The Part now follows the pose, and Blender's Normalize leaves its value groups alone.
 - **Second Joint Hash** — shown in the Collision panel for a file's spheres that hold one. Effect unknown.
 - **Unkn Particle 0–5** — six more per-particle values a file holds, kept, painted and exported like the others. Effect unknown.
 
 ### Changed
+- **One import for a new cloth** — New Cloth replaces Keep Structure and Rebuild from Bones: it keeps the file, and its Attach to Bones option (on by default) attaches each part that is a bone grid. A part that is not stays as in the file instead of sending the whole file back, and driven joints keep the file's binds. Force Rebuild is now Even If Changed.
 - **Parts are meshes** — every Part keeps its particles and faces as the export writes them; a Part made from bones also keeps its bones and follows them until edited as a mesh. Its faces now show the export's winding and diagonal.
 - **Spheres** — written as spheres, chosen by Sphere Bits, instead of as capsules whose ends meet. **Check the Capsule and Sphere Bits of a cloth that has spheres.**
 - **Batches** — a cloth of several Parts is split into batches of up to 512 particles between Parts, as the game's files are; it was one batch however large.
 - **Export needs the exported `.mesh`** — a cloth made from bones, and From Mesh joints, are checked against it: Mesh File, else the same-name `.mesh` beside the `.gpuc`, else the one other `.mesh` there with the cloth's skeleton, whose name the `.gpuc` then takes. Without one the export is refused unless Force Export is on.
 - **RE4 Header, Config and Part values** — named by what they may do; their tooltips say their effect is unknown. A new RE4 Config starts at values that move the cloth.
-- **Onimusha files that drive mesh vertices** — now import with Keep Structure instead of being refused.
-- **Rebuild from Bones** — says plainly when a part is no bone grid.
+- **Onimusha files that drive mesh vertices** — now import as they are instead of being refused.
+- **Attach to Bones** — says plainly when a part is no bone grid.
 
 ### Fixed
-- **Collision planes and spheres of some game files** — they were read as other data: they now import, and a rebuilt file keeps them.
+- **Collision planes and spheres of some game files** — they were read as other data: they now import, and an exported cloth keeps them.
 
 ## 0.4.1
 

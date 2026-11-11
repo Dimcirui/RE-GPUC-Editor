@@ -106,7 +106,7 @@ REE_GPUC_Header = type("REE_GPUC_Header", (bpy.types.PropertyGroup,), {
             description="A .clsp the RE Chain Editor imported, which the cloth will collide with in game: its "
                         "shapes name the CLSP Flags' bits and the preview collides with the ones a Part takes "
                         "(not written to the .gpuc)"),
-        # RE4 header values named by guess (a cloth made from bones; Keep Structure keeps the file's)
+        # RE4 header values named by guess (a cloth made from bones; an imported one keeps the file's)
         "re4_unk44": IntProperty(name="Collision Iterations", default=0,
                                  description="RE4 only. Effect unknown; may set the collision iterations. "
                                              "Usually 0 (0 to 3); higher with more colliders"),
@@ -555,12 +555,12 @@ class REE_GPUC_Part(bpy.types.PropertyGroup):
     other_diagonal: BoolProperty(name="Other Diagonal", default=False, update=_regrid,
                                  description="Split each quad into its two triangles along the other diagonal (from "
                                              "the lower left to the upper right corner): some files are made so. "
-                                             "Rebuild from Bones finds it; the triangles give the particles' frames "
+                                             "Attach to Bones finds it; the triangles give the particles' frames "
                                              "and the collision edges")
     diagonal_bend: BoolProperty(name="Diagonal Bend", default=True, update=_regrid,
                                 description="Give each quad diagonal a bend link (type 2) besides its shear link. "
                                             "Off: the diagonals carry shear links alone, as some files are made. "
-                                            "Rebuild from Bones finds it")
+                                            "Attach to Bones finds it")
     uv_tile: IntProperty(name="UV tile", description="The part's place on the grid UV (u from this to this + 1)")
     # the part block (section 6); its config index and name hash follow from the hierarchy and the name
     part_name: StringProperty(name="Name", default="_p000", description="The part block's name (usually _p000, _p001, ...)")

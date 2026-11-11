@@ -7,7 +7,7 @@ Parts and the links' tail; the preview holds each pair on one point (``sim.weld`
 Maintenance constraints:
 - For Parts made from bones, ``pairs`` finds each shared bone's lattice particle again on every call, so a
   regenerated Part keeps its welds; the export leaves out and reports a weld that has ``problems``.
-- A Keep Structure cloth keeps its file's pairs under ``PAIRS_KEY``; its export writes the tail but cannot add
+- An imported cloth keeps its file's pairs under ``PAIRS_KEY``; its export writes the tail but cannot add
   or remove a weld."""
 import bpy
 import numpy as np

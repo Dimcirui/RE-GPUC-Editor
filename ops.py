@@ -45,14 +45,11 @@ def _mesh_guess(context):
 
 
 IMPORT_MODES = [
+    ("NEW", "New Cloth", "Create a new GPUC collection from the file: its particles, faces, links, skinning and values, "
+                         "with the file kept for export. Values can be edited, and the particles and faces in Edit "
+                         "Mode"),
     ("UPDATE", "Update Existing", "Write the file's values onto the GPUC collection it was imported or exported "
                                   "from. Refused if the two structures differ"),
-    ("KEEP", "Keep Structure", "Create a new GPUC collection with the file's particles, faces, links and skinning. "
-                               "Every value can be edited, and the particles and faces in Edit Mode; the parts are not regenerated "
-                               "from bones"),
-    ("REBUILD", "Rebuild from Bones", "Import with Keep Structure and attach each part to the mesh's bones, so it can "
-                                      "be regenerated. A part no grid of bones reproduces stays as in the file; "
-                                      "parts this editor made from bones always attach"),
 ]
 
 
@@ -65,17 +62,21 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
     filter_glob: bpy.props.StringProperty(default="*.gpuc.*", options={"HIDDEN"})
     files: bpy.props.CollectionProperty(type=bpy.types.OperatorFileListElement, options={"HIDDEN", "SKIP_SAVE"})
     directory: bpy.props.StringProperty(subtype="DIR_PATH", options={"HIDDEN", "SKIP_SAVE"})
-    import_mode: bpy.props.EnumProperty(name="Import Mode", items=IMPORT_MODES, default="REBUILD")
+    import_mode: bpy.props.EnumProperty(name="Import Mode", items=IMPORT_MODES, default="NEW")
     gpuc_collection: bpy.props.StringProperty(name="", description="The GPUC collection that receives the file's values")
     mesh_collection: bpy.props.StringProperty(
         name="", description="The RE Mesh Editor collection of the mesh this cloth belongs to. Its armature is used "
-                             "to name bones, find driven joints and place capsules. Optional for Keep Structure, "
-                             "which then imports the shape only")
-    force_rebuild: bpy.props.BoolProperty(
-        name="Force Rebuild", default=False,
-        description="Attach a part to its bones even when its bone grid changes it (positions, links or skinning "
-                    "as the editor generates them). The differences are reported. Parts that are not a grid of bone "
-                    "chains still stay as in the file")
+                             "to name bones, find driven joints, place capsules and attach parts to bones. Without "
+                             "it a new cloth is the shape only")
+    attach_bones: bpy.props.BoolProperty(
+        name="Attach to Bones", default=True,
+        description="Attach each part to the mesh's bones, so it is regenerated when they move and its density can "
+                    "change. A part that no grid of bone chains reproduces stays as in the file. Parts this editor "
+                    "made from bones always attach. Needs the Mesh Collection")
+    attach_changed: bpy.props.BoolProperty(
+        name="Even If Changed", default=False,
+        description="Attach a part even when its bone grid changes it (positions, links or skinning as the editor "
+                    "generates them). The differences are reported")
 
     def invoke(self, context, event):
         if not self.mesh_collection:
@@ -100,14 +101,17 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
         if self.import_mode == "UPDATE":
             layout.label(text="GPUC Collection:")
             layout.prop_search(self, "gpuc_collection", bpy.data, "collections", icon="COLLECTION_COLOR_06")
-        layout.label(text="Mesh Collection:" if self.import_mode == "REBUILD" else "Mesh Collection (optional):")
+        layout.label(text="Mesh Collection:" if self.import_mode == "NEW" and self.attach_bones
+                     else "Mesh Collection (optional):")
         layout.prop_search(self, "mesh_collection", bpy.data, "collections")
-        if self.import_mode == "KEEP" and not self.mesh_collection:
-            layout.label(text="Without a mesh: shape only, cannot be posed", icon="INFO")
-        if self.import_mode == "REBUILD":
-            layout.prop(self, "force_rebuild")
+        if self.import_mode == "NEW":
+            layout.prop(self, "attach_bones")
+            sub = layout.row()
+            sub.enabled = self.attach_bones
+            sub.separator()
+            sub.prop(self, "attach_changed")
             if not self.mesh_collection:
-                layout.label(text="No mesh collection: imports with Keep Structure", icon="INFO")
+                layout.label(text="Without a mesh: shape only, not attached to bones, cannot be posed", icon="INFO")
 
     def execute(self, context):
         paths = self.paths()
@@ -122,12 +126,12 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
         if context.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
         mode = self.import_mode
-        fell_back = []                                         # (file, why) imported with Keep Structure instead
-        if mode == "REBUILD" and mesh is None:
-            mode = "KEEP"
-            fell_back.append(("", "no mesh collection (Rebuild from Bones needs the mesh's bones)"))
-            self.report({"WARNING"}, "No mesh collection: imported with Keep Structure (Rebuild from Bones needs "
-                                     "the mesh's bones)")
+        attach = mode == "NEW" and self.attach_bones
+        fell_back = []                                         # (file, why) no Part attached to bones
+        if attach and mesh is None:
+            attach = False
+            fell_back.append(("", "no mesh collection (attaching parts needs the mesh's bones)"))
+            self.report({"WARNING"}, "No mesh collection: no part attached to bones (that needs the mesh's bones)")
         done = []
         for path in paths:
             name = os.path.basename(path)
@@ -137,8 +141,8 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
                     if coll is None or not props.is_gpuc_collection(coll):
                         return refused(self, "Choose the GPUC collection that receives the values")
                     notes = fileio.update_existing(path, coll, mesh)
-                elif mode == "REBUILD":
-                    coll, notes = fileio.import_rebuild(path, mesh, self.force_rebuild)
+                elif attach:
+                    coll, notes = fileio.import_attach(path, mesh, self.attach_changed)
                 else:
                     coll, notes = fileio.import_keep(path, mesh)
             except fileio.ImportProblem as e:
@@ -151,8 +155,8 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
             done.append(name)
             for note in notes:
                 self.report({"WARNING"}, f"{name}: {note}" if len(paths) > 1 else note)
-                if note.startswith("Not rebuilt ("):           # note format set by fileio.import_rebuild
-                    fell_back.append((name, note[len("Not rebuilt ("):note.rfind("): imported with")]))
+                if note.startswith(fileio.NOT_ATTACHED):       # note format set by fileio.import_attach
+                    fell_back.append((name, note[len(fileio.NOT_ATTACHED):note.rfind("): ")]))
         if fell_back and done:
             _fell_back_popup(context, fell_back)
         if not done:
@@ -163,7 +167,7 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
 
 
 def _fell_back_popup(context, fell_back) -> None:
-    """List in a popup the files imported with Keep Structure instead of rebuilt; does nothing in background mode."""
+    """List in a popup the files none of whose parts attached to bones; does nothing in background mode."""
     if bpy.app.background:
         return
     import textwrap
@@ -176,8 +180,8 @@ def _fell_back_popup(context, fell_back) -> None:
             for k, line in enumerate(textwrap.wrap(why, 90)):
                 col.label(text=line, icon="BLANK1" if k or name else "INFO")
         col.separator()
-        col.label(text="Their Parts keep the file's structure: edit values, or particles and faces in Edit Mode")
-    context.window_manager.popup_menu(draw, title="Imported with Keep Structure, not rebuilt", icon="ERROR")
+        col.label(text="Their Parts stay as in the file: edit values, or particles and faces in Edit Mode")
+    context.window_manager.popup_menu(draw, title="Not attached to bones", icon="ERROR")
 
 
 class REE_GPUC_FH_import(bpy.types.FileHandler):
@@ -216,8 +220,8 @@ class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
                                       "one the last export used", options={"SKIP_SAVE"})
     joint_indices: bpy.props.EnumProperty(
         name="Joint Indices", items=fileio.JOINT_INDICES, default="FILE",
-        description="How driven joint indices are written. Cloth imported with Keep Structure defaults to As "
-                    "Imported; cloth made from bones always uses From Mesh")
+        description="How driven joint indices are written. An imported cloth defaults to As Imported; cloth made "
+                    "from bones always uses From Mesh")
     force_export: bpy.props.BoolProperty(
         name="Force Export", default=False, options={"SKIP_SAVE"},
         description="Export without an exported .mesh to check the cloth against: the driven joints' indices then "
@@ -239,7 +243,7 @@ class REE_GPUC_OT_export(bpy.types.Operator, ExportHelper):
             folder = os.path.dirname(last or source or context.scene.get(EXPORT_KEY, ""))
             self.filepath = os.path.join(folder, name) if folder else name
         target = bpy.data.collections.get(self.target_collection)
-        # A Keep Structure cloth assumes its original mesh; a cloth made from bones assumes a mesh re-exported by the
+        # An imported cloth assumes its original mesh; a cloth made from bones assumes a mesh re-exported by the
         # RE Mesh Editor, whose bone indices follow the new weights.
         self.joint_indices = "FILE" if fileio.keeps_structure(target) else "MESH"
         return super().invoke(context, event)
@@ -1174,9 +1178,9 @@ class REE_GPUC_OT_part_from_mesh(bpy.types.Operator):
 
 
 class REE_GPUC_OT_attach_to_bones(bpy.types.Operator):
-    """Make a Part imported with Keep Structure follow its bones, as Rebuild from Bones makes a Part: found as a
-    grid of bone chains, it is regenerated when they move and its density can change. Refused, the Part left as it
-    is, when no such grid makes the same particles, links and skin"""
+    """Make a Part imported from its file follow its bones: found as a grid of bone chains, it is regenerated when
+    they move and its density can change. Refused, the Part left as it is, when no such grid makes the same
+    particles, links and skin"""
     bl_idname = "ree_gpuc.attach_to_bones"
     bl_label = "Attach to Bones"
     bl_options = {"REGISTER", "UNDO"}

@@ -345,7 +345,7 @@ class REE_GPUC_PT_object_header(_ObjectPanel, bpy.types.Panel):
         h = context.object.ree_gpuc_header
         col = _split(self.layout)
         sub = col.column()
-        sub.enabled = "ree_gpuc_raw" not in context.object.keys()     # Keep Structure: the game is the file's
+        sub.enabled = "ree_gpuc_raw" not in context.object.keys()     # an imported cloth: the game is the file's
         sub.prop(h, "game")
         keep = "ree_gpuc_raw" in context.object.keys()
         if h.game in props.VERTEX_DRIVE_GAMES and not keep:
@@ -595,15 +595,15 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
             layout.label(text="Particles or faces edited: the file is written again from the Parts on export",
                          icon="MESH_DATA")
         elif canon.editable_part(obj):
-            layout.label(text="Imported with Keep Structure: edit particles and faces in Edit Mode", icon="UNLOCKED")
+            layout.label(text="As in its file: edit particles and faces in Edit Mode", icon="UNLOCKED")
             layout.operator("ree_gpuc.attach_to_bones", icon="BONE_DATA")
         if canon.editable_part(obj):
             _skin_rows(layout, obj)
         elif canon.locked(obj):
-            layout.label(text="Imported with Keep Structure: values can be edited, but not regenerated",
+            layout.label(text="As in its file: values can be edited, not its particles or faces",
                          icon="LOCKED")
         re4_part = props.is_re4_object(obj)
-        re4_kept = re4_part and canon.locked(obj) and not canon.made_here(obj)          # RE4 Keep Structure: Parts and Configs stay the file's
+        re4_kept = re4_part and canon.locked(obj) and not canon.made_here(obj)          # RE4 imported: Parts and Configs stay the file's
         col = _split(layout)
         identity = col.column()
         identity.enabled = not re4_kept

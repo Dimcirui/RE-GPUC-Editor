@@ -15,7 +15,7 @@ class ExportError(Exception):
 def export_bytes(collection, version=None) -> bytes:
     """Return the collection as .gpuc bytes; raise ``ExportError`` (message for the user) when it cannot be built.
 
-    ``version``: the file extension's number, e.g. 241111760; None for the cloth's own game. A Keep Structure cloth
+    ``version``: the file extension's number, e.g. 241111760; None for the cloth's own game. An imported cloth
     is written over its stored file with the driven joints as imported; a cloth made from bones takes its joints
     from its mesh."""
     if not props.is_gpuc_collection(collection):

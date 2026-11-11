@@ -1,8 +1,8 @@
-"""Import .gpuc files as cloths (parameters, Keep Structure, Rebuild from Bones, Update Existing) and export cloths
+"""Import .gpuc files as cloths (a new cloth, its Parts attached to bones or not; Update Existing) and export cloths
 as .gpuc.
 
 Wilds, RE9 and Onimusha files share blocks and records; their headers (``gp.header_fields``), RE9's skin indices
-(``gpuc.read_skin``) and Onimusha's section table differ. RE4 files import with Keep Structure only; a cloth made
+(``gpuc.read_skin``) and Onimusha's section table differ. RE4 Parts are not attached to bones; a cloth made
 from bones exports for RE4 through ``re4_build``. The header's ``game`` decides which layout an export writes.
 
 Maintenance constraints:
@@ -92,7 +92,7 @@ def import_params(path: str, merge=None, arm=None, configs=True, parts=True, val
     """Import the file's parameters into a new <file>.gpuc collection or into ``merge``; return notes on blocks
     with no target. Part blocks go to the Parts by name order; particles stay the editor's own."""
     if path.endswith(re4.EXT):
-        raise ImportProblem("RE4 supports Keep Structure import only")
+        raise ImportProblem("RE4 imports as a new cloth only")
     r = gp.read(open(path, "rb").read())
     notes = []
     coll = merge or generate.new_collection(file_stem(path), arm)
@@ -810,7 +810,7 @@ def export(coll, path: str, mesh_coll=None, joints: str = "FILE", game: str = ""
     """Write the cloth as a .gpuc of ``game`` (blank: the header's) and return notes; raises ``ExportError``.
     A cloth made from bones, and From Mesh joints, calibrate against the exported .mesh (``export_mesh``), which
     may rename the file (the header's EXPORTED_KEY is the path written); ``force`` exports without one, the joints
-    then taken from the scene's weights. A Keep Structure cloth As Imported needs none. The .mesh found is
+    then taken from the scene's weights. An imported cloth As Imported needs none. The .mesh found is
     remembered for later exports and Wilds-Dynamics."""
     notes = []
     ref = reference_mesh_file(coll)
@@ -875,7 +875,7 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
                  from_mesh=True, source=None) -> tuple:
     """Write the cloth as a whole file of the game ``ext`` from its Parts: particles, faces, skin and values from
     their meshes, links from their faces. ``source``: (the stored file's ``Gpuc``, each of its particles' part) of
-    a Keep Structure cloth, whose Parts come first in the file's order and batches, the new ones after.
+    an imported cloth, whose Parts come first in the file's order and batches, the new ones after.
 
     Driven joints: a file's keep its bind, and its particles and weights while they all remain and no new particle
     is skinned to its bone; otherwise they take the heaviest ``MIN_SLOTS`` particles skinned to that bone, by
@@ -1244,7 +1244,7 @@ def _weld_links(coll, starts) -> list:
 
 def _build_keep(coll, head, cfg_objs, part_objs, from_mesh=False, mesh_coll=None, mesh_file="",
                 gpuc_path="", ext=None) -> tuple:
-    """Write a Keep Structure cloth's values over its stored file, the structure unchanged; ``from_mesh`` re-indexes
+    """Write an imported cloth's values over its stored file, the structure unchanged; ``from_mesh`` re-indexes
     the driven joints by their bones among the mesh's weighted bones (``export_weighted``). New Parts, an edited
     Part or another game ``ext`` write the whole file again (``_build_cloth``)."""
     notes = []
@@ -1265,7 +1265,7 @@ def _build_keep(coll, head, cfg_objs, part_objs, from_mesh=False, mesh_coll=None
     if (len(file_objs) < len(part_objs) or any(canon.edited(o) or canon.attached(o) for o in file_objs)
             or ext != game or posed):
         if len(file_objs) != len(counts):
-            raise ExportError(f"it has {len(file_objs)} of its file's {len(counts)} Parts: a Keep Structure cloth "
+            raise ExportError(f"it has {len(file_objs)} of its file's {len(counts)} Parts: an imported cloth "
                               f"cannot remove its file's Parts")
         return _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll, mesh_file, gpuc_path, from_mesh,
                             (g, f_part))
@@ -1291,7 +1291,7 @@ def _build_keep(coll, head, cfg_objs, part_objs, from_mesh=False, mesh_coll=None
             obj = welded.get((a, b))
             if obj is None:
                 raise ExportError(f"the file welds particle {a} (part {i}) to {b} (part {int(f_part[b])}) and no "
-                                  f"weld of the cloth does: a Keep Structure cloth cannot take a weld out")
+                                  f"weld of the cloth does: an imported cloth cannot take a weld out")
             if obj.get(weld.EDITED_KEY):
                 s2[k * 16 + 8:k * 16 + 16] = gp.tail_bytes(*obj.ree_gpuc_weld.tail())
             continue
@@ -1324,7 +1324,7 @@ def _write_tangent_flags(g, part_objs, starts) -> None:
 
 
 def file_part_objects(part_objs) -> list:
-    """The Parts of a Keep Structure cloth that are its file's, in the file's part order; the others were made in
+    """The Parts of an imported cloth that are its file's, in the file's part order; the others were made in
     the editor."""
     return sorted((o for o in part_objs if canon.file_part(o)), key=lambda o: int(o[canon.FILE_KEY]))
 
@@ -1428,7 +1428,7 @@ def _build_re4(coll, head, cfg_objs, part_objs):
     notes = (["The armature is posed, but an RE4 file keeps its rest positions. Put the armature in its rest pose "
               "to match a mesh exported now"] if posed_armature(arm) else [])
     if head.get("ree_gpuc_re4_mapping") != 2:
-        raise ExportError("an older version of the add-on imported this RE4 cloth: import the original file again with Keep Structure")
+        raise ExportError("an older version of the add-on imported this RE4 cloth: import the original file again")
     raw = stored_file(coll)
     source = re4.File(raw)
     f = source.geometry()
@@ -1655,9 +1655,9 @@ def _write_blocks(g, h, cfg_objs, part_objs, part_vals, notes, arm=None, starts=
     struct.pack_into("<I", header, gp.offset_of(game, "configs"), len(cfg_objs))
 
 
-# --- Keep Structure -----------------------------------------------------------------------------------------
+# --- imported cloths ------------------------------------------------------------------------------------------
 
-RAW_KEY = "ree_gpuc_raw"                 # on the header of a Keep Structure cloth: its file (base64)
+RAW_KEY = "ree_gpuc_raw"                 # on the header of an imported cloth: its file (base64)
 ROOT_HASH_KEY = "ree_gpuc_root_hash"     # on a Part whose root joint the armature lacks: the file's hash
 
 
@@ -1754,7 +1754,7 @@ def file_parts(raw: bytes) -> dict:
 
 
 def stored_part_values(obj, fields) -> dict:
-    """The particle values ``fields`` of a Keep Structure Part as its stored file holds them; {} when the cloth keeps
+    """The particle values ``fields`` of an imported Part as its stored file holds them; {} when the cloth keeps
     no file or the Part's particles are no longer the file's."""
     coll = reference.cloth_of(obj)
     if coll is None or not keeps_structure(coll) or canon.edited(obj):
@@ -1784,7 +1784,7 @@ def _shape(typ, a, b, pos) -> int:
     return 0 if gpuc_build.direction(pos[a], pos[b]) == "vert" else 1
 
 
-JOINTS_KEY = "ree_gpuc_joints"           # on a Keep Structure header: each driven joint's bone ("" none found)
+JOINTS_KEY = "ree_gpuc_joints"           # on an imported cloth's header: each driven joint's bone ("" none found)
 
 
 def _bind(f: dict, j: dict) -> np.ndarray:
@@ -1794,7 +1794,7 @@ def _bind(f: dict, j: dict) -> np.ndarray:
 
 
 def locked_problems(obj) -> list:
-    """Return problems of a Keep Structure Part against its armature: missing skin or driven bones, or driven
+    """Return problems of an imported Part against its armature: missing skin or driven bones, or driven
     bones over 1 mm from where the file binds them (the import's tolerance); [] when none or not applicable."""
     coll = reference.cloth_of(obj)
     arm = obj.ree_gpuc_part.armature
@@ -1828,7 +1828,7 @@ def locked_problems(obj) -> list:
     moved = [x for x in far if x > 1e-3]
     if moved:
         return [f"{len(moved)} driven bones moved off where the file binds them (up to {max(moved) * 100:.2f} cm): "
-                f"the file's structure no longer fits the mesh (import it again with Rebuild from Bones, or move them "
+                f"the file's structure no longer fits the mesh (import it again with Attach to Bones, or move them "
                 f"back)"]
     return []
 
@@ -1905,7 +1905,7 @@ NO_MESH = ("No mesh collection: the shape only. The skin bones go by index (no p
 
 
 def import_keep(path: str, mesh_coll=None) -> tuple:
-    """Import the file as a new Keep Structure collection (locked Parts, the file stored on the header for export);
+    """Import the file as a new cloth (its Parts as in the file, the file stored on the header for export);
     return (collection, notes). Without a mesh collection the header is rotated as the RE Mesh Editor rotates its
     armature, so the shape lands where the mesh import would put it."""
     raw = open(path, "rb").read()
@@ -2012,7 +2012,7 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
 
 def _keep_welds(coll, f, notes) -> list:
     """Create one weld per pair of parts the file links, with the commonest tail and type; return the names of
-    welds whose links differ. A Keep Structure cloth still exports each link's own tail until the weld is edited."""
+    welds whose links differ. An imported cloth still exports each link's own tail until the weld is edited."""
     objs = by_name(props.parts(coll))
     start = {int(p): int(np.argmax(f["part_of"] == p)) for p in np.unique(f["part_of"])}
     groups = collections.defaultdict(list)
@@ -2089,12 +2089,14 @@ def _keep_shapes(coll, arm, f, by_hash, notes) -> None:
 
 
 def own_shapes(coll) -> bool:
-    """Whether the cloth writes its spheres and planes to their own sections (else, a Keep Structure cloth imported
+    """Whether the cloth writes its spheres and planes to their own sections (else, a cloth imported
     before they were imported, its file's sections stay and its spheres are capsules)."""
     return not keeps_structure(coll) or SHAPES_KEY in props.header(coll).keys()
 
 
-# --- Rebuild from Bones -------------------------------------------------------------------------------------
+# --- attaching an imported cloth's Parts to bones -----------------------------------------------------------
+
+NOT_ATTACHED = "Not attached ("           # starts the first note of a file no Part of which attached (``ops``)
 
 def _recognise(f: dict, i: int, bones: list) -> tuple:
     """Return (layout, links {(a, b, type): tail}, ``grid.links``) for a file part the generator could make, else
@@ -2181,15 +2183,15 @@ def _preset_of(part) -> str:
     return "CUSTOM"
 
 
-def import_rebuild(path: str, mesh_coll, force: bool = False) -> tuple:
-    """Import the file with Keep Structure and attach each Part to its bones (``structure.attach_to_bones``); return
-    (collection, notes). A Part that is no grid of bones, or whose grid changes it (kept with ``force``), stays as
-    imported; when none attaches, the first note starts "Not rebuilt (" (parsed by ``ops``). A file that drives mesh
-    vertices is rebuilt as a generated cloth (``_rebuild_generated``)."""
+def import_attach(path: str, mesh_coll, force: bool = False) -> tuple:
+    """Import the file as a new cloth (``import_keep``) and attach each Part to its bones
+    (``structure.attach_to_bones``); return (collection, notes). A Part that is no grid of bones, or whose grid
+    changes it (kept with ``force``), stays as imported; when none attaches, the first note starts ``NOT_ATTACHED``.
+    A file that drives mesh vertices is made a cloth generated from the bones (``_rebuild_generated``)."""
     raw = open(path, "rb").read()
     if path.endswith(re4.EXT):
         coll, notes = import_keep(path, mesh_coll)
-        return coll, ["RE4 imported with Keep Structure; Rebuild from Bones is not supported"] + notes
+        return coll, ["RE4 Parts are not attached to bones"] + notes
     f = file_parts(raw)
     if f["vertex"]:
         return _rebuild_generated(path, mesh_coll, force)
@@ -2212,10 +2214,9 @@ def import_rebuild(path: str, mesh_coll, force: bool = False) -> tuple:
         if text.startswith(structure.CHANGED):
             changed.append(f"{name}: {text[len(structure.CHANGED):text.index(')')]}")
     if len(left) == len(objs):
-        return coll, [f"Not rebuilt ({'; '.join(left[:2])}"
-                      f"{f' and {len(left) - 2} more' if len(left) > 2 else ''}): imported with Keep Structure"] + notes
-    notes = [f"Force Rebuild changed: {c}" for c in changed] + \
-        [f"Not rebuilt, kept as in the file: {why}" for why in left] + notes
+        return coll, [f"{NOT_ATTACHED}{'; '.join(left[:2])}"
+                      f"{f' and {len(left) - 2} more' if len(left) > 2 else ''}): its Parts stay as in the file"] + notes
+    notes = [f"Attached, changed: {c}" for c in changed] + [f"Not attached to bones: {why}" for why in left] + notes
     return coll, list(dict.fromkeys(notes))
 
 
@@ -2224,9 +2225,9 @@ def _rebuild_generated(path: str, mesh_coll, force: bool = False) -> tuple:
 
     Each link shape takes its commonest tail, the other links keep theirs (``canon.set_overrides``), and the
     particles keep their offsets from the bones. The rebuild is kept only when its export matches the file's
-    ``fingerprint``; otherwise the file is imported with Keep Structure and the first note starts "Not rebuilt (" (parsed by
-    ``ops``). ``force`` keeps a mismatching rebuild, but a part that is no grid of bones still falls back. Used for
-    files that drive mesh vertices: their Keep Structure Parts cannot be attached to bones."""
+    ``fingerprint``; otherwise the file is imported as it is (``import_keep``) and the first note starts
+    ``NOT_ATTACHED``. ``force`` keeps a mismatching rebuild, but a part that is no grid of bones still falls back.
+    Used for files that drive mesh vertices: their imported Parts cannot be attached to bones."""
     raw = open(path, "rb").read()
     arm = mesh_armature(mesh_coll)
     f = file_parts(raw)
@@ -2241,7 +2242,7 @@ def _rebuild_generated(path: str, mesh_coll, force: bool = False) -> tuple:
 
     def keep(why):
         coll, notes = import_keep(path, mesh_coll)
-        return coll, [f"Not rebuilt ({why}): imported with Keep Structure"] + notes
+        return coll, [f"{NOT_ATTACHED}{why}): its Parts stay as in the file"] + notes
 
     found = []
     for i in range(len(r["parts"])):
@@ -2317,7 +2318,7 @@ def _rebuild_generated(path: str, mesh_coll, force: bool = False) -> tuple:
         _remove_cloth(coll)
         return keep("; ".join(changed[:2]) + (f" and {len(changed) - 2} more" if len(changed) > 2 else ""))
     if changed:
-        notes = [f"Force Rebuild changed: {c}" for c in changed] + notes
+        notes = [f"Attached, changed: {c}" for c in changed] + notes
     return coll, list(dict.fromkeys(notes))
 
 
@@ -2400,7 +2401,7 @@ def update_existing(path: str, coll, mesh_coll=None) -> list:
     """Write the file's values onto a cloth with the same ``fingerprint``, else raise ``ImportProblem``; return notes.
     Link tails go per link on a locked Part and per shape on a generated one."""
     if path.endswith(re4.EXT) or props.is_re4(coll):
-        raise ImportProblem("RE4 currently supports Keep Structure imports; import the file as a new collection")
+        raise ImportProblem("RE4 imports as a new cloth only; import the file as a new collection")
     raw = open(path, "rb").read()
     game, mine_game = gp.ext_of(gpuc.Gpuc(raw).layout), props.header(coll).ree_gpuc_header.game
     if game != mine_game:

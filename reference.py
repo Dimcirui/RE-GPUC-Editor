@@ -59,7 +59,7 @@ def armature(coll):
 
 def ensure(coll, arm):
     """The cloth's reference skeleton under ``arm``, rebuilt when missing or under another object. With no
-    armature (a Keep Structure import with no mesh) it goes under the header, in game space, in the table's pose."""
+    armature (an import with no mesh) it goes under the header, in game space, in the table's pose."""
     ref = armature(coll)
     under = arm if arm is not None else props.header(coll)
     if ref is not None and ref.parent == under:

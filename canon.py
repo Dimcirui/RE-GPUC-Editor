@@ -264,11 +264,11 @@ def attached(obj) -> bool:
 
 FILE_GRID_KEY = "ree_gpuc_file_grid"   # on a file Part attached to bones: (rows, cols, closed) of its file grid
 MESH_KEY = "ree_gpuc_from_mesh"          # on a Part made from a mesh (``structure.from_mesh``)
-FILE_KEY = "ree_gpuc_file_part"          # on a Part imported with Keep Structure: its part's index in the file
+FILE_KEY = "ree_gpuc_file_part"          # on a Part imported from its file: its part's index in the file
 
 
 def file_part(obj) -> bool:
-    """Whether a Part is one of its Keep Structure cloth's file (also when it was attached to bones since)."""
+    """Whether a Part is one of its imported cloth's file (also when it was attached to bones since)."""
     return has(obj) and FILE_KEY in obj.keys()
 
 
@@ -750,7 +750,7 @@ _busy = False
 
 
 def upgrade(obj) -> bool:
-    """Adds the particle values a Part from an earlier 1.x lacks (a Keep Structure Part takes its file's, others
+    """Adds the particle values a Part from an earlier 1.x lacks (an imported Part takes its file's, others
     the defaults); returns whether values were added."""
     c = obj[KEY]
     missing = [f for f in FIELD_NAMES if f not in c]
@@ -758,7 +758,7 @@ def upgrade(obj) -> bool:
         return False
     d = load(obj)
     kept = {}
-    if c.get("locked"):                       # a Keep Structure Part takes the values its file holds
+    if c.get("locked"):                       # an imported Part takes the values its file holds
         from . import fileio
         kept = fileio.stored_part_values(obj, missing)
     for f in missing:

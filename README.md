@@ -10,7 +10,7 @@ This addon allows for creating, editing, importing and exporting RE Engine GPU c
 
 ## Features
  - Generates GPU cloth from bone chains, with extra particles between bones and between chains.
- - Imports existing .gpuc files: rebuilt from bones so they can be regenerated, or kept with their original structure for value edits.
+ - Imports existing .gpuc files with their own structure, kept for export; parts that are a grid of bone chains are attached to their bones so they can be regenerated.
  - Particle values can be painted as vertex weights or set exactly on selected particles.
  - Particles can be moved by hand in Edit Mode; the offsets survive rebuilds.
  - Previews an approximate simulation with gravity, wind and draggable colliders.
@@ -44,18 +44,18 @@ To update, uninstall the old version first. Earlier versions were installed as `
 4. Set particle values in the Particles panel: "Paint" paints the chosen value as vertex weights, "Set on Selected" sets an exact value. Weights 0 to 1 map to the Part's Mapping Range.
 5. Configure the Header, Configs, Parts and colliders in the Object properties tab, or apply presets.
 6. (Optional) Preview under GPUC: Preview Simulation > Simulate.
-7. Export the mesh with the RE Mesh Editor, then export the cloth with "Export" under GPUC: General Tools. The export checks the cloth against the exported `.mesh`: the one in Mesh File, else the same-name `.mesh` beside the `.gpuc`, else the one other `.mesh` there with the cloth's skeleton, whose name the `.gpuc` then takes. Without one it is refused; Force Export exports anyway, the driven joints' indices then taken from the scene's weights. A Keep Structure cloth exported As Imported needs no `.mesh`.
+7. Export the mesh with the RE Mesh Editor, then export the cloth with "Export" under GPUC: General Tools. The export checks the cloth against the exported `.mesh`: the one in Mesh File, else the same-name `.mesh` beside the `.gpuc`, else the one other `.mesh` there with the cloth's skeleton, whose name the `.gpuc` then takes. Without one it is refused; Force Export exports anyway, the driven joints' indices then taken from the scene's weights. An imported cloth exported As Imported needs no `.mesh`.
 
 After you move bones in Edit Mode, the affected Parts rebuild when you leave it. "Check" reports problems with every Part of the active cloth.
 
 <details>
   <summary>Import modes</summary>
 
-* **Rebuild from Bones** (default): imports with Keep Structure, then attaches each part to its bones (Attach to Bones), so it can be regenerated. Needs a Mesh Collection. A part no grid of bones reproduces stays as in the file, with a message saying why; the file is kept, so its other data and its driven joints' binds stay. Onimusha files that drive vertices are rebuilt from the bones instead.
-* **Keep Structure**: keeps the file's particles, links and skinning, and lets you edit the values, and the particles and faces themselves (see Editing a Part as a mesh). With no edits, the export is byte for byte the original file. A Wilds, RE9 or Onimusha file can also be exported for the other two (the whole file is then written again from the Parts); an RE4 file only for RE4.
+* **New Cloth** (default): a new GPUC collection with the file's particles, faces, links, skinning and values, and the file kept for export. You can edit the values, and the particles and faces themselves (see Editing a Part as a mesh). With no edits, the export is byte for byte the original file. A Wilds, RE9 or Onimusha file can also be exported for the other two (the whole file is then written again from the Parts); an RE4 file only for RE4.
+  * **Attach to Bones** (on by default, needs a Mesh Collection) then attaches each part to its bones, as the button of that name does (see Editing a Part as a mesh), so it is regenerated when they move and its density can change. A part that no grid of bone chains reproduces stays as in the file, and a message says why; cloths this editor made from bones always attach. **Even If Changed** attaches a part whose grid changes it, and lists the changes. Onimusha files that drive vertices are instead made again from the bones, their Drive settings taken from the file.
 * **Update Existing**: applies the file's values to an existing GPUC collection.
 
-The export writes the particles in the armature's current pose, as RE Mesh Editor writes the mesh (its vertices posed, its bones at rest), so a cloth exported with its mesh in a pose still fits it; the driven joints stay bound at rest. Put the armature in its rest pose (or Rest Position) to export at rest. A Keep Structure cloth in a pose is written again from its Parts; one that cannot be, and RE4, keeps its file's rest positions, and the export says so.
+The export writes the particles in the armature's current pose, as RE Mesh Editor writes the mesh (its vertices posed, its bones at rest), so a cloth exported with its mesh in a pose still fits it; the driven joints stay bound at rest. Put the armature in its rest pose (or Rest Position) to export at rest. An imported cloth in a pose is written again from its Parts; one that cannot be, and RE4, keeps its file's rest positions, and the export says so.
 
 Any Wilds, RE9 or Onimusha cloth can be converted between those three games by choosing the game in the export dialog. A particle skinned to more bones than the game takes (RE9 8, Wilds and Onimusha 6) keeps the heaviest, and the export says how many.
 
@@ -73,7 +73,7 @@ The vertices are those of the exported `.mesh`, so export the mesh first, and th
 
 Triangles per Vertex (Export Settings) sets how many nearby cloth triangles each driven vertex follows, the nearest weighted most.
 
-Onimusha files that drive vertices import with Keep Structure. Rebuild from Bones sets Drive and its values from the file.
+Onimusha files that drive vertices import as they are. With Attach to Bones they are made again from the bones, Drive and its values set from the file.
 
 </details>
 
@@ -85,15 +85,15 @@ Select a generated Part and press Tab to enter Edit Mode. Move particles with `G
 * Offsets are stored in the armature's rest space. They are kept when the cloth rebuilds after bone heads move, and interpolated over the grid when the density changes.
 * Vertex count, connectivity and UVs are protected: deleting or merging vertices or changing UVs is undone when you leave Edit Mode. To change them, use Edit as Mesh (see Editing a Part as a mesh).
 * "Reset Selected" / "Reset All" return particles to the positions generated from the bones.
-* A file exported with offsets may import with Keep Structure. Keep the .blend file to go on editing the offsets.
-* Keep Structure Parts: see below.
+* A file exported with offsets attaches to its bones again, its offsets kept.
+* Imported Parts: see below.
 
 </details>
 
 <details>
   <summary>Editing a Part as a mesh</summary>
 
-A Part imported with Keep Structure, made from bones and turned with Edit as Mesh, or made from any mesh with Part from Mesh (General panel), is a mesh of quads and triangles: each vertex is a particle, and its links come from the faces, as the game's own cloth is made. In Edit Mode you can move particles, subdivide, cut loops, extrude, delete or fill faces, and cut slits. Its skin is in one vertex group per bone, which you can paint. The changes are taken when you go back to Object Mode.
+A Part imported from a file (not attached to bones), made from bones and turned with Edit as Mesh, or made from any mesh with Part from Mesh (General panel), is a mesh of quads and triangles: each vertex is a particle, and its links come from the faces, as the game's own cloth is made. In Edit Mode you can move particles, subdivide, cut loops, extrude, delete or fill faces, and cut slits. Its skin is in one vertex group per bone, which you can paint. The changes are taken when you go back to Object Mode.
 
 * Faces must have 3 or 4 corners, every particle must be on a face, and every particle needs a skin weight; otherwise the edit is undone, with the reason in the Part panel.
 * New particles take their values and skin from their vertex groups, which Blender fills in as you edit. New links take the commonest tail of their shape on the Part.
@@ -101,11 +101,11 @@ A Part imported with Keep Structure, made from bones and turned with Edit as Mes
 * Once a Part is edited, the export writes the whole file again from the Parts instead of patching the original. The driven joints stay where the file binds them; a joint whose particles were removed, or whose bone now skins new particles, is driven by the particles skinned to its bone most.
 * Each face holds its triangles' tangent flags as the attributes `gpuc_tangent_flags_a` (its first triangle) and `gpuc_tangent_flags_b` (a quad's second). Read them in the Spreadsheet and set them with Mesh > Set Attribute in Edit Mode, in an edit that changes no faces. Bits 0–2 flip the tangent at a corner and bit 3 takes no tangent from the UVs; they change how driven joints turn about the cloth's normal, not how the cloth moves. New triangles get bit 3 where their UVs span no area, else 0.
 * The file's Parts cannot be removed, and Update Existing is refused, once a Part is edited.
-* A Keep Structure cloth (not RE4) also takes new Parts made from bones, as is or edited as a mesh. The export then writes the whole file again, the file's particles first. A new Part on bones the file already drives exports As Imported; one on other bones needs Joint Indices From Mesh, and those bones are driven as in a cloth made from bones.
-* Not editable: RE4 Keep Structure cloth, files that drive mesh vertices, and the few parts whose links are not the ones their faces give (the import says which).
+* An imported cloth (not RE4) also takes new Parts made from bones, as is or edited as a mesh. The export then writes the whole file again, the file's particles first. A new Part on bones the file already drives exports As Imported; one on other bones needs Joint Indices From Mesh, and those bones are driven as in a cloth made from bones.
+* Not editable: imported RE4 cloths, files that drive mesh vertices, and the few parts whose links are not the ones their faces give (the import says which).
 * Part from Mesh makes a Part of the active cloth from the active mesh, which is left as it is: its vertices become the particles at their rest place (its Armature modifiers are left out, its other modifiers applied), its faces give the links, its UV map the tangents, its weights to the armature's bones the skin (the heaviest up to the game's number of bones). Give it a UV map and a bone weight on every vertex first, for example with a Data Transfer modifier from the body mesh. Its Driven Bones start as an empty list: list the bones the cloth moves, and paint Simulation weight 0 where it is held.
 * Driven Bones (Part panel) chooses which bones the Part's particles drive: Skin Bones, every bone it is skinned to (a Part made from bones: its own bones), or only the Listed ones. List the bones selected on the armature with +, or every skin bone at once and remove the ones the cloth must not move, such as body bones in weights taken from the body. A listed bone that skins no particle is not driven, and the export says so.
-* Attach to Bones (Part panel of an editable Keep Structure Part) makes it follow its bones, as Rebuild from Bones makes a Part: found as a grid of bone chains, it is regenerated when they move and its density can change, while it stays its file's Part (its driven joints keep the file's binds). It is refused, the Part left as it is, when no such grid makes the same particles, links and skin. Once attached, the export writes the whole file again.
+* Attach to Bones (Part panel of an editable imported Part, and the import option of that name) makes it follow its bones: found as a grid of bone chains, it is regenerated when they move and its density can change, while it stays its file's Part (its driven joints keep the file's binds). It is refused, the Part left as it is, when no such grid makes the same particles, links and skin. Once attached, the export writes the whole file again.
 * Edit as Mesh writes a Part made from bones as its export would: its faces, skin, links and tails, so it exports as before. It no longer follows its bones; its welds keep their pairs. Regenerate from Bones (Part panel) lays it out from its bones again and loses the edits.
 
 </details>
@@ -131,11 +131,10 @@ The GPUC: Presets panel saves Header, Config, Part, Collision, Weld and preview 
 * The Config values, the Header's Collision Iterations and Solver Iterations and the Part's Long Range Attachment Stretchiness are named by what they may do; their effects are unknown. Simulation Strength or Blend Weight at 0 leaves the mesh unmoved. Fields RE4 does not have (CLSP flags, curves, OBB) are hidden.
 * Capsules, spheres and planes are written as colliders, each joint by its bone's name. A plane (Collision From Bones with Plane) is endless, through its joint facing its Normal (+Y by default). The simulation cannot be previewed.
 
-**Imported files** use Keep Structure automatically and need no Mesh Collection.
+**Imported files** need no Mesh Collection; their Parts are not attached to bones.
 
 * You can edit the same values as above. Names, the number of Parts and Configs, bone bindings and colliders cannot be changed.
 * Export with RE4 selected and Joint Indices set to As Imported.
-* Rebuild from Bones does not take RE4 files yet.
 
 </details>
 

@@ -1,4 +1,4 @@
-"""Take an editable Keep Structure Part's mesh, after its faces, rest positions or skin groups changed, as its new
+"""Take an editable imported Part's mesh, after its faces, rest positions or skin groups changed, as its new
 structure: particles, faces, links and their tails, skin, normals and particle values.
 
 Maintenance constraints:
@@ -305,14 +305,14 @@ CHANGED = "Differs from the file ("        # starts the notice of a Part attache
 
 
 def attach_to_bones(obj, force: bool = False) -> str:
-    """Make a Keep Structure Part follow a bone grid found for it, as Rebuild from Bones finds one: its particles
+    """Make a Part imported from its file follow a bone grid found for it (``fileio._recognise``): its particles
     keep their places as offsets from the bones, its values, skin and link tails stay. Returns the notice; raises
     ``ValueError`` (the Part left as it was) when no grid of the armature's bones makes the same mesh. ``force``
     keeps a grid that changes the Part, the notice then starting with ``CHANGED``."""
     from . import fileio, generate, props
     coll = reference.cloth_of(obj)
     if not canon.file_part(obj) or canon.attached(obj) or not fileio.keeps_structure(coll):
-        raise ValueError("only a Part imported with Keep Structure is attached to bones")
+        raise ValueError("only a Part imported from its file is attached to bones")
     if canon.edited(obj):
         raise ValueError("its particles or faces were edited: import the file again to attach it")
     if props.is_re4(coll):
