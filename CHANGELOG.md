@@ -25,7 +25,7 @@
 - **Unkn Particle 0–5** — six more per-particle values a file holds, kept, painted and exported like the others. Effect unknown.
 
 ### Changed
-- **One import for a new cloth** — New Cloth replaces Keep Structure and Rebuild from Bones: it keeps the file, and its Attach to Bones option (on by default) attaches each part that is a bone grid. A part that is not stays as in the file instead of sending the whole file back, and driven joints keep the file's binds. Force Rebuild is now Even If Changed.
+- **One import for a new cloth** — New Cloth replaces Keep Structure and Rebuild from Bones: it keeps the file, and its Attach to Bones option (on by default) attaches each part that is a bone grid. A part that is not stays as in the file instead of sending the whole file back, and driven joints keep the file's binds. Force Rebuild is now Force Attach.
 - **Parts are meshes** — every Part keeps its particles and faces as the export writes them; a Part made from bones also keeps its bones and follows them until edited as a mesh. Its faces now show the export's winding and diagonal.
 - **Spheres** — written as spheres, chosen by Sphere Bits, instead of as capsules whose ends meet. **Check the Capsule and Sphere Bits of a cloth that has spheres.**
 - **Batches** — a cloth of several Parts is split into batches of up to 512 particles between Parts, as the game's files are; it was one batch however large.

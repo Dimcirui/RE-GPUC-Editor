@@ -73,10 +73,11 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
         description="Attach each part to the mesh's bones, so it is regenerated when they move and its density can "
                     "change. A part that no grid of bone chains reproduces stays as in the file. Parts this editor "
                     "made from bones always attach. Needs the Mesh Collection")
-    attach_changed: bpy.props.BoolProperty(
-        name="Even If Changed", default=False,
-        description="Attach a part even when its bone grid changes it (positions, links or skinning as the editor "
-                    "generates them). The differences are reported")
+    force_attach: bpy.props.BoolProperty(
+        name="Force Attach", default=False,
+        description="Attach a part even when its bone grid changes it: its positions, links or skinning become "
+                    "the ones the editor generates, so it no longer matches the file and may behave differently "
+                    "in game. The changes are reported")
 
     def invoke(self, context, event):
         if not self.mesh_collection:
@@ -109,7 +110,7 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
             sub = layout.row()
             sub.enabled = self.attach_bones
             sub.separator()
-            sub.prop(self, "attach_changed")
+            sub.prop(self, "force_attach")
             if not self.mesh_collection:
                 layout.label(text="Without a mesh: shape only, not attached to bones, cannot be posed", icon="INFO")
 
@@ -142,7 +143,7 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
                         return refused(self, "Choose the GPUC collection that receives the values")
                     notes = fileio.update_existing(path, coll, mesh)
                 elif attach:
-                    coll, notes = fileio.import_attach(path, mesh, self.attach_changed)
+                    coll, notes = fileio.import_attach(path, mesh, self.force_attach)
                 else:
                     coll, notes = fileio.import_keep(path, mesh)
             except fileio.ImportProblem as e:
