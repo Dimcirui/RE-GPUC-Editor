@@ -18,6 +18,7 @@ from .ui import _ObjectPanel, _split
 
 TYPE = "RE_GPUC_WELD"
 PAIRS_KEY = "ree_gpuc_weld_pairs"       # on a weld: (particle of part a, particle of part b) flat
+BONES_KEY = "ree_gpuc_weld_bones"   # with PAIRS_KEY: each pair's bone, for a Part still made from bones
 EDITED_KEY = "ree_gpuc_weld_edited"     # on a weld whose tail was set by hand: all its links take it on export
 
 
@@ -80,15 +81,23 @@ def _layout(part) -> dict:
 
 
 def pairs(obj) -> list:
-    """A weld's pairs: a Keep Structure cloth's as its file has them, else its Parts' shared bones' (made again
-    each time, so a Part regenerated keeps them)."""
+    """A weld's pairs: its Parts' shared bones' when both are made from bones (made again each time, so a Part
+    regenerated keeps them), else as stored; a Part made from bones takes its particle by the stored bone."""
     from . import canon
     w = obj.ree_gpuc_weld
-    if props.is_part(w.part_a) and props.is_part(w.part_b) and canon.has(w.part_a) and canon.has(w.part_b) \
-            and not canon.locked(w.part_a) and not canon.locked(w.part_b):
-        return shared_pairs(w.part_a, w.part_b)
+    a, b = w.part_a, w.part_b
+    if not (props.is_part(a) and props.is_part(b) and canon.has(a) and canon.has(b)):
+        return []
+    grid_a, grid_b = not canon.locked(a), not canon.locked(b)
+    if grid_a and grid_b:
+        return shared_pairs(a, b)
     flat = list(obj.get(PAIRS_KEY, ()))
-    return list(zip(flat[0::2], flat[1::2]))
+    out = list(zip(flat[0::2], flat[1::2]))
+    names = list(obj.get(BONES_KEY, ()))
+    if not (grid_a or grid_b) or len(names) != len(out):
+        return out
+    nodes = node_particles(_layout(a if grid_a else b))
+    return [(nodes[n], ib) if grid_a else (ia, nodes[n]) for (ia, ib), n in zip(out, names) if n in nodes]
 
 
 def problems(obj, coll=None) -> list:
@@ -104,10 +113,10 @@ def problems(obj, coll=None) -> list:
         return ["a Part is not this cloth's"]
     if not canon.has(a) or not canon.has(b):
         return ["a Part has no particles"]
-    if canon.locked(a) != canon.locked(b):
+    if canon.locked(a) != canon.locked(b) and not canon.from_bones(a if canon.locked(a) else b):
         return ["one Part keeps a file's structure, the other was made from bones"]
-    if canon.locked(a):
-        n = {a: int(a[canon.KEY]["count"]), b: int(b[canon.KEY]["count"])}
+    if canon.locked(a) or canon.locked(b):
+        n = {p: len(p[canon.KEY]["co"]) // 3 for p in (a, b)}
         if not pairs(obj):
             return ["it welds no particles"]
         if any(not (0 <= ia < n[a] and 0 <= ib < n[b]) for ia, ib in pairs(obj)):

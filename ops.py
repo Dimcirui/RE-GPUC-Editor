@@ -1118,6 +1118,56 @@ class REE_GPUC_OT_paint(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class REE_GPUC_OT_edit_as_mesh(bpy.types.Operator):
+    """Make the Part an editable mesh: add, remove and reconnect particles in Edit Mode and paint its skin in one
+    group per bone. It no longer follows its bones; Regenerate from Bones goes back, losing the edits"""
+    bl_idname = "ree_gpuc.edit_as_mesh"
+    bl_label = "Edit as Mesh"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (context.mode == "OBJECT" and props.is_part(obj) and canon.has(obj) and not canon.locked(obj)
+                and canon.skin_armature(obj) is not None)
+
+    def execute(self, context):
+        from . import structure
+        obj = context.active_object
+        problems = generate.check(obj)
+        if problems:
+            return refused(self, f"{obj.name}: {problems[0]} (regenerate it first)")
+        try:
+            structure.edit_as_mesh(obj)
+        except ValueError as e:
+            return refused(self, str(e))
+        obj["ree_gpuc_notice"] = "Edited as a mesh: Regenerate from Bones goes back to the bone grid"
+        return {"FINISHED"}
+
+
+class REE_GPUC_OT_back_to_bones(bpy.types.Operator):
+    """Lay the Part out from its bones again, as before Edit as Mesh: its particle, face and skin edits are lost,
+    its values and settings from then are back"""
+    bl_idname = "ree_gpuc.back_to_bones"
+    bl_label = "Regenerate from Bones"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return context.mode == "OBJECT" and props.is_part(obj) and canon.from_bones(obj)
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, context):
+        from . import structure
+        obj = context.active_object
+        structure.back_to_bones(obj)
+        obj["ree_gpuc_notice"] = "Regenerated from its bones"
+        return {"FINISHED"}
+
+
 class REE_GPUC_OT_normalize_skin(bpy.types.Operator):
     """Make each particle's bone weights as the export writes them: at most the game's number of bones, the
     lightest dropped, summing to 1. Locked groups keep their weights. In Weight Paint with a selection mask, only
@@ -1416,6 +1466,7 @@ CLASSES = (REE_GPUC_OT_import, REE_GPUC_FH_import, REE_GPUC_OT_export, REE_GPUC_
            REE_GPUC_OT_set_bits, REE_GPUC_OT_curve_key_add, REE_GPUC_OT_curve_key_remove, REE_GPUC_OT_curve_sort,
            REE_GPUC_OT_curve_reset, REE_GPUC_OT_edit_particles,
            REE_GPUC_OT_reset_rest_offsets, REE_GPUC_OT_set_value, REE_GPUC_OT_paint, REE_GPUC_OT_normalize_skin,
+           REE_GPUC_OT_edit_as_mesh, REE_GPUC_OT_back_to_bones,
            REE_GPUC_OT_simulate, REE_GPUC_OT_sim_reset, REE_GPUC_OT_import_reference,
            REE_GPUC_OT_drive_vertices, REE_GPUC_OT_drive_select_near, REE_GPUC_OT_drive_spread_lods)
 

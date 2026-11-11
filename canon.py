@@ -10,6 +10,8 @@ Maintenance constraints:
 - A locked Part (imported with Keep Structure) stores the file's own triangles, UVs, links with their own tails,
   6-bone skin by name and normals, and is never regenerated. ``count``, ``faces``, ``face_uvs``, ``links`` and
   ``particle_uv`` serve both kinds.
+- A Part made from bones can be edited as a mesh (``structure.edit_as_mesh``): it becomes an editable locked
+  Part whose bone grid is kept under ``RECIPE_KEY`` for ``structure.back_to_bones``.
 - An editable locked Part also stores its faces (quads split at a-c, ``topology``), each of their triangles'
   tangent flags and each particle's index in the file (``src``, -1 for a new one); its mesh carries
   ``PARTICLE_ID``, one skin group per bone, deforming by ``SKIN_MODIFIER`` so that Blender's normalizing leaves
@@ -198,6 +200,14 @@ def store(obj, data: dict) -> None:
 
 def locked(obj) -> bool:
     return has(obj) and bool(obj[KEY].get("locked"))
+
+
+RECIPE_KEY = "ree_gpuc_recipe"           # on a Part made from bones and edited as a mesh: its bone grid's data
+
+
+def from_bones(obj) -> bool:
+    """Whether a locked Part was made from bones and edited as a mesh (``structure.edit_as_mesh``)."""
+    return locked(obj) and RECIPE_KEY in obj.keys()
 
 
 def editable_part(obj) -> bool:

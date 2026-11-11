@@ -59,6 +59,7 @@ class REE_GPUC_PT_general(_Sidebar, bpy.types.Panel):
         obj = context.active_object
         if props.is_part(obj) and obj.select_get() and not canon.locked(obj):
             layout.operator("ree_gpuc.regenerate_part")
+            layout.operator("ree_gpuc.edit_as_mesh", icon="EDITMODE_HLT")
         layout.operator("ree_gpuc.weld_parts", icon="AUTOMERGE_ON")
         layout.label(text="Create new parts in Pose Mode.")
         layout.operator("ree_gpuc.switch_to_pose")
@@ -548,7 +549,10 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
             text = obj.get(key)
             if text and text != "ok":
                 layout.label(text=text, icon=icon)
-        if canon.edited(obj):
+        if canon.from_bones(obj):
+            layout.label(text="Edited as a mesh: it no longer follows its bones", icon="MESH_DATA")
+            layout.operator("ree_gpuc.back_to_bones", icon="LOOP_BACK")
+        elif canon.edited(obj):
             layout.label(text="Particles or faces edited: the file is written again from the Parts on export",
                          icon="MESH_DATA")
         elif canon.editable_part(obj):

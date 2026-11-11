@@ -184,7 +184,7 @@ def _set_part(obj, p, tails, values, cfg_objs, notes) -> None:
         t.conditional = gp.tail_bytes(k, k2, lo, hi) != gp.tail_bytes(k, 1.0, 1.0, 1.0)   # off exports (k, 1, 1, 1)
     if values and canon.has(obj):
         d = canon.load(obj)
-        everyone = np.arange(d["rows"] * d["cols"])
+        everyone = np.arange(canon.count(d))
         for field in canon.FIELD_NAMES:
             v = values.get(field)
             if v is None or field == "sim_weight":          # pinning stays the Part's own
@@ -230,6 +230,41 @@ def _outward(co, rows, cols, closed, centre, inside) -> bool:
     out = grid.normals(co, rows, cols, closed)[tri[0]] * grid.normal_sign(co, grid.normals(co, rows, cols, closed),
                                                                            centre, inside)
     return float(n @ out) > 0
+
+
+def grid_faces(obj, d, arm) -> tuple:
+    """(faces, each face's corner UVs in [0, 1]) of a Part made from bones as the export writes them: wound so that
+    the normals point outward, split at the diagonal Other Diagonal names (``gpuc_build`` splits at a-c)."""
+    rows, cols, closed = d["rows"], d["cols"], d["closed"]
+    co = np.asarray(d["co"], float)
+    root = arm.data.bones.get(obj.ree_gpuc_part.root_joint) if arm is not None else None
+    inside = np.array(root.head_local, float) if root is not None else np.zeros(3)
+    quads = grid.faces(rows, cols, closed)
+    quad_uv = [[(min(max(u, 0.0), 1.0), min(max(v, 0.0), 1.0)) for u, v in f]
+               for f in grid.face_uv(rows, cols, closed, 0)]
+    if not _outward(co, rows, cols, closed, d["centre"], inside):
+        quads = [(a, dd, c, b) for a, b, c, dd in quads]
+        quad_uv = [[f[0], f[3], f[2], f[1]] for f in quad_uv]
+    if obj.ree_gpuc_part.other_diagonal:
+        quads = [q[1:] + q[:1] for q in quads]
+        quad_uv = [f[1:] + f[:1] for f in quad_uv]
+    return [tuple(q) for q in quads], quad_uv
+
+
+def grid_skin(d, slots: int) -> tuple:
+    """(node indices, weights in 255ths) of each particle of a Part made from bones, ``slots`` wide, as the export
+    writes them."""
+    n = canon.count(d)
+    idx = np.zeros((n, slots), np.int64)
+    u8 = np.zeros((n, slots), np.int64)
+    for i in range(n):
+        w = np.asarray(d["skin_w"][i], float)
+        q = np.floor(w / max(w.sum(), 1e-9) * 255 + 0.5).astype(int)
+        q[int(np.argmax(q))] += 255 - int(q.sum())
+        k = len(q)
+        idx[i, :k], u8[i, :k] = d["skin"][i], q
+        idx[i, k:] = d["skin"][i][0]
+    return idx, u8
 
 
 JOINT_INDICES = [("FILE", "As Imported", "Keep the driven joints' indices from the imported file. Use when the "
@@ -797,7 +832,7 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT, mes
     for obj in part_objs:
         if not canon.has(obj):
             raise ExportError(f"{obj.name} has no particles")
-        if canon.locked(obj):
+        if canon.locked(obj) and not canon.from_bones(obj):
             raise ExportError(f"{obj.name} keeps a file's structure in a cloth that does not")
         problems = generate.check(obj)
         if problems:
@@ -811,7 +846,7 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT, mes
     to_game = ROTATE_BACK @ np.array(arm.matrix_world, float)
 
     positions, sim_weight, skin_bones, skin_w, faces, uvs, outputs, bend = [], [], [], [], [], [], [], []
-    shapes, part_vals, driven, base, starts = {}, [], {}, 0, {}
+    shapes, part_vals, driven, base, starts, tri_flags = {}, [], {}, 0, {}, []
     skinned = collections.defaultdict(list)            # bone -> (particle, its skin weight to it) of every Part
     for obj, why in weld.skipped(coll):
         notes.append(f"{obj.name} left out: {why}")
@@ -823,37 +858,38 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT, mes
         starts[obj] = base
         d = canon.load(obj)
         vals = canon.values(obj, d)
-        rows, cols, closed = d["rows"], d["cols"], d["closed"]
         co = np.asarray(d["co"], float)
         game = co @ to_game[:3, :3].T + to_game[:3, 3]
-        n = rows * cols
+        n = canon.count(d)
         positions.append(game)
-        bend.append(np.full(n, d["diagonal_bend"]))
         sim_weight.append(np.clip(vals["sim_weight"], 0.0, 1.0))
         part_vals.append(vals)
-        root = arm.data.bones.get(obj.ree_gpuc_part.root_joint)
-        inside = np.array(root.head_local, float) if root is not None else np.zeros(3)
-        quads = grid.faces(rows, cols, closed)
-        quad_uv = [[(min(max(u, 0.0), 1.0), min(max(v, 0.0), 1.0)) for u, v in f]
-                   for f in grid.face_uv(rows, cols, closed, 0)]
-        if not _outward(co, rows, cols, closed, d["centre"], inside):
-            quads = [(a, dd, c, b) for a, b, c, dd in quads]
-            quad_uv = [[f[0], f[3], f[2], f[1]] for f in quad_uv]
-        if obj.ree_gpuc_part.other_diagonal:              # gpuc_build splits (a, b, c, d) at a-c: start at b
-            quads = [q[1:] + q[:1] for q in quads]
-            quad_uv = [f[1:] + f[:1] for f in quad_uv]
+        if d["locked"]:                                    # a Part made from bones, edited as a mesh
+            bend.append(np.full(n, obj.ree_gpuc_part.diagonal_bend))
+            quads = list(d["faces"])
+            corner, at, quad_uv = np.clip(d["face_uv"], 0.0, 1.0), 0, []
+            for f in quads:
+                quad_uv.append([tuple(map(float, p)) for p in corner[at:at + len(f)]])
+                at += len(f)
+            tri_flags += [int(x) for x in d["tri_flags"]]
+            node_idx, node_u8 = d["skin"], np.round(d["skin_w"] * 255).astype(int)
+            share = node_u8 / 255.0
+        else:
+            bend.append(np.full(n, d["diagonal_bend"]))
+            quads, quad_uv = grid_faces(obj, d, arm)
+            tri_flags += gpuc_build.tangent_flags(quads, quad_uv)
+            node_idx, node_u8 = grid_skin(d, 4)
+            w = np.asarray(d["skin_w"], float)
+            share = w / np.maximum(w.sum(1, keepdims=True), 1e-9)       # the joints take the unrounded shares
         faces += [tuple(base + i for i in f) for f in quads]
         uvs += quad_uv
         node_full = [bones.index(name) for name in d["nodes"]]
         shared = []
         for i in range(n):
-            w = np.asarray(d["skin_w"][i], float)
-            u8 = np.floor(w / max(w.sum(), 1e-9) * 255 + 0.5).astype(int)
-            u8[int(np.argmax(u8))] += 255 - int(u8.sum())
-            idx = [node_full[j] for j in d["skin"][i]]
-            skin_bones.append(idx + [idx[0]] * 4)
-            skin_w.append(list(u8) + [0] * 4)
-            for j, x in zip(d["skin"][i], w / max(w.sum(), 1e-9)):
+            row = [(node_full[j], int(u)) for j, u in zip(node_idx[i], node_u8[i]) if u > 0 or not d["locked"]]
+            skin_bones.append([b for b, _ in row] + [row[0][0]] * (8 - len(row)))
+            skin_w.append([u for _, u in row] + [0] * (8 - len(row)))
+            for j, x in zip(node_idx[i], share[i]):
                 if x > 0:
                     skinned[d["nodes"][j]].append((base + i, float(x)))
         for name in d["nodes"] if not vertices else ():
@@ -892,7 +928,7 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT, mes
         batch_of = _batch_of([len(v["sim_weight"]) for v in part_vals], welded, notes)
         _one_batch(outputs, batch_of, notes)
     spec = gpuc_build.ClothSpec(np.vstack(positions), np.concatenate(sim_weight), skin_bones, skin_w, faces, uvs,
-                                outputs, np.concatenate(bend), batch_of)
+                                outputs, np.concatenate(bend), batch_of, tri_flags)
     skin_table = sorted({b for row, w in zip(skin_bones, skin_w) for b, x in zip(row, w) if x})
     link_tail = lambda typ, a, b: shapes.get((min(a, b), max(a, b), typ))  # noqa: E731
     if is_re4:
@@ -1699,12 +1735,14 @@ def locked_problems(obj) -> list:
     bones over 1 mm from where the file binds them (the import's tolerance); [] when none or not applicable."""
     coll = reference.cloth_of(obj)
     arm = obj.ree_gpuc_part.armature
-    if coll is None or not keeps_structure(coll) or arm is None or arm.type != "ARMATURE":
+    if coll is None or arm is None or arm.type != "ARMATURE":
         return []
     d = canon.load(obj)
     missing = [b for b in d["nodes"] if not b.startswith("#") and b not in arm.data.bones]
     if missing:
         return [f"{len(missing)} skin bones are gone: {', '.join(missing[:4])}"]
+    if not keeps_structure(coll):
+        return []
     f = file_parts(stored_file(coll))
     k = by_name(props.parts(coll)).index(obj)
     names = list(props.header(coll).get(JOINTS_KEY, ()))
