@@ -328,7 +328,7 @@ def attach_to_bones(obj, force: bool = False) -> str:
     sel = np.where(f["part_of"] == i)[0]
     lay, links, gl = fileio._recognise(f, i, [b.name for b in arm.data.bones])
     if lay is None:
-        raise ValueError(f"no grid of bone chains makes it ({links})")
+        raise ValueError(links)
     p = obj.ree_gpuc_part
     keys = (canon.KEY, canon.EDITED_KEY, canon.OVERRIDES_KEY, canon.MAPPING_KEY)
     saved = {k: obj[k].to_dict() if hasattr(obj[k], "to_dict") else list(obj[k]) for k in keys if k in obj.keys()}
