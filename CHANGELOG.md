@@ -14,6 +14,7 @@
 - **Collision planes and spheres for Wilds, RE9 and Onimusha** — a file's own planes and spheres import as objects and export to their own sections, chosen by the Part's Plane and Sphere Bits; Collision From Bones makes planes for every game.
 - **Triangle tangent flags** — on an editable imported Part's faces, as attributes you can read and set; new triangles whose UVs span no area get the flag the game's files give them.
 - **Attach to Bones** — an imported Part found to be a grid of bone chains follows its bones, and stays its file's Part.
+- **Fit to Mesh** — moves a cloth's particles onto another mesh with the same faces, such as the same mesh sculpted or converted for another character, and onto its armature.
 - **Export in a pose** — particles are written where the current pose carries them, as RE Mesh Editor writes the mesh, so a cloth exported with its posed mesh still fits it.
 - **Imported cloths in another game** — a Wilds, RE9 or Onimusha file kept as imported exports for the other two.
 - **Part from Mesh** — make a Part from any mesh with a UV map and bone weights; it exports and edits like an imported one.

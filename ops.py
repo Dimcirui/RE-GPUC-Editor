@@ -1178,6 +1178,58 @@ class REE_GPUC_OT_part_from_mesh(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class REE_GPUC_OT_fit_to_mesh(bpy.types.Operator):
+    """Move the active cloth's particles from the mesh they sit on to another mesh with the same faces (the same
+    mesh sculpted, or converted for another character or game): each particle keeps its place on the mesh and its
+    distance from it. Meshes pair by material name"""
+    bl_idname = "ree_gpuc.fit_to_mesh"
+    bl_label = "Fit to Mesh"
+    bl_options = {"REGISTER", "UNDO"}
+
+    source_mesh: bpy.props.StringProperty(
+        name="From", description="The RE Mesh Editor collection of the mesh the particles sit on now")
+    target_mesh: bpy.props.StringProperty(
+        name="To", description="The RE Mesh Editor collection of the mesh to move them to. Its meshes must have the "
+                               "same faces as the ones they pair with")
+    use_target_armature: bpy.props.BoolProperty(
+        name="Use Its Armature", default=True,
+        description="Put the cloth on the target's armature: its Parts' skin, the header and the collisions follow "
+                    "its bones. Off, the cloth stays on its armature")
+
+    @classmethod
+    def poll(cls, context):
+        coll = _settings(context).target
+        return context.mode == "OBJECT" and coll is not None and not props.is_re4(coll) and bool(props.parts(coll))
+
+    def invoke(self, context, event):
+        arm = generate._armature(_settings(context).target)
+        mesh = fileio.mesh_collection(arm) if arm is not None else None
+        if mesh is not None and not self.source_mesh:
+            self.source_mesh = mesh.name
+        return context.window_manager.invoke_props_dialog(self, width=360)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop_search(self, "source_mesh", bpy.data, "collections")
+        layout.prop_search(self, "target_mesh", bpy.data, "collections")
+        layout.prop(self, "use_target_armature")
+
+    def execute(self, context):
+        from . import fit
+        coll = _settings(context).target
+        src, dst = bpy.data.collections.get(self.source_mesh), bpy.data.collections.get(self.target_mesh)
+        if src is None or dst is None:
+            return refused(self, "Pick the mesh collections to move the particles from and to")
+        try:
+            text = fit.fit_cloth(coll, src, dst, self.use_target_armature)
+        except (ValueError, generate.GenerateError) as e:
+            return refused(self, f"Fit to Mesh: {e}")
+        for obj in props.parts(coll):
+            obj["ree_gpuc_notice"] = text
+        self.report({"INFO"}, text)
+        return {"FINISHED"}
+
+
 class REE_GPUC_OT_attach_to_bones(bpy.types.Operator):
     """Make a Part imported from its file follow its bones: found as a grid of bone chains, it is regenerated when
     they move and its density can change. Refused, the Part left as it is, when no such grid makes the same
@@ -1596,7 +1648,7 @@ CLASSES = (REE_GPUC_OT_import, REE_GPUC_FH_import, REE_GPUC_OT_export, REE_GPUC_
            REE_GPUC_OT_reset_rest_offsets, REE_GPUC_OT_set_value, REE_GPUC_OT_paint, REE_GPUC_OT_normalize_skin,
            REE_GPUC_OT_edit_as_mesh, REE_GPUC_OT_back_to_bones, REE_GPUC_OT_driven_add,
            REE_GPUC_OT_driven_remove, REE_GPUC_OT_driven_from_skin, REE_GPUC_OT_part_from_mesh,
-           REE_GPUC_OT_attach_to_bones,
+           REE_GPUC_OT_attach_to_bones, REE_GPUC_OT_fit_to_mesh,
            REE_GPUC_OT_simulate, REE_GPUC_OT_sim_reset, REE_GPUC_OT_import_reference,
            REE_GPUC_OT_drive_vertices, REE_GPUC_OT_drive_select_near, REE_GPUC_OT_drive_spread_lods)
 

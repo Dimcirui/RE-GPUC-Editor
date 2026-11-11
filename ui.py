@@ -61,6 +61,7 @@ class REE_GPUC_PT_general(_Sidebar, bpy.types.Panel):
             layout.operator("ree_gpuc.regenerate_part")
             layout.operator("ree_gpuc.edit_as_mesh", icon="EDITMODE_HLT")
         layout.operator("ree_gpuc.part_from_mesh", icon="MESH_DATA")
+        layout.operator("ree_gpuc.fit_to_mesh", icon="MOD_SHRINKWRAP")
         layout.operator("ree_gpuc.weld_parts", icon="AUTOMERGE_ON")
         layout.label(text="Create new parts in Pose Mode.")
         layout.operator("ree_gpuc.switch_to_pose")
