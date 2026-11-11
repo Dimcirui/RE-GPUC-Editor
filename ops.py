@@ -460,8 +460,8 @@ class _PartOptions:
     def execute(self, context):
         s = _settings(context)
         arm = context.active_object
-        if fileio.keeps_structure(s.target):
-            return refused(self, f"{s.target.name} was imported with Keep Structure and cannot take new parts. "
+        if fileio.keeps_structure(s.target) and props.is_re4(s.target):
+            return refused(self, f"{s.target.name} keeps an RE4 file's structure and cannot take new parts. "
                                  f"Create a new GPUC collection for parts from bones")
         try:
             lay = generate.layout(arm, self.chains(arm), self.closed, self.truncate, self.sub_rows, self.sub_cols)
