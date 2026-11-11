@@ -53,7 +53,8 @@ class ClothSpec:
 
     def __init__(self, positions, sim_weight, skin_bones, skin_w, faces, face_uv, outputs, diagonal_bend=None,
                  batch_of=None, tri_flags=None):
-        self.positions = np.asarray(positions, float)
+        # as the file holds them (float32), so the frames follow the stored positions alone
+        self.positions = np.asarray(positions, np.float32).astype(float)
         self.sim_weight = np.asarray(sim_weight, float)
         self.skin_bones = np.asarray(skin_bones, int)
         self.skin_w = np.asarray(skin_w, int)
