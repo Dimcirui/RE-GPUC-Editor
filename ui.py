@@ -524,6 +524,18 @@ def _curve(layout, cfg, curve, name, speed_label, speed):
         sub.prop(curve, prop)
 
 
+def _skin_rows(layout, obj):
+    arm = canon.skin_armature(obj)
+    if arm is None:
+        layout.label(text="No armature: Blender's Normalize also changes the value groups", icon="ERROR")
+    else:
+        lost = [n for n in canon.skin_group_names(obj) if n not in arm.data.bones]
+        if lost:
+            layout.label(text=f"{len(lost)} skin groups name no bone of {arm.name}: Blender's Normalize leaves "
+                              f"them out", icon="INFO")
+    layout.operator("ree_gpuc.normalize_skin", icon="MOD_VERTEX_WEIGHT")
+
+
 class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
     bl_label = "GPUC Part"
     KIND = staticmethod(props.is_part)
@@ -541,6 +553,8 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
                          icon="MESH_DATA")
         elif canon.editable_part(obj):
             layout.label(text="Imported with Keep Structure: edit particles and faces in Edit Mode", icon="UNLOCKED")
+        if canon.editable_part(obj):
+            _skin_rows(layout, obj)
         elif canon.locked(obj):
             layout.label(text="Imported with Keep Structure: values can be edited, but not regenerated",
                          icon="LOCKED")

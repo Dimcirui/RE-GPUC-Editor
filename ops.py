@@ -1118,6 +1118,40 @@ class REE_GPUC_OT_paint(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class REE_GPUC_OT_normalize_skin(bpy.types.Operator):
+    """Make each particle's bone weights as the export writes them: at most the game's number of bones, the
+    lightest dropped, summing to 1. Locked groups keep their weights. In Weight Paint with a selection mask, only
+    the selected particles"""
+    bl_idname = "ree_gpuc.normalize_skin"
+    bl_label = "Normalize Skin"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return props.is_part(obj) and canon.editable_part(obj) and obj.mode in {"OBJECT", "WEIGHT_PAINT"}
+
+    def execute(self, context):
+        from . import structure
+        obj = context.active_object
+        me = obj.data
+        only = None
+        if obj.mode == "WEIGHT_PAINT" and me.use_paint_mask_vertex:
+            only = [v.index for v in me.vertices if v.select]
+        elif obj.mode == "WEIGHT_PAINT" and me.use_paint_mask:
+            only = sorted({i for p in me.polygons if p.select for i in p.vertices})
+        changed, removed, empty = structure.normalize_skin(obj, only)
+        me.update()
+        slots = canon.load(obj)["skin"].shape[1]
+        text = f"Normalized {changed} particles"
+        if removed:
+            text += f"; removed {removed} weights beyond {slots} bones"
+        if empty:
+            text += f"; {empty} particles have no skin weight: paint them in a bone's group"
+        self.report({"WARNING"} if empty else {"INFO"}, text)
+        return {"FINISHED"}
+
+
 # --- preview simulation -------------------------------------------------------------------------------------
 
 class REE_GPUC_OT_simulate(bpy.types.Operator):
@@ -1381,7 +1415,7 @@ CLASSES = (REE_GPUC_OT_import, REE_GPUC_FH_import, REE_GPUC_OT_export, REE_GPUC_
            REE_GPUC_OT_add_collider, REE_GPUC_OT_remove_collider, REE_GPUC_OT_collider_from_bones, REE_GPUC_OT_copy, REE_GPUC_OT_paste,
            REE_GPUC_OT_set_bits, REE_GPUC_OT_curve_key_add, REE_GPUC_OT_curve_key_remove, REE_GPUC_OT_curve_sort,
            REE_GPUC_OT_curve_reset, REE_GPUC_OT_edit_particles,
-           REE_GPUC_OT_reset_rest_offsets, REE_GPUC_OT_set_value, REE_GPUC_OT_paint,
+           REE_GPUC_OT_reset_rest_offsets, REE_GPUC_OT_set_value, REE_GPUC_OT_paint, REE_GPUC_OT_normalize_skin,
            REE_GPUC_OT_simulate, REE_GPUC_OT_sim_reset, REE_GPUC_OT_import_reference,
            REE_GPUC_OT_drive_vertices, REE_GPUC_OT_drive_select_near, REE_GPUC_OT_drive_spread_lods)
 

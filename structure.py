@@ -79,6 +79,53 @@ def _kept(ids, co, old_co) -> np.ndarray:
     return keep
 
 
+def _u8(w, total: int) -> np.ndarray:
+    """Weights in 255ths summing to ``total``, the rounding left to the heaviest."""
+    u8 = np.floor(np.asarray(w, float) / w.sum() * total + 0.5).astype(int)
+    u8[int(np.argmax(u8))] += total - int(u8.sum())
+    return u8
+
+
+def normalize_skin(obj, only=None) -> tuple:
+    """Normalize the bone groups of an editable Part as the export takes them: each vertex keeps its heaviest
+    weights up to the Part's skin slots, summing to 1 in 255ths; locked groups keep theirs and the others share
+    what is left. ``only``: the vertex indices to change, else all. Returns (vertices changed, weights removed,
+    vertices with no skin weight)."""
+    d = canon.load(obj)
+    slots = d["skin"].shape[1]
+    names, w = canon.skin_groups(obj)
+    groups = [obj.vertex_groups[n] for n in names]
+    locked = np.array([g.lock_weight for g in groups], bool)
+    changed = removed = empty = 0
+    for v in (range(len(w)) if only is None else only):
+        row = w[v]
+        fixed = [k for k in np.flatnonzero(row > 0) if locked[k]]
+        free = [k for k in np.argsort(-row, kind="stable") if row[k] > 0 and not locked[k]]
+        keep = free[:max(slots - len(fixed), 0)]
+        total = 255 - int(round(row[fixed].sum() * 255))
+        if not keep or total <= 0:
+            empty += not fixed and not free
+            drop = free
+            new = {}
+        else:
+            drop = free[len(keep):]
+            new = dict(zip(keep, _u8(row[keep], total) / 255.0))
+        hit = bool(drop)
+        for k in drop:
+            groups[k].remove([v])
+        for k, x in new.items():
+            if x <= 0:
+                groups[k].remove([v])
+                removed += 1
+                hit = True
+            elif abs(x - row[k]) > 1e-6:
+                groups[k].add([v], float(x), "REPLACE")
+                hit = True
+        removed += len(drop)
+        changed += hit
+    return changed, removed, empty
+
+
 def _skin(obj, keep, old, slots) -> tuple:
     """(bone names, skin as indices into them, weights in 255ths): kept particles whose groups still hold their
     weights keep them exactly."""
@@ -97,10 +144,7 @@ def _skin(obj, keep, old, slots) -> tuple:
         order = [k for k in np.argsort(-w[v], kind="stable") if w[v, k] > 0][:slots]
         if not order:
             raise ValueError(f"particle {v} has no skin weights: paint it in a bone's group")
-        x = w[v, order] / w[v, order].sum()
-        u8 = np.floor(x * 255 + 0.5).astype(int)
-        u8[int(np.argmax(u8))] += 255 - int(u8.sum())
-        rows.append([(names[k], int(u)) for k, u in zip(order, u8) if u > 0])
+        rows.append([(names[k], int(u)) for k, u in zip(order, _u8(w[v, order], 255)) if u > 0])
     used = sorted({b for row in rows for b, _ in row})
     at = {b: k for k, b in enumerate(used)}
     skin = np.zeros((len(rows), slots), np.int64)

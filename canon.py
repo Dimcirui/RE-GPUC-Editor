@@ -12,7 +12,8 @@ Maintenance constraints:
   ``particle_uv`` serve both kinds.
 - An editable locked Part also stores its faces (quads split at a-c, ``topology``), each of their triangles'
   tangent flags and each particle's index in the file (``src``, -1 for a new one); its mesh carries
-  ``PARTICLE_ID``, one skin group per bone and the flags (``TANGENT_FLAGS``, copied back by ``sync``). A change
+  ``PARTICLE_ID``, one skin group per bone, deforming by ``SKIN_MODIFIER`` so that Blender's normalizing leaves
+  the value groups out, and the flags (``TANGENT_FLAGS``, copied back by ``sync``). A change
   to its structure or skin is taken by ``structure.adopt`` instead of being undone."""
 import bpy
 import numpy as np
@@ -23,6 +24,7 @@ KEY = "ree_gpuc_canon"
 UV_LAYER = "grid"
 ROW, COL = "gpuc_row", "gpuc_col"
 PARTICLE_ID = "gpuc_particle_id"
+SKIN_MODIFIER = "GPUC Skin"
 # on an editable locked Part's faces: the tangent flags of each face's first triangle and of a quad's second
 TANGENT_FLAGS = ("gpuc_tangent_flags_a", "gpuc_tangent_flags_b")
 MAPPING_KEY = "ree_gpuc_value_mapping"
@@ -427,7 +429,8 @@ def write_groups(obj, d: dict | None = None) -> None:
 
 def build_mesh(obj) -> None:
     """Rebuilds the mesh (rest pose, armature space), grid UV, attributes and value groups from the canonical
-    data. Bone groups and Armature modifiers are removed: the mesh stays in the rest pose."""
+    data. Bone groups are written for an editable Part only, which keeps its Armature modifier (``keep_modifier``);
+    any other Part loses both and stays in the rest pose."""
     d = load(obj)
     me = obj.data
     me.clear_geometry()
@@ -448,8 +451,7 @@ def build_mesh(obj) -> None:
         me.attributes.new(ROW, "INT", "POINT").data.foreach_set("value", r)
         me.attributes.new(COL, "INT", "POINT").data.foreach_set("value", c)
     me.update()
-    for mod in [m for m in obj.modifiers if m.type == "ARMATURE"]:
-        obj.modifiers.remove(mod)
+    keep_modifier(obj, d)
     keep = {group_name(f) for f in FIELD_NAMES}
     for g in [g for g in obj.vertex_groups if g.name not in keep]:
         obj.vertex_groups.remove(g)
@@ -463,6 +465,29 @@ def build_mesh(obj) -> None:
                     g.add([int(i) for i in np.flatnonzero(dense[:, k] == value)], float(value), "REPLACE")
     write_groups(obj, d)
     obj.vertex_groups.active_index = obj.vertex_groups[group_name(FIELD_NAMES[0])].index
+
+
+def skin_armature(obj):
+    """The armature an editable Part's skin groups deform by (``SKIN_MODIFIER``), None without one."""
+    arm = obj.ree_gpuc_part.armature
+    return arm if arm is not None and arm.type == "ARMATURE" else None
+
+
+def keep_modifier(obj, d) -> None:
+    """Give an editable Part one Armature modifier on its armature, enabled in the viewport, which keeps Blender's
+    normalizing to the bone groups and leaves the value groups out; remove any other Armature modifier."""
+    arm = skin_armature(obj) if editable(d) else None
+    for mod in [m for m in obj.modifiers if m.type == "ARMATURE" and (arm is None or m.name != SKIN_MODIFIER)]:
+        obj.modifiers.remove(mod)
+    if arm is None:
+        return
+    mod = obj.modifiers.get(SKIN_MODIFIER) or obj.modifiers.new(SKIN_MODIFIER, "ARMATURE")
+    if mod.object != arm:
+        mod.object = arm
+    for name, value in (("use_vertex_groups", True), ("use_bone_envelopes", False), ("show_viewport", True),
+                        ("show_render", True), ("show_in_editmode", False), ("show_on_cage", False)):
+        if getattr(mod, name) != value:
+            setattr(mod, name, value)
 
 
 def write_tangent_flags(obj, d) -> None:
@@ -505,10 +530,16 @@ def skin_dense(d) -> np.ndarray:
     return out
 
 
+def skin_group_names(obj) -> list:
+    """The names of the mesh's vertex groups that are not value groups: its skin groups."""
+    values_ = {group_name(f) for f in FIELD_NAMES}
+    return [g.name for g in obj.vertex_groups if g.name not in values_]
+
+
 def skin_groups(obj) -> tuple:
     """(names, weights: vertices x names) of the mesh's vertex groups that are not value groups; object mode."""
-    values_ = {group_name(f) for f in FIELD_NAMES}
-    groups = [g for g in obj.vertex_groups if g.name not in values_]
+    names = set(skin_group_names(obj))
+    groups = [g for g in obj.vertex_groups if g.name in names]
     col = {g.index: k for k, g in enumerate(groups)}
     out = np.zeros((len(obj.data.vertices), len(groups)), np.float32)
     for v in obj.data.vertices:
@@ -558,7 +589,7 @@ def mismatch(obj, positions=True) -> str:
     uv.data.foreach_get("uv", got)
     if not np.allclose(got, want, atol=1e-6):
         return "grid UV moved"
-    if any(m.type == "ARMATURE" for m in obj.modifiers):
+    if not editable(d) and any(m.type == "ARMATURE" for m in obj.modifiers):
         return "made by an older version"
     for f, w in group_weights(obj, n).items():
         if w is None:
@@ -587,6 +618,7 @@ def sync(obj) -> None:
         if not np.array_equal(v, d[f]):
             c[f] = [float(x) for x in v]
     if editable(d):
+        keep_modifier(obj, d)
         flags = read_tangent_flags(obj, d)
         if flags is None:
             write_tangent_flags(obj, d)
@@ -679,11 +711,24 @@ def restore(obj) -> str:
     return why
 
 
+def _same_shape(obj) -> bool:
+    """Whether the mesh still has the stored particles at their places and as many corners: a quick check for an
+    update its armature may have caused alone."""
+    me, c = obj.data, obj[KEY]
+    co = np.empty(3 * len(me.vertices), np.float32)
+    me.vertices.foreach_get("co", co)
+    return len(co) == len(c["co"]) and np.array_equal(co, f32(c["co"])) and len(me.loops) == len(c["faces"])
+
+
 @bpy.app.handlers.persistent
 def _on_depsgraph(scene, depsgraph):
     if _busy:
         return
     seen = set()
+    # a posed or moved armature deforms its Parts' meshes (SKIN_MODIFIER) without changing them: skipped when the
+    # mesh looks the same
+    posed = {u.id.original.name for u in depsgraph.updates if isinstance(u.id.original, bpy.types.Object)
+             and u.id.original.type == "ARMATURE"}
     for upd in depsgraph.updates:
         obj = upd.id.original
         if upd.is_updated_transform and isinstance(obj, bpy.types.Object) and obj.get("TYPE") == "RE_GPUC_PART":
@@ -698,6 +743,9 @@ def _on_depsgraph(scene, depsgraph):
         for obj in ids:
             if isinstance(obj, bpy.types.Object) and obj.name not in seen and obj.get("TYPE") == "RE_GPUC_PART":
                 seen.add(obj.name)
+                mod = obj.modifiers.get(SKIN_MODIFIER)
+                if mod is not None and mod.object is not None and mod.object.name in posed and _same_shape(obj):
+                    continue
                 restore(obj)
 
 
@@ -708,6 +756,8 @@ def _initialize_mapping(*_):
         if has(obj) and MAPPING_KEY not in obj:
             fit_ranges(obj, load(obj))
             write_groups(obj)
+        if locked(obj) and editable_part(obj):
+            keep_modifier(obj, load(obj))
     return None
 
 
