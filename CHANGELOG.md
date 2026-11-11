@@ -16,7 +16,7 @@
 - **Attach to Bones** — an imported Part found to be a grid of bone chains follows its bones, and stays its file's Part.
 - **Anchor and hem rows** — a Part made from bones can have pinned rows above its top bones and rows past its chains' ends, as the game's files do; they come back when the file is imported again.
 - **Project onto Mesh** — an option when creating or regenerating a Part from bones: its particles move onto the mid-surface of the cloth mesh skinned to its bones, and it still regenerates.
-- **Fit to Mesh** — moves a cloth's particles onto another mesh with the same faces, such as the same mesh sculpted or converted for another character, and onto its armature.
+- **Fit to Mesh** — moves a cloth's particles onto another mesh with the same faces, such as the same mesh sculpted or converted for another character, and onto its armature and game.
 - **Driven bones moved off an imported file's binds** — bound again at their rest on export, instead of an error in Check.
 - **Export in a pose** — particles are written where the current pose carries them, as RE Mesh Editor writes the mesh, so a cloth exported with its posed mesh still fits it.
 - **Imported cloths in another game** — a Wilds, RE9 or Onimusha file kept as imported exports for the other two.

@@ -160,10 +160,10 @@ def move_cloth_to(coll, arm) -> None:
             collision.apply(root.ree_gpuc_capsule)
 
 
-def fit_cloth(coll, source, target, use_target_armature=True) -> str:
+def fit_cloth(coll, source, target, use_target_armature=True, game="") -> str:
     """Move the cloth's particles from the source mesh collection onto the target's (see the module); with
-    ``use_target_armature`` and another armature on the target, the cloth goes onto it. Returns the notice; raises
-    ``ValueError`` when no mesh pairs."""
+    ``use_target_armature`` and another armature on the target, the cloth goes onto it; a ``game`` other than the
+    header's becomes its Game. Returns the notice; raises ``ValueError`` when no mesh pairs."""
     if source == target:
         raise ValueError("the source and target mesh collections are the same")
     pairs, left = pair_meshes(source, target)
@@ -202,6 +202,10 @@ def fit_cloth(coll, source, target, use_target_armature=True) -> str:
         text += f"; {far} more than {FAR * 100:.0f} cm from {source.name} stay where they were"
     if new_arm is not None:
         text += f"; the cloth is now on {new_arm.name}"
+    head = props.header(coll)
+    if game and head is not None and head.ree_gpuc_header.game != game:
+        head.ree_gpuc_header.game = game
+        text += f"; Game set to {fileio.game_name(game)}"
     if skipped:
         text += "; not moved: " + ", ".join(f"{n} ({w})" for n, w in skipped[:3])
     if left:

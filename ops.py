@@ -10,6 +10,7 @@ from bpy_extras.io_utils import ExportHelper, ImportHelper
 from mathutils import Matrix, Vector
 
 from . import canon, collision, fileio, generate, props, sim
+from .modules import gpuc_params
 
 
 def _settings(context):
@@ -1250,6 +1251,9 @@ class REE_GPUC_OT_fit_to_mesh(bpy.types.Operator):
         name="Use Its Armature", default=True,
         description="Put the cloth on the target's armature: its Parts' skin, the header and the collisions follow "
                     "its bones. Off, the cloth stays on its armature")
+    game: bpy.props.EnumProperty(
+        name="Game", items=[g for g in props.GAMES if g[0] != gpuc_params.RE4_EXT],
+        description="The game the target mesh is for: the cloth's header takes it. Its values stay as they are")
 
     @classmethod
     def poll(cls, context):
@@ -1261,6 +1265,9 @@ class REE_GPUC_OT_fit_to_mesh(bpy.types.Operator):
         mesh = fileio.mesh_collection(arm) if arm is not None else None
         if mesh is not None and not self.source_mesh:
             self.source_mesh = mesh.name
+        head = props.header(_settings(context).target)
+        if head is not None and head.ree_gpuc_header.game != gpuc_params.RE4_EXT:
+            self.game = head.ree_gpuc_header.game
         return context.window_manager.invoke_props_dialog(self, width=360)
 
     def draw(self, context):
@@ -1268,6 +1275,7 @@ class REE_GPUC_OT_fit_to_mesh(bpy.types.Operator):
         layout.prop_search(self, "source_mesh", bpy.data, "collections")
         layout.prop_search(self, "target_mesh", bpy.data, "collections")
         layout.prop(self, "use_target_armature")
+        layout.prop(self, "game")
 
     def execute(self, context):
         from . import fit
@@ -1276,7 +1284,7 @@ class REE_GPUC_OT_fit_to_mesh(bpy.types.Operator):
         if src is None or dst is None:
             return refused(self, "Pick the mesh collections to move the particles from and to")
         try:
-            text = fit.fit_cloth(coll, src, dst, self.use_target_armature)
+            text = fit.fit_cloth(coll, src, dst, self.use_target_armature, self.game)
         except (ValueError, generate.GenerateError) as e:
             return refused(self, f"Fit to Mesh: {e}")
         for obj in props.parts(coll):
