@@ -267,6 +267,28 @@ def grid_skin(d, slots: int) -> tuple:
     return idx, u8
 
 
+POSED = "Written in the armature's current pose, as RE Mesh Editor writes the mesh"
+
+
+def posed_armature(arm) -> bool:
+    """Whether an armature shows a pose that moves a bone off its rest place (RE Mesh Editor exports the mesh in
+    it, the bones at rest)."""
+    if arm is None or arm.type != "ARMATURE" or arm.data.pose_position == "REST":
+        return False
+    ev = arm.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    return any(not np.allclose(np.array(pb.matrix, float), np.array(pb.bone.matrix_local, float), atol=1e-6)
+               for pb in ev.pose.bones)
+
+
+def _posed_co(d, arm) -> np.ndarray:
+    """A Part's particles in the armature's space as the export writes them: carried by the current pose when the
+    armature shows one (``posed_armature``), else at rest."""
+    if not posed_armature(arm):
+        return d["co"].astype(float)
+    from . import draw
+    return draw.posed(d, arm.evaluated_get(bpy.context.evaluated_depsgraph_get()))
+
+
 def _skin_row(full, geo, i) -> tuple:
     """Particle ``i``'s 8 skin slots (bone indices ``full[node]``, 255ths) as the builder takes them."""
     row = [(full[j], int(u)) for j, u in zip(geo["idx"][i], geo["u8"][i]) if u > 0 or not geo["compact"]]
@@ -931,7 +953,7 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
         vals[k] = v
         n = canon.count(d)
         starts[obj] = run[k] = base
-        positions.append(d["co"].astype(float) @ to_game[:3, :3].T + to_game[:3, 3])
+        positions.append(_posed_co(d, arm) @ to_game[:3, :3].T + to_game[:3, 3])
         sim_weight.append(np.clip(v["sim_weight"], 0.0, 1.0))
         geo = _part_geometry(obj, d, arm)
         tri_flags += geo["flags"]
@@ -981,6 +1003,8 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
     if cut:
         notes.append(f"{cut} particles skinned to more bones than {game_name(ext)} takes ({slots}): the lightest "
                      f"left out")
+    if posed_armature(arm):
+        notes.append(Info(POSED))
 
     # the file's driven joints, at the file's binds
     outputs, moved, dropped, driven = [], 0, 0, set()
@@ -1109,7 +1133,7 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
     data = built.build()
     gpuc.Gpuc(data, layout)                                   # raises if the output does not parse back
     if source is not None:
-        notes.append(Info("New Parts or edited particles: the file is written again from the Parts"))
+        notes.append(Info("The file is written again from the Parts"))
         if gp.ext_of(g.layout) != ext:
             notes.append(Info(f"Written for {game_name(ext)} from a {game_name(gp.ext_of(g.layout))} file"))
         if moved:
@@ -1229,7 +1253,13 @@ def _build_keep(coll, head, cfg_objs, part_objs, from_mesh=False, mesh_coll=None
     counts = np.bincount(f_part, minlength=len(file_objs)).tolist()
     mine = [canon.count(canon.load(o)) for o in file_objs]
     ext = ext or game
-    if len(file_objs) < len(part_objs) or any(canon.edited(o) for o in file_objs) or ext != game:
+    arm = next((o.ree_gpuc_part.armature for o in part_objs if o.ree_gpuc_part.armature), None)
+    posed = posed_armature(arm)
+    if posed and not all(canon.editable(canon.load(o)) for o in file_objs):
+        notes.append("The armature is posed, but its Parts cannot be written again: they keep the file's rest "
+                     "positions. Put the armature in its rest pose to match a mesh exported now")
+        posed = False
+    if len(file_objs) < len(part_objs) or any(canon.edited(o) for o in file_objs) or ext != game or posed:
         if len(file_objs) != len(counts):
             raise ExportError(f"it has {len(file_objs)} of its file's {len(counts)} Parts: a Keep Structure cloth "
                               f"cannot remove its file's Parts")
@@ -1237,7 +1267,6 @@ def _build_keep(coll, head, cfg_objs, part_objs, from_mesh=False, mesh_coll=None
                             (g, f_part))
     if mine != counts:
         raise ExportError(f"its Parts ({mine} particles) are not its file's ({counts}): import it again")
-    arm = next((o.ree_gpuc_part.armature for o in part_objs if o.ree_gpuc_part.armature), None)
     vals = [canon.values(o) for o in part_objs]
     starts = [int(np.argmax(f_part == k)) for k in range(len(part_objs))]        # each part's run, where it lies
     vertices = vertex_drive_info(stored_file(coll)) is not None
@@ -1391,6 +1420,9 @@ def _re4_changes(obj, pg, allowed, ignored=()):
 
 
 def _build_re4(coll, head, cfg_objs, part_objs):
+    arm = next((o.ree_gpuc_part.armature for o in part_objs if o.ree_gpuc_part.armature), None)
+    notes = (["The armature is posed, but an RE4 file keeps its rest positions. Put the armature in its rest pose "
+              "to match a mesh exported now"] if posed_armature(arm) else [])
     if head.get("ree_gpuc_re4_mapping") != 2:
         raise ExportError("an older version of the add-on imported this RE4 cloth: import the original file again with Keep Structure")
     raw = stored_file(coll)
@@ -1462,7 +1494,7 @@ def _build_re4(coll, head, cfg_objs, part_objs):
                 tails[k] = gp.tail_bytes(*per_part[i][taken[i]])
             taken[i] += 1
     try:
-        return re4.patch(raw, header, cfg_changes, part_changes, particle_changes, tails), []
+        return re4.patch(raw, header, cfg_changes, part_changes, particle_changes, tails), notes
     except ValueError as e:
         raise ExportError(str(e)) from e
 

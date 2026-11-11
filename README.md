@@ -55,6 +55,8 @@ After you move bones in Edit Mode, the affected Parts rebuild when you leave it.
 * **Keep Structure**: keeps the file's particles, links and skinning, and lets you edit the values, and the particles and faces themselves (see Editing a Part as a mesh). With no edits, the export is byte for byte the original file. A Wilds, RE9 or Onimusha file can also be exported for the other two (the whole file is then written again from the Parts); an RE4 file only for RE4.
 * **Update Existing**: applies the file's values to an existing GPUC collection.
 
+The export writes the particles in the armature's current pose, as RE Mesh Editor writes the mesh (its vertices posed, its bones at rest), so a cloth exported with its mesh in a pose still fits it; the driven joints stay bound at rest. Put the armature in its rest pose (or Rest Position) to export at rest. A Keep Structure cloth in a pose is written again from its Parts; one that cannot be, and RE4, keeps its file's rest positions, and the export says so.
+
 Any Wilds, RE9 or Onimusha cloth can be converted between those three games by choosing the game in the export dialog. A particle skinned to more bones than the game takes (RE9 8, Wilds and Onimusha 6) keeps the heaviest, and the export says how many.
 
 </details>
