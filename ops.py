@@ -446,6 +446,11 @@ class _PartOptions:
                                     description="Extra particles between two bones of a chain. 0: one per bone")
     sub_cols: bpy.props.IntProperty(name="Between chains, across", default=0, min=0, max=8,
                                     description="Extra columns of particles between two neighbouring chains")
+    project: bpy.props.BoolProperty(
+        name="Project onto Mesh", default=False,
+        description="Move the particles onto the mid-surface of the cloth mesh skinned to these bones, as rest "
+                    "offsets: the Part still regenerates, and Reset returns it to the bones. Particles that find no "
+                    "such surface nearby take their neighbours' offsets")
 
     @classmethod
     def poll(cls, context):
@@ -458,7 +463,7 @@ class _PartOptions:
     def draw(self, context):
         col = self.layout.column()
         col.use_property_split = True
-        for name in ("closed", "truncate", "sub_rows", "sub_cols"):
+        for name in ("closed", "truncate", "sub_rows", "sub_cols", "project"):
             col.prop(self, name)
 
     def execute(self, context):
@@ -475,8 +480,23 @@ class _PartOptions:
         if s.target is None:
             s.target = generate.new_collection(arm.name, arm)
         obj = generate.new_part(s.target, arm, lay, s.config)
-        self.report({"INFO"}, f"{obj.name}: {lay['rows']} x {lay['cols']}, {'closed' if lay['closed'] else 'open'}")
+        text = f"{obj.name}: {lay['rows']} x {lay['cols']}, {'closed' if lay['closed'] else 'open'}"
+        if self.project:
+            text += "; " + _project(self, obj)
+        self.report({"INFO"}, text)
         return {"FINISHED"}
+
+
+def _project(op, obj) -> str:
+    """Project a Part onto its mesh (``project.project_part``), its notice; the reason it could not, reported."""
+    from . import project
+    try:
+        text = project.project_part(obj)
+    except ValueError as e:
+        text = f"not projected: {e}"
+        op.report({"WARNING"}, f"{obj.name} {text}")
+    obj["ree_gpuc_notice"] = text
+    return text
 
 
 class REE_GPUC_OT_part_from_parents(_PartOptions, bpy.types.Operator):
@@ -526,6 +546,11 @@ class REE_GPUC_OT_regenerate_part(bpy.types.Operator):
     closed: bpy.props.EnumProperty(name="Ring", items=RING[1:])
     sub_rows: bpy.props.IntProperty(name="Between bones, down", min=0, max=8)
     sub_cols: bpy.props.IntProperty(name="Between chains, across", min=0, max=8)
+    project: bpy.props.BoolProperty(
+        name="Project onto Mesh", default=False, options={"SKIP_SAVE"},
+        description="Move the particles onto the mid-surface of the cloth mesh skinned to these bones, as rest "
+                    "offsets: the Part still regenerates, and Reset returns it to the bones. Particles that find no "
+                    "such surface nearby take their neighbours' offsets")
 
     @classmethod
     def poll(cls, context):
@@ -546,7 +571,7 @@ class REE_GPUC_OT_regenerate_part(bpy.types.Operator):
     def draw(self, context):
         col = self.layout.column()
         col.use_property_split = True
-        for name in ("closed", "sub_rows", "sub_cols"):
+        for name in ("closed", "sub_rows", "sub_cols", "project"):
             col.prop(self, name)
 
     def execute(self, context):
@@ -564,7 +589,10 @@ class REE_GPUC_OT_regenerate_part(bpy.types.Operator):
             return {"CANCELLED"}
         obj["ree_gpuc_check"] = "ok"
         p = obj.ree_gpuc_part
-        self.report({"INFO"}, f"{obj.name}: {p.rows} x {p.cols}")
+        text = f"{obj.name}: {p.rows} x {p.cols}"
+        if self.project:
+            text += "; " + _project(self, obj)
+        self.report({"INFO"}, text)
         return {"FINISHED"}
 
 
