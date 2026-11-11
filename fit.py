@@ -206,7 +206,7 @@ def fit_cloth(coll, source, target, use_target_armature=True) -> str:
         text += "; not moved: " + ", ".join(f"{n} ({w})" for n, w in skipped[:3])
     if left:
         text += f"; {len(left)} meshes of {source.name} found no match"
-    problems = [p for o in parts if canon.locked(o) and canon.file_part(o) for p in fileio.locked_problems(o)]
-    if problems:                                   # e.g. "60 driven bones moved off where the file binds them (...)"
-        text += f"; {problems[0].split(': ')[0]}: they stay bound where the file binds them"
+    moved = fileio.moved_joints(coll, generate._armature(coll))
+    if moved:
+        text += f"; the export binds {len(moved)} of the file's driven joints again at their bones' rest"
     return text

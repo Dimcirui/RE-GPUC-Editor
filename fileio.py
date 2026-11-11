@@ -877,8 +877,8 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
     their meshes, links from their faces. ``source``: (the stored file's ``Gpuc``, each of its particles' part) of
     an imported cloth, whose Parts come first in the file's order and batches, the new ones after.
 
-    Driven joints: a file's keep its bind, and its particles and weights while they all remain and no new particle
-    is skinned to its bone; otherwise they take the heaviest ``MIN_SLOTS`` particles skinned to that bone, by
+    Driven joints: a file's keep its bind (its bone's rest when the bone moved, ``moved_joints``), and its particles and
+    weights while they all remain and no new particle is skinned to its bone; otherwise they take the heaviest ``MIN_SLOTS`` particles skinned to that bone, by
     their skin's share. The other Parts' driven bones (``canon.driven_names``) are driven so, bound at their rest
     pose and indexed by the .mesh's weighted bones (a file's cloth: From Mesh only)."""
     notes = []
@@ -1011,7 +1011,8 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
     if source is not None:
         palette = (_mesh_palette(coll, head, arm, len(f["joints"]), mesh_coll, mesh_file, gpuc_path, notes)
                    if from_mesh else [j["palette"] for j in f["joints"]])
-        for j, x in zip(f["joints"], palette):
+        rebound = moved_joints(coll, arm)
+        for k, (j, x) in enumerate(zip(f["joints"], palette)):
             if not j["drivers"]:
                 dropped += 1
                 continue
@@ -1020,6 +1021,8 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
             world = np.eye(4)
             world[:3, :3] = j["rotations"][0] @ frame
             world[3, :3] = f["pos"][cp] + frame.T @ j["offsets"][0]
+            if k in rebound:                                     # its bone moved: bound at its rest, as new Parts
+                world = (to_game @ np.array(arm.data.bones[rebound[k][0]].matrix_local, float)).T
             score = collections.Counter()
             for p, w in j["drivers"]:
                 for b, s in zip(f["skin"][p], f["skin_w"][p]):
@@ -1029,8 +1032,8 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
             driven.add(bone)
             kept = [new_of.get(p) for p, _ in j["drivers"]]
             if None not in kept and not any(p in fresh for p, _ in skinned[bone]):
-                binds = [(j["rotations"][s], j["offsets"][s], f["frames"][p][:, :3], f["pos"][p])
-                         for s, (p, _) in enumerate(j["drivers"])]
+                binds = [] if k in rebound else [(j["rotations"][s], j["offsets"][s], f["frames"][p][:, :3], f["pos"][p])
+                                                 for s, (p, _) in enumerate(j["drivers"])]
                 outputs.append(dict(palette=x, world=world, particles=kept, weights=[w for _, w in j["drivers"]],
                                     binds=binds))
                 continue
@@ -1141,6 +1144,10 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
             notes.append(Info(f"Written for {game_name(ext)} from a {game_name(gp.ext_of(g.layout))} file"))
         if moved:
             notes.append(Info(f"{moved} driven joints follow new particles (the heaviest skinned to their bones)"))
+        if rebound:
+            far = max(x for _, x in rebound.values())
+            notes.append(Info(f"{len(rebound)} driven joints bound again at their bones' rest: the bones moved off "
+                              f"where the file binds them (up to {far * 100:.2f} cm)"))
         if dropped:
             notes.append(f"{dropped} driven joints have no particle left and are left out")
         if left:
@@ -1262,8 +1269,10 @@ def _build_keep(coll, head, cfg_objs, part_objs, from_mesh=False, mesh_coll=None
         notes.append("The armature is posed, but its Parts cannot be written again: they keep the file's rest "
                      "positions. Put the armature in its rest pose to match a mesh exported now")
         posed = False
+    rebind = bool(moved_joints(coll, arm)) and all(canon.editable(canon.load(o)) or canon.attached(o)
+                                                    for o in file_objs)
     if (len(file_objs) < len(part_objs) or any(canon.edited(o) or canon.attached(o) for o in file_objs)
-            or ext != game or posed):
+            or ext != game or posed or rebind):
         if len(file_objs) != len(counts):
             raise ExportError(f"it has {len(file_objs)} of its file's {len(counts)} Parts: an imported cloth "
                               f"cannot remove its file's Parts")
@@ -1793,9 +1802,34 @@ def _bind(f: dict, j: dict) -> np.ndarray:
     return f["pos"][cp] + f["frames"][cp][:, :3].astype(float).T @ j["offsets"][0]
 
 
+MOVED = 1e-3      # m: a driven bone this far from where its file binds it has moved (the import's tolerance)
+
+
+def moved_joints(coll, arm) -> dict:
+    """The imported cloth's driven joints whose bones lie over ``MOVED`` from where the file binds them: {joint index:
+    (bone name, distance)}. The export binds them again at the armature's rest."""
+    if arm is None or arm.type != "ARMATURE" or not keeps_structure(coll):
+        return {}
+    f = file_parts(stored_file(coll))
+    names = list(props.header(coll).get(JOINTS_KEY, ()))
+    if not f["joints"] or f["frames"] is None or len(names) != len(f["joints"]):
+        return {}
+    to_game = ROTATE_BACK @ np.array(arm.matrix_world, float)
+    out = {}
+    for k, (name, j) in enumerate(zip(names, f["joints"])):
+        b = arm.data.bones.get(name) if name else None
+        if b is None or not j["drivers"]:
+            continue
+        far = float(np.linalg.norm((to_game @ np.r_[b.head_local, 1.0])[:3] - _bind(f, j)))
+        if far > MOVED:
+            out[k] = (name, far)
+    return out
+
+
 def locked_problems(obj) -> list:
     """Return problems of an imported Part against its armature: missing skin or driven bones, or driven
-    bones over 1 mm from where the file binds them (the import's tolerance); [] when none or not applicable."""
+    bones over ``MOVED`` from where the file binds them when the Part cannot be written again (else the export binds
+    them again); [] when none or not applicable."""
     coll = reference.cloth_of(obj)
     arm = obj.ree_gpuc_part.armature
     if coll is None or arm is None or arm.type != "ARMATURE":
@@ -1825,11 +1859,10 @@ def locked_problems(obj) -> list:
         far.append(float(np.linalg.norm((to_game @ np.r_[b.head_local, 1.0])[:3] - _bind(f, j))))
     if gone:
         return [f"{len(gone)} driven bones are gone: {', '.join(gone[:4])}"]
-    moved = [x for x in far if x > 1e-3]
-    if moved:
-        return [f"{len(moved)} driven bones moved off where the file binds them (up to {max(moved) * 100:.2f} cm): "
-                f"the file's structure no longer fits the mesh (import it again with Attach to Bones, or move them "
-                f"back)"]
+    moved = [x for x in far if x > MOVED]
+    if moved and not (canon.editable(d) or canon.attached(obj)):
+        return [f"{len(moved)} driven bones moved off where the file binds them (up to {max(moved) * 100:.2f} cm), "
+                f"and its particles keep the file's places, so they cannot be bound again: move the bones back"]
     return []
 
 
