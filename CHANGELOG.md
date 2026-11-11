@@ -14,6 +14,7 @@
 - **Collision planes and spheres for Wilds, RE9 and Onimusha** — a file's own planes and spheres import as objects and export to their own sections, chosen by the Part's Plane and Sphere Bits; Collision From Bones makes planes for every game.
 - **Triangle tangent flags** — on an editable imported Part's faces, as attributes you can read and set; new triangles whose UVs span no area get the flag the game's files give them.
 - **Attach to Bones** — an imported Part found to be a grid of bone chains follows its bones, and stays its file's Part.
+- **Anchor and hem rows** — a Part made from bones can have pinned rows above its top bones and rows past its chains' ends, as the game's files do; they come back when the file is imported again.
 - **Project onto Mesh** — an option when creating or regenerating a Part from bones: its particles move onto the mid-surface of the cloth mesh skinned to its bones, and it still regenerates.
 - **Fit to Mesh** — moves a cloth's particles onto another mesh with the same faces, such as the same mesh sculpted or converted for another character, and onto its armature.
 - **Driven bones moved off an imported file's binds** — bound again at their rest on export, instead of an error in Check.

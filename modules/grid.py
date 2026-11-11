@@ -72,6 +72,24 @@ def dims(node_rows: int, node_cols: int, sub_rows: int, sub_cols: int, closed: b
     return rows, cols
 
 
+def extend(pos, skin, weight, cols: int, above: int = 0, gap: float = 0.01, below: int = 0) -> tuple:
+    """A particle grid with ``above`` rows over its top row, ``gap`` apart along each column's way up (its second
+    row to its first), and ``below`` rows under its bottom row, as far apart as its last two rows; each skinned as the
+    row it extends. Returns (pos, skin, weight) with the rows added."""
+    pos, skin, weight = np.asarray(pos, float), np.asarray(skin), np.asarray(weight, float)
+    if not (above or below) or len(pos) < 2 * cols:
+        return pos, skin, weight
+    top, second = pos[:cols], pos[cols:2 * cols]
+    up = top - second
+    up /= np.maximum(np.linalg.norm(up, axis=1, keepdims=True), 1e-12)
+    step = pos[-cols:] - pos[-2 * cols:-cols]
+    parts_p = [top + up * gap * k for k in range(above, 0, -1)] + [pos] + \
+        [pos[-cols:] + step * k for k in range(1, below + 1)]
+    parts_s = [skin[:cols]] * above + [skin] + [skin[-cols:]] * below
+    parts_w = [weight[:cols]] * above + [weight] + [weight[-cols:]] * below
+    return np.concatenate(parts_p), np.concatenate(parts_s), np.concatenate(parts_w)
+
+
 def subdivide(nodes, sub_rows: int, sub_cols: int, closed: bool, centre=None):
     """The particles of a grid of bone heads (node_rows x node_cols x 3, row 0 at the top): each particle's
     position, and its skin as the 4 corner bones (flat node indices) and their bilinear weights. A particle on a

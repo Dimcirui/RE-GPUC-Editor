@@ -6,8 +6,8 @@ Maintenance constraints:
 - Every Part stores its mesh under ``KEY``: particles, triangles, UVs, links with their own tails, skin by bone
   name and normals. ``count``, ``faces``, ``face_uvs``, ``links`` and ``particle_uv`` read it, or a bone grid.
 - A Part made from bones also stores its bone grid under ``RECIPE_KEY`` (row by row, row 0 at the top, the
-  bones' rest heads in armature space; ``sub_rows`` / ``sub_cols`` particles between bones; 4 node indices of
-  skin per particle). While ``ATTACHED_KEY`` is set it follows the grid: ``store`` of a grid writes the grid and
+  bones' rest heads in armature space; ``sub_rows`` / ``sub_cols`` particles between bones, ``anchor_rows`` over the
+  top row and ``hem_rows`` under the bottom one; 4 node indices of skin per particle). While ``ATTACHED_KEY`` is set it follows the grid: ``store`` of a grid writes the grid and
   its mesh (``_bake``), valid rest-position edits are committed as offsets from ``base_co`` (the faces keep their
   winding), and changes to topology, particle IDs or UV are undone by ``restore``. ``load`` then also holds the
   grid's ``GRID_KEYS``. ``locked``: a Part that does not follow a grid.
@@ -120,7 +120,7 @@ def has(obj) -> bool:
 
 
 GRID_KEYS = ("rows", "cols", "closed", "sub_rows", "sub_cols", "node_rows", "node_cols", "node_co", "base_co",
-             "rest_offset", "centre", "diagonal_bend")
+             "rest_offset", "centre", "diagonal_bend", "anchor_rows", "anchor_gap", "hem_rows")
 
 
 def load(obj) -> dict:
@@ -155,6 +155,8 @@ def _load_grid(c, obj, vals) -> dict:
     return {"locked": False, "count": rows * cols, "base_co": base, "rest_offset": offset,
             "rows": rows, "cols": cols, "closed": bool(c["closed"]), "tile": int(c["tile"]), "co": co,
             "nodes": nodes, "node_rows": nr, "node_cols": nc, "sub_rows": sr, "sub_cols": sc, "node_co": node_co,
+            "anchor_rows": int(c.get("anchor_rows", 0)), "anchor_gap": float(c.get("anchor_gap", 0.01)),
+            "hem_rows": int(c.get("hem_rows", 0)),
             "skin": skin, "skin_w": skin_w, "centre": centre, "diagonal_bend": obj.ree_gpuc_part.diagonal_bend,
             **{n: f32(vals[n]) if n in vals else np.full(rows * cols, DEFAULTS[n], np.float32) for n in FIELD_NAMES}}
 
@@ -208,6 +210,8 @@ def store(obj, data: dict) -> None:
                        "tile": int(data["tile"]), "co": fl(base + offset), "nodes": list(data["nodes"]),
                        "node_rows": int(data["node_rows"]), "node_cols": int(data["node_cols"]),
                        "sub_rows": int(data["sub_rows"]), "sub_cols": int(data["sub_cols"]),
+                       "anchor_rows": int(data.get("anchor_rows", 0)), "anchor_gap": float(data.get("anchor_gap", 0.01)),
+                       "hem_rows": int(data.get("hem_rows", 0)),
                        "node_co": fl(data["node_co"]), "skin": [int(x) for x in np.asarray(data["skin"]).ravel()],
                        "skin_w": fl(data["skin_w"]), "centre": [] if data["centre"] is None else fl(data["centre"]),
                        **{n: fl(data[n]) for n in FIELD_NAMES}}

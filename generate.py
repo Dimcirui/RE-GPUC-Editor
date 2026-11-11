@@ -3,7 +3,9 @@ and regenerates it.
 
 Each chain is one column of the bone grid, top to bottom, ordered round the cloth by ``grid.order_columns``. A
 particle sits on every bone's head, with ``sub_rows`` / ``sub_cols`` more between neighbouring bones, each skinned
-to the four bones round it. Regenerating keeps every Config, Part and link-tail value and resamples each
+to the four bones round it; ``anchor_rows`` more above the top row (``anchor_gap`` apart, pinned, as the game's
+files hold the cloth by a row just above its first bones) and ``hem_rows`` below the bottom one (past the chains'
+ends), skinned as the row they extend. Regenerating keeps every Config, Part and link-tail value and resamples each
 particle's values from the old grid.
 
 Maintenance constraints:
@@ -78,7 +80,8 @@ def heads(arm, names) -> np.ndarray:
     return np.array([tuple(bones[n].head_local) for n in names], np.float32).reshape(-1, 3)
 
 
-def layout(arm, cols, closed="AUTO", truncate=False, sub_rows=0, sub_cols=0) -> dict:
+def layout(arm, cols, closed="AUTO", truncate=False, sub_rows=0, sub_cols=0, anchor_rows=0, anchor_gap=0.01,
+           hem_rows=0) -> dict:
     """The bone grid the chains make and the particle grid on it."""
     if len(cols) < 2:
         raise GenerateError(f"a part needs at least two chains (the columns); {len(cols)} selected")
@@ -94,7 +97,8 @@ def layout(arm, cols, closed="AUTO", truncate=False, sub_rows=0, sub_cols=0) -> 
     cols = [cols[k] for k in order]
     nodes = [cols[c][r] for r in range(nr) for c in range(len(cols))]
     lay = {"node_rows": nr, "node_cols": len(cols), "sub_rows": sub_rows, "sub_cols": sub_cols,
-           "closed": is_closed, "centre": centre, "nodes": nodes}
+           "closed": is_closed, "centre": centre, "nodes": nodes, "anchor_rows": int(anchor_rows),
+           "anchor_gap": float(anchor_gap), "hem_rows": int(hem_rows)}
     return {**lay, **_particles(lay, heads(arm, nodes))}
 
 
@@ -103,7 +107,9 @@ def _particles(lay: dict, node_co) -> dict:
     pos, skin, weight = grid.subdivide(np.asarray(node_co, float).reshape(nr, nc, 3), lay["sub_rows"],
                                        lay["sub_cols"], lay["closed"], lay["centre"])
     rows, cols = grid.dims(nr, nc, lay["sub_rows"], lay["sub_cols"], lay["closed"])
-    return {"rows": rows, "cols": cols, "node_co": node_co, "co": pos, "skin": skin, "skin_w": weight}
+    above, below = lay.get("anchor_rows", 0), lay.get("hem_rows", 0)
+    pos, skin, weight = grid.extend(pos, skin, weight, cols, above, lay.get("anchor_gap", 0.01), below)
+    return {"rows": rows + above + below, "cols": cols, "node_co": node_co, "co": pos, "skin": skin, "skin_w": weight}
 
 
 def unique_name(prefix: str, suffix: str = "") -> str:
@@ -203,7 +209,8 @@ def new_part(coll, arm, lay: dict, config=None) -> bpy.types.Object:
     p.link_preset = LINK_PRESET
     n = lay["rows"] * lay["cols"]
     values = {name: np.full(n, default, np.float32) for name, _, _, default in canon.PARTICLE_FIELDS}
-    values["sim_weight"][:lay["cols"]] = 0.0          # the top row follows the skinning (pinned)
+    pinned = lay.get("anchor_rows", 0) or 1              # the anchor rows, else the top row: they follow the skinning
+    values["sim_weight"][:lay["cols"] * pinned] = 0.0
     canon.store(obj, {**lay, "tile": tile, **values})
     canon.build_mesh(obj)
     return obj
@@ -236,7 +243,7 @@ def resample(values, old: dict, new: dict) -> np.ndarray:
     trailing = values.shape[1:]
     v = values.reshape(old["rows"], old["cols"], *trailing)
     r_new, c_new = np.divmod(np.arange(new["rows"] * new["cols"]), new["cols"])
-    r = r_new / (new["sub_rows"] + 1) * (old["sub_rows"] + 1)            # in old particle rows
+    r = _old_rows(r_new, old, new)
     c = c_new / (new["sub_cols"] + 1) * (old["sub_cols"] + 1)            # in old particle columns
     r0 = np.clip(np.floor(r).astype(int), 0, old["rows"] - 1)
     r1 = np.minimum(r0 + 1, old["rows"] - 1)
@@ -260,7 +267,23 @@ def resample(values, old: dict, new: dict) -> np.ndarray:
     return (top * (1 - fr) + bottom * fr).astype(np.float32)
 
 
-def regenerate(obj, closed=None, sub_rows=None, sub_cols=None) -> None:
+def _old_rows(r_new, old: dict, new: dict) -> np.ndarray:
+    """Each new particle row as a (fractional) row of the old grid: anchor rows to anchor rows (counted from the top
+    row down), the grid between them by density, hem rows to hem rows (the old bottom row when it had none)."""
+    a_o, a_n = old.get("anchor_rows", 0), new.get("anchor_rows", 0)
+    h_o, h_n = old.get("hem_rows", 0), new.get("hem_rows", 0)
+    body_o, body_n = old["rows"] - a_o - h_o, new["rows"] - a_n - h_n
+    r = np.asarray(r_new, float)
+    out = a_o + (r - a_n) / (new["sub_rows"] + 1) * (old["sub_rows"] + 1)
+    above = r < a_n
+    out[above] = np.maximum(a_o - (a_n - r[above]), 0.0)
+    below = r >= a_n + body_n
+    out[below] = a_o + body_o - 1 + np.minimum(r[below] - (a_n + body_n) + 1, h_o)
+    return out
+
+
+def regenerate(obj, closed=None, sub_rows=None, sub_cols=None, anchor_rows=None, anchor_gap=None,
+               hem_rows=None) -> None:
     """The particles made again from the bones' rest heads, with a new ring or density if given; every value kept
     (the groups' latest first; carried over the grid when its size changes)."""
     if not canon.attached(obj):
@@ -281,6 +304,10 @@ def regenerate(obj, closed=None, sub_rows=None, sub_cols=None) -> None:
         d["sub_rows"] = int(sub_rows)
     if sub_cols is not None:
         d["sub_cols"] = int(sub_cols)
+    for key, value, kind in (("anchor_rows", anchor_rows, int), ("anchor_gap", anchor_gap, float),
+                             ("hem_rows", hem_rows, int)):
+        if value is not None:
+            d[key] = kind(value)
     node_co = heads(arm, d["nodes"])
     if d["closed"] or d["centre"] is not None:          # the axis again from the new top row
         _, _, d["centre"] = grid.order_columns(node_co[:d["node_cols"]], "CLOSED" if d["closed"] else "OPEN")
@@ -290,9 +317,12 @@ def regenerate(obj, closed=None, sub_rows=None, sub_cols=None) -> None:
     d["co"] = d["base_co"] + d["rest_offset"]
     from .modules.gpuc_build import validate_geometry
     validate_geometry(d["co"], [(f[0], f[k], f[k + 1]) for f in canon.faces(d) for k in range(1, len(f) - 1)])
-    if (d["rows"], d["cols"]) != (old["rows"], old["cols"]) or d["closed"] != old["closed"]:
+    if ((d["rows"], d["cols"]) != (old["rows"], old["cols"]) or d["closed"] != old["closed"]
+            or (d["anchor_rows"], d["hem_rows"]) != (old["anchor_rows"], old["hem_rows"])):
         for name in canon.FIELD_NAMES:
             d[name] = resample(old[name], old, d)
+        if d["anchor_rows"] > old["anchor_rows"]:              # new anchor rows are pinned, as new Parts' are
+            d["sim_weight"][:d["cols"] * d["anchor_rows"]] = 0.0
     canon.store(obj, d)
     canon.remember_mapping(obj, {field: resample(w, old, d) for field, w in masks.items()
                                 if w is not None and np.isfinite(w).all()})

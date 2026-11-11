@@ -2182,7 +2182,8 @@ NOT_ATTACHED = "Not attached ("           # starts the first note of a file no P
 
 def _recognise(f: dict, i: int, bones: list) -> tuple:
     """Return (layout, links {(a, b, type): tail}, ``grid.links``) for a file part the generator could make, else
-    (None, reason, None). Particles skinned to a single bone are the bone nodes and must lie on a sub-lattice."""
+    (None, reason, None). Particles skinned to a single bone are the bone nodes and must lie on a sub-lattice; up to
+    3 rows over it and under it skinned as its top and bottom rows are anchor and hem rows."""
     sel = np.where(f["part_of"] == i)[0]
     base, n = int(sel[0]), len(sel)
     mine = {(min(a, b) - base, max(a, b) - base, t): tail for a, b, t, tail in f["links"]
@@ -2207,24 +2208,42 @@ def _recognise(f: dict, i: int, bones: list) -> tuple:
         return None, why + ("" if alone else " (a free-form mesh: no particle follows one bone alone)"), None
     rows, cols, closed, bend, gl = found
     skin, sw = f["skin"][sel], f["skin_w"][sel]
-    single = {k for k in range(n) if (sw[k] > 0).sum() == 1}
+    pos = f["pos"][sel]
     span = cols if closed else cols - 1
-    for sr in range(rows - 1):
-        if (rows - 1) % (sr + 1):
+
+    def row_skin(r):
+        return [sorted((int(b), int(x)) for b, x in zip(skin[r * cols + c], sw[r * cols + c]) if x > 0)
+                for c in range(cols)]
+
+    why = "its particles skinned to one bone alone lie on no lattice of its grid"
+    # anchor rows over the top and hem rows under the bottom are skinned as the row they extend (generate.layout)
+    for above, below in sorted(((a, b) for a in range(4) for b in range(4) if a + b < rows - 1), key=sum):
+        body = rows - above - below
+        if above and any(row_skin(r) != row_skin(above) for r in range(above)):
             continue
-        for sc in range(span):
-            if span % (sc + 1):
+        if below and any(row_skin(r) != row_skin(above + body - 1) for r in range(above + body, rows)):
+            continue
+        single = {k for k in range(above * cols, (above + body) * cols) if (sw[k] > 0).sum() == 1}
+        for sr in range(body - 1):
+            if (body - 1) % (sr + 1):
                 continue
-            at = [(r, c) for r in range(0, rows, sr + 1) for c in range(0, cols, sc + 1)]
-            if {r * cols + c for r, c in at} != single:
-                continue
-            names = [bones[int(skin[r * cols + c][int(np.argmax(sw[r * cols + c]))])] for r, c in at]
-            if len(set(names)) != len(names):
-                return None, "a bone sits on two of its particles", None
-            lay = {"node_rows": (rows - 1) // (sr + 1) + 1, "node_cols": len(range(0, cols, sc + 1)),
-                   "sub_rows": sr, "sub_cols": sc, "closed": closed, "nodes": names, "diagonal_bend": bend}
-            return lay, mine, gl
-    return None, "its particles skinned to one bone alone lie on no lattice of its grid", None
+            for sc in range(span):
+                if span % (sc + 1):
+                    continue
+                at = [(above + r, c) for r in range(0, body, sr + 1) for c in range(0, cols, sc + 1)]
+                if {r * cols + c for r, c in at} != single:
+                    continue
+                names = [bones[int(skin[r * cols + c][int(np.argmax(sw[r * cols + c]))])] for r, c in at]
+                if len(set(names)) != len(names):
+                    why = "a bone sits on two of its particles"
+                    continue
+                gap = float(np.median(np.linalg.norm(pos[(above - 1) * cols:above * cols] - pos[above * cols:(above + 1) * cols],
+                                                     axis=1))) if above else 0.01
+                lay = {"node_rows": (body - 1) // (sr + 1) + 1, "node_cols": len(range(0, cols, sc + 1)),
+                       "sub_rows": sr, "sub_cols": sc, "closed": closed, "nodes": names, "diagonal_bend": bend,
+                       "anchor_rows": above, "anchor_gap": gap, "hem_rows": below}
+                return lay, mine, gl
+    return None, why, None
 
 
 def _other_diagonal(f, sel, rows, cols, closed) -> bool:

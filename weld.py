@@ -57,7 +57,7 @@ def node_particles(d) -> dict:
     out = {}
     for j, name in enumerate(d["nodes"]):
         r, c = divmod(j, d["node_cols"])
-        out[name] = r * (d["sub_rows"] + 1) * d["cols"] + c * (d["sub_cols"] + 1)
+        out[name] = (d.get("anchor_rows", 0) + r * (d["sub_rows"] + 1)) * d["cols"] + c * (d["sub_cols"] + 1)
     return out
 
 
@@ -74,7 +74,7 @@ def _layout(part) -> dict:
     from . import canon
     c = part[canon.RECIPE_KEY]
     return {"nodes": [str(b) for b in c["nodes"]], "node_cols": int(c["node_cols"]), "sub_rows": int(c["sub_rows"]),
-            "sub_cols": int(c["sub_cols"]), "cols": int(c["cols"])}
+            "sub_cols": int(c["sub_cols"]), "cols": int(c["cols"]), "anchor_rows": int(c.get("anchor_rows", 0))}
 
 
 def pairs(obj) -> list:
