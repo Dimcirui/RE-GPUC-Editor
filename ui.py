@@ -60,6 +60,7 @@ class REE_GPUC_PT_general(_Sidebar, bpy.types.Panel):
         if props.is_part(obj) and obj.select_get() and not canon.locked(obj):
             layout.operator("ree_gpuc.regenerate_part")
             layout.operator("ree_gpuc.edit_as_mesh", icon="EDITMODE_HLT")
+        layout.operator("ree_gpuc.part_from_mesh", icon="MESH_DATA")
         layout.operator("ree_gpuc.weld_parts", icon="AUTOMERGE_ON")
         layout.label(text="Create new parts in Pose Mode.")
         layout.operator("ree_gpuc.switch_to_pose")
@@ -586,6 +587,8 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
         if canon.from_bones(obj):
             layout.label(text="Edited as a mesh: it no longer follows its bones", icon="MESH_DATA")
             layout.operator("ree_gpuc.back_to_bones", icon="LOOP_BACK")
+        elif canon.made_here(obj):
+            layout.label(text="Made from a mesh: edit its particles and faces in Edit Mode", icon="MESH_DATA")
         elif canon.edited(obj):
             layout.label(text="Particles or faces edited: the file is written again from the Parts on export",
                          icon="MESH_DATA")
@@ -625,7 +628,7 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
             _bits(col, p, name, f"ree_gpuc_part.{name}")
         if re4_part:
             col.prop(p, "re4_value_30")
-        if not canon.locked(obj) or canon.from_bones(obj):
+        if not canon.locked(obj) or canon.made_here(obj):
             _driven_bones(layout, obj)
         _split(layout).prop(p, "link_preset")
         own = canon.overrides(obj, canon.load(obj)) if canon.has(obj) and not canon.locked(obj) else {}

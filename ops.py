@@ -1145,6 +1145,35 @@ class REE_GPUC_OT_edit_as_mesh(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class REE_GPUC_OT_part_from_mesh(bpy.types.Operator):
+    """Make a Part of the active cloth from the active mesh: its vertices become the particles, its faces give the
+    links, its weights to the armature's bones the skin. The mesh must have a UV map and every vertex a bone
+    weight; it is left as it is"""
+    bl_idname = "ree_gpuc.part_from_mesh"
+    bl_label = "Part from Mesh"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        coll = _settings(context).target
+        return (context.mode == "OBJECT" and obj is not None and obj.type == "MESH" and not props.is_part(obj)
+                and coll is not None and not (props.is_re4(coll) and fileio.keeps_structure(coll)))
+
+    def execute(self, context):
+        from . import structure
+        src = context.active_object
+        s = _settings(context)
+        try:
+            obj, text = structure.from_mesh(src, s.target, s.config)
+        except ValueError as e:
+            return refused(self, f"{src.name}: {e}")
+        obj["ree_gpuc_notice"] = text
+        _select_only(context, obj)
+        self.report({"INFO"}, text)
+        return {"FINISHED"}
+
+
 class REE_GPUC_OT_back_to_bones(bpy.types.Operator):
     """Lay the Part out from its bones again, as before Edit as Mesh: its particle, face and skin edits are lost,
     its values and settings from then are back"""
@@ -1170,7 +1199,7 @@ class REE_GPUC_OT_back_to_bones(bpy.types.Operator):
 
 def _driven_part(context):
     obj = context.active_object
-    return obj if props.is_part(obj) and canon.has(obj) and (not canon.locked(obj) or canon.from_bones(obj)) else None
+    return obj if props.is_part(obj) and canon.has(obj) and (not canon.locked(obj) or canon.made_here(obj)) else None
 
 
 class REE_GPUC_OT_driven_add(bpy.types.Operator):
@@ -1537,7 +1566,7 @@ CLASSES = (REE_GPUC_OT_import, REE_GPUC_FH_import, REE_GPUC_OT_export, REE_GPUC_
            REE_GPUC_OT_curve_reset, REE_GPUC_OT_edit_particles,
            REE_GPUC_OT_reset_rest_offsets, REE_GPUC_OT_set_value, REE_GPUC_OT_paint, REE_GPUC_OT_normalize_skin,
            REE_GPUC_OT_edit_as_mesh, REE_GPUC_OT_back_to_bones, REE_GPUC_OT_driven_add,
-           REE_GPUC_OT_driven_remove, REE_GPUC_OT_driven_from_skin,
+           REE_GPUC_OT_driven_remove, REE_GPUC_OT_driven_from_skin, REE_GPUC_OT_part_from_mesh,
            REE_GPUC_OT_simulate, REE_GPUC_OT_sim_reset, REE_GPUC_OT_import_reference,
            REE_GPUC_OT_drive_vertices, REE_GPUC_OT_drive_select_near, REE_GPUC_OT_drive_spread_lods)
 

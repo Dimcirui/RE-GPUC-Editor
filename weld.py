@@ -113,7 +113,7 @@ def problems(obj, coll=None) -> list:
         return ["a Part is not this cloth's"]
     if not canon.has(a) or not canon.has(b):
         return ["a Part has no particles"]
-    if canon.locked(a) != canon.locked(b) and not canon.from_bones(a if canon.locked(a) else b):
+    if canon.locked(a) != canon.locked(b) and not canon.made_here(a if canon.locked(a) else b):
         return ["one Part keeps a file's structure, the other was made from bones"]
     if canon.locked(a) or canon.locked(b):
         n = {p: len(p[canon.KEY]["co"]) // 3 for p in (a, b)}

@@ -205,6 +205,14 @@ def locked(obj) -> bool:
 RECIPE_KEY = "ree_gpuc_recipe"           # on a Part made from bones and edited as a mesh: its bone grid's data
 
 
+MESH_KEY = "ree_gpuc_from_mesh"          # on a Part made from a mesh (``structure.from_mesh``)
+
+
+def made_here(obj) -> bool:
+    """Whether a locked Part was made in the editor, from bones or a mesh, rather than imported from a file."""
+    return locked(obj) and (RECIPE_KEY in obj.keys() or MESH_KEY in obj.keys())
+
+
 def from_bones(obj) -> bool:
     """Whether a locked Part was made from bones and edited as a mesh (``structure.edit_as_mesh``)."""
     return locked(obj) and RECIPE_KEY in obj.keys()

@@ -858,7 +858,7 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT, mes
     for obj in part_objs:
         if not canon.has(obj):
             raise ExportError(f"{obj.name} has no particles")
-        if canon.locked(obj) and not canon.from_bones(obj):
+        if canon.locked(obj) and not canon.made_here(obj):
             raise ExportError(f"{obj.name} keeps a file's structure in a cloth that does not")
         problems = generate.check(obj)
         if problems:
@@ -941,7 +941,8 @@ def _build_generated(coll, head, cfg_objs, part_objs, mesh_coll, ext=gp.EXT, mes
         o["particles"], o["weights"] = [p for p, _ in keep], [x / total for _, x in keep]
     outputs.sort(key=lambda o: o["full"])
     if not outputs and not vertices:
-        raise ExportError("no bone of the cloth has weights in the mesh: nothing would move")
+        raise ExportError("no bone is driven, so nothing would move: list the bones a Part drives (Driven Bones), "
+                          "or give its bones weights in the mesh")
     batch_of = None
     if not vertices and not is_re4:                # RE4 splits its own; a cloth driving vertices stays one batch
         welded = {(part_objs.index(pa), part_objs.index(pb)) for _, pa, _, pb, _ in weld.welds(coll)}
@@ -1145,8 +1146,8 @@ def _write_tangent_flags(g, part_objs, starts) -> None:
 
 def file_part_objects(part_objs) -> list:
     """The Parts of a Keep Structure cloth that are its file's, in the file's part order (by name); the others were
-    made from bones."""
-    return [o for o in by_name(part_objs) if canon.locked(o) and not canon.from_bones(o)]
+    made in the editor."""
+    return [o for o in by_name(part_objs) if canon.locked(o) and not canon.made_here(o)]
 
 
 def _batch_of(sizes, welded, notes, keep=None) -> np.ndarray:

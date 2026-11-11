@@ -238,10 +238,10 @@ def _welds(obj, keep) -> int:
     return dropped
 
 
-def _game_slots(obj) -> int:
+def _game_slots(obj, coll=None) -> int:
     from . import props
     from .modules import gpuc
-    head = props.header(reference.cloth_of(obj))
+    head = props.header(coll if coll is not None else reference.cloth_of(obj))
     layout = gpuc.LAYOUTS.get(int(head.ree_gpuc_header.game[1:])) if head is not None else None
     return gpuc.skin_slots(layout) if layout is not None else 8
 
@@ -291,6 +291,154 @@ def edit_as_mesh(obj) -> None:
     canon.build_mesh(obj)
     from . import sim
     sim.invalidate(obj)
+
+
+def _read_source(src, arm) -> tuple:
+    """(rest positions in the armature's space, faces, face corner UVs, bone names, weights: vertices x bones) of
+    the mesh ``src`` with its modifiers but not its Armature modifiers; raises ``ValueError``."""
+    import bpy
+    posed = [m for m in src.modifiers if m.type == "ARMATURE" and m.show_viewport]
+    for m in posed:
+        m.show_viewport = False
+    try:
+        ev = src.evaluated_get(bpy.context.evaluated_depsgraph_get())
+        me = ev.to_mesh()
+        try:
+            n = len(me.vertices)
+            co = np.empty(3 * n, np.float32)
+            me.vertices.foreach_get("co", co)
+            sizes = [p.loop_total for p in me.polygons]
+            if any(k > 4 for k in sizes):
+                k = sum(1 for s in sizes if s > 4)
+                raise ValueError(f"{k} face{'s have' if k > 1 else ' has'} more than 4 corners: split them into "
+                                 f"quads or triangles")
+            faces = [tuple(p.vertices) for p in me.polygons]
+            layer = me.uv_layers.active or (me.uv_layers[0] if me.uv_layers else None)
+            if layer is None:
+                raise ValueError("it has no UV map: unwrap it (the UVs give the particles' tangents)")
+            uv = np.empty(2 * len(me.loops), np.float32)
+            layer.data.foreach_get("uv", uv)
+            uv = uv.reshape(-1, 2)
+            face_uv = np.concatenate([uv[p.loop_start:p.loop_start + p.loop_total] for p in me.polygons]) \
+                if len(me.polygons) else np.zeros((0, 2), np.float32)
+            groups = {g.index: g.name for g in src.vertex_groups if g.name in arm.data.bones}
+            names = sorted(set(groups.values()))
+            col = {i: names.index(name) for i, name in groups.items()}
+            w = np.zeros((n, len(names)), np.float32)
+            for v in me.vertices:
+                for ge in v.groups:
+                    k = col.get(ge.group)
+                    if k is not None:
+                        w[v.index, k] = ge.weight
+        finally:
+            ev.to_mesh_clear()
+    finally:
+        for m in posed:
+            m.show_viewport = True
+    m = np.linalg.inv(np.array(arm.matrix_world, float)) @ np.array(src.matrix_world, float)
+    co = (co.reshape(-1, 3).astype(float) @ m[:3, :3].T + m[:3, 3]).astype(np.float32)
+    return co, faces, face_uv, names, w
+
+
+def from_mesh(src, coll, config=None) -> tuple:
+    """A new editable Part of the cloth made of the mesh ``src`` (its modifiers applied, its Armature modifiers
+    not): its vertices the particles at rest, its faces, its UV map, its weights to the cloth's armature's bones
+    as the skin (the heaviest up to the game's bones, in 255ths), links from the faces with the Part's link
+    settings, default values, Driven Bones Listed and empty. Returns (Part, notice); raises ``ValueError`` when the
+    mesh is no cloth."""
+    from . import generate, props
+    arm = generate._armature(coll)
+    if arm is None or arm.type != "ARMATURE":
+        raise ValueError("the cloth has no armature")
+    co, faces, face_uv, names, w = _read_source(src, arm)
+    n = len(co)
+    if not faces:
+        raise ValueError("it has no faces")
+    _check(n, faces, co)
+    slots = _game_slots(None, coll)
+    rows, empty = [], 0
+    for v in range(n):
+        order = [k for k in np.argsort(-w[v], kind="stable") if w[v, k] > 0][:slots]
+        if not order:
+            empty += 1
+            continue
+        rows.append([(k, int(u)) for k, u in zip(order, _u8(w[v, order], 255)) if u > 0])
+    if empty:
+        raise ValueError(f"{empty} vert{'ices have' if empty > 1 else 'ex has'} no weight to a bone of {arm.name}: "
+                         f"transfer or paint skin weights first")
+    used = sorted({k for row in rows for k, _ in row})
+    at = {k: i for i, k in enumerate(used)}
+    skin = np.zeros((n, slots), np.int64)
+    skin_w = np.zeros((n, slots), np.float32)
+    for v, row in enumerate(rows):
+        for s, (k, u) in enumerate(row):
+            skin[v, s], skin_w[v, s] = at[k], u / 255.0
+    outside = int(((face_uv < 0) | (face_uv > 1)).any(axis=1).sum())
+    face_uv = (np.round(np.clip(face_uv, 0.0, 1.0).astype(float) * 65535) / 65535).astype(np.float32)
+    corners, k = [], 0
+    for f in faces:
+        corners.append([tuple(map(float, p)) for p in face_uv[k:k + len(f)]])
+        k += len(f)
+    tris, tri_uv = topology.triangles(faces, face_uv)
+
+    existing = props.parts(coll)
+    tile = max((p.ree_gpuc_part.uv_tile for p in existing), default=-1) + 1
+    name = generate.unique_name("GPUC_PART_", "_" + src.name)
+    obj = bpy_new_part(coll, arm, name, config)
+    p = obj.ree_gpuc_part
+    p.uv_tile = tile
+    p.part_name = f"_p{len(existing):03d}"
+    heaviest = names[used[int(np.argmax([sum(u for row in rows for kk, u in row if kk == k) for k in used]))]]
+    parent = arm.data.bones[heaviest].parent
+    p.root_joint = parent.name if parent is not None else heaviest
+    p.link_preset = generate.LINK_PRESET
+    p.driven_bones = "LISTED"
+    shape_tail = [getattr(p, s).tail() for s in gp.SHAPES]
+    links = []
+    for a, b, t in topology.links_of(faces, p.diagonal_bend).tolist():
+        links.append((a, b, t, 2 if t == 1 else 3 if t != 0 else
+                      (0 if gpuc_build.direction(co[a], co[b]) == "vert" else 1)))
+    links = np.asarray(links, np.int64).reshape(-1, 4)
+    values = {f: np.full(n, canon.DEFAULTS[f], np.float32) for f in canon.FIELD_NAMES}
+    data = {"locked": True, "count": n, "tile": tile, "co": co, "tris": tris, "tri_uv": tri_uv, "links": links,
+            "tails": np.asarray([shape_tail[s] for s in links[:, 3]], np.float32).reshape(-1, 4),
+            "nodes": [names[k] for k in used], "skin": skin, "skin_w": skin_w, "normal": topology.normals(co, tris),
+            "faces": faces, "face_uv": face_uv, "src": np.arange(n), "tri_flags": gpuc_build.tangent_flags(faces, corners),
+            "editable": True, **values}
+    obj[canon.MESH_KEY] = 1
+    obj[canon.EDITED_KEY] = [s for s in gp.SHAPES]          # the Part's link settings apply to all its links
+    canon.fit_ranges(obj, values)
+    canon.store(obj, data)
+    canon.build_mesh(obj)
+    text = (f"Made from {src.name}: {n} particles, {len(links)} links. List the bones it drives (Driven Bones) and "
+            f"paint Simulation weight 0 where it is held")
+    if outside:
+        text += f"; {outside} UV corners outside 0-1 were clamped"
+    return obj, text
+
+
+def bpy_new_part(coll, arm, name, config=None):
+    """An empty Part object of the cloth under a Config (the one given if it is the cloth's, else the cloth's first,
+    else a new one)."""
+    import bpy
+    from . import generate, props
+    obj = bpy.data.objects.new(name, bpy.data.meshes.new(name))
+    obj["TYPE"] = props.PART_TYPE
+    coll.objects.link(obj)
+    obj.hide_render = True
+    obj.show_wire = True
+    obj.show_in_front = bpy.context.scene.ree_gpuc.in_front
+    if props.header(coll) is None:
+        generate.new_header(coll, arm)
+    mine = props.configs(coll)
+    config = config if config in mine else (mine or [None])[0]
+    if config is None:
+        config = generate.new_config(coll, arm)
+    if config.parent is None:
+        props.place_under(config, props.header(coll) or arm)
+    obj.ree_gpuc_part.armature = arm
+    obj.ree_gpuc_part.config = config
+    return obj
 
 
 def back_to_bones(obj) -> None:
@@ -348,4 +496,4 @@ def adopt(obj) -> str:
     text = f"Structure changed: {n} particles ({added} new, {gone} removed), {len(links)} links"
     if dropped:
         text += f"; {dropped} welded pairs lost a particle and were dropped"
-    return text if canon.from_bones(obj) else text + "; the export writes the file again from the Parts"
+    return text if canon.made_here(obj) else text + "; the export writes the file again from the Parts"
