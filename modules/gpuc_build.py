@@ -41,7 +41,9 @@ class ClothSpec:
     face_uv     list of per-face UVs, one (u, v) per face vertex, in [0, 1]
     outputs     list of output joints in mesh bone order:
                 dict(palette=index in the mesh's weighted bone list, world=4x4 row-major
-                bind matrix (translation in row 3), particles=[ids], weights=[floats])
+                bind matrix (translation in row 3), particles=[ids], weights=[floats], binds=optional: a
+                file's per slot (rotation, offset, the particle's frame and place), written as they are where
+                the slot's particle keeps that frame and place)
     diagonal_bend (P,) bool, optional: off where a quad diagonal starting at that particle has no bend link
     batch_of    (P,) int, optional: each particle's batch (``batches``), not decreasing; none is one batch. An
                 output joint's particles must all be in one batch.
@@ -379,12 +381,16 @@ def build(spec, template, skin_table, capsules=None, particle_radius=None, link_
     for o in spec.outputs:
         W = np.asarray(o["world"], float)
         R, tb = W[:3, :3], W[3, :3]
+        binds = o.get("binds") or ()          # a file's own: (rotation, offset, the particle's frame and place)
         for k in range(S):
             if k < len(o["particles"]):
                 pk = o["particles"][k]
                 sec24 += struct.pack("<if", pk, float(o["weights"][k]))
                 L = R @ A[pk].T
                 off = A[pk] @ (tb - pos[pk])
+                if k < len(binds) and np.allclose(A[pk], binds[k][2], atol=1e-6) and \
+                        np.allclose(pos[pk], binds[k][3], atol=1e-6):
+                    L, off = np.asarray(binds[k][0], float), np.asarray(binds[k][1], float)
                 sec25 += np.concatenate([L.reshape(9), off]).astype("<f4").tobytes()
             else:
                 sec24 += struct.pack("<if", -1, 0.0)

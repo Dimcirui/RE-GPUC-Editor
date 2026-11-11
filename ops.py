@@ -50,9 +50,9 @@ IMPORT_MODES = [
     ("KEEP", "Keep Structure", "Create a new GPUC collection with the file's particles, faces, links and skinning. "
                                "Every value can be edited, and the particles and faces in Edit Mode; the parts are not regenerated "
                                "from bones"),
-    ("REBUILD", "Rebuild from Bones", "Rebuild the parts from the mesh's bones with the file's values, so they can be "
-                                      "regenerated. Uses Keep Structure if the rebuild does not reproduce the "
-                                      "file's structure. Files exported by this editor always rebuild"),
+    ("REBUILD", "Rebuild from Bones", "Import with Keep Structure and attach each part to the mesh's bones, so it can "
+                                      "be regenerated. A part no grid of bones reproduces stays as in the file; "
+                                      "parts this editor made from bones always attach"),
 ]
 
 
@@ -73,10 +73,9 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
                              "which then imports the shape only")
     force_rebuild: bpy.props.BoolProperty(
         name="Force Rebuild", default=False,
-        description="Keep the rebuilt cloth even when it differs from the file's structure (positions, links, "
-                    "skinning or driven joints as the editor generates them; each link shape uses its most common "
-                    "settings). The differences are reported. Parts that are not a grid of bone chains still import "
-                    "with Keep Structure")
+        description="Attach a part to its bones even when its bone grid changes it (positions, links or skinning "
+                    "as the editor generates them). The differences are reported. Parts that are not a grid of bone "
+                    "chains still stay as in the file")
 
     def invoke(self, context, event):
         if not self.mesh_collection:

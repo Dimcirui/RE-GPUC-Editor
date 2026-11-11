@@ -1029,7 +1029,10 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
             driven.add(bone)
             kept = [new_of.get(p) for p, _ in j["drivers"]]
             if None not in kept and not any(p in fresh for p, _ in skinned[bone]):
-                outputs.append(dict(palette=x, world=world, particles=kept, weights=[w for _, w in j["drivers"]]))
+                binds = [(j["rotations"][s], j["offsets"][s], f["frames"][p][:, :3], f["pos"][p])
+                         for s, (p, _) in enumerate(j["drivers"])]
+                outputs.append(dict(palette=x, world=world, particles=kept, weights=[w for _, w in j["drivers"]],
+                                    binds=binds))
                 continue
             keep = sorted(skinned[bone], key=lambda p: (-p[1], p[0]))[:gpuc_build.MIN_SLOTS]
             if not keep:
@@ -2179,16 +2182,52 @@ def _preset_of(part) -> str:
 
 
 def import_rebuild(path: str, mesh_coll, force: bool = False) -> tuple:
+    """Import the file with Keep Structure and attach each Part to its bones (``structure.attach_to_bones``); return
+    (collection, notes). A Part that is no grid of bones, or whose grid changes it (kept with ``force``), stays as
+    imported; when none attaches, the first note starts "Not rebuilt (" (parsed by ``ops``). A file that drives mesh
+    vertices is rebuilt as a generated cloth (``_rebuild_generated``)."""
+    raw = open(path, "rb").read()
+    if path.endswith(re4.EXT):
+        coll, notes = import_keep(path, mesh_coll)
+        return coll, ["RE4 imported with Keep Structure; Rebuild from Bones is not supported"] + notes
+    f = file_parts(raw)
+    if f["vertex"]:
+        return _rebuild_generated(path, mesh_coll, force)
+    arm = mesh_armature(mesh_coll)
+    used = f["skin"][f["skin"] >= 0]
+    if len(used) and used.max() >= len(arm.data.bones):
+        raise ImportProblem(f"its skinning names bone {int(used.max())}, the armature has {len(arm.data.bones)}: "
+                            f"pick the mesh this .gpuc belongs to")
+    from . import structure
+    coll, notes = import_keep(path, mesh_coll)
+    objs = file_part_objects(props.parts(coll))
+    left, changed = [], []
+    for obj in objs:
+        name = f"part {int(obj[canon.FILE_KEY])} {obj.ree_gpuc_part.part_name}".rstrip()
+        try:
+            text = structure.attach_to_bones(obj, force)
+        except ValueError as e:
+            left.append(f"{name}: {e}")
+            continue
+        if text.startswith(structure.CHANGED):
+            changed.append(f"{name}: {text[len(structure.CHANGED):text.index(')')]}")
+    if len(left) == len(objs):
+        return coll, [f"Not rebuilt ({'; '.join(left[:2])}"
+                      f"{f' and {len(left) - 2} more' if len(left) > 2 else ''}): imported with Keep Structure"] + notes
+    notes = [f"Force Rebuild changed: {c}" for c in changed] + \
+        [f"Not rebuilt, kept as in the file: {why}" for why in left] + notes
+    return coll, list(dict.fromkeys(notes))
+
+
+def _rebuild_generated(path: str, mesh_coll, force: bool = False) -> tuple:
     """Import the file as Parts regenerated from the mesh's bones with the file's values; return (collection, notes).
 
     Each link shape takes its commonest tail, the other links keep theirs (``canon.set_overrides``), and the
     particles keep their offsets from the bones. The rebuild is kept only when its export matches the file's
     ``fingerprint``; otherwise the file is imported with Keep Structure and the first note starts "Not rebuilt (" (parsed by
-    ``ops``). ``force`` keeps a mismatching rebuild, but a part that is no grid of bones still falls back."""
+    ``ops``). ``force`` keeps a mismatching rebuild, but a part that is no grid of bones still falls back. Used for
+    files that drive mesh vertices: their Keep Structure Parts cannot be attached to bones."""
     raw = open(path, "rb").read()
-    if path.endswith(re4.EXT):
-        coll, notes = import_keep(path, mesh_coll)
-        return coll, ["RE4 imported with Keep Structure; Rebuild from Bones is not supported"] + notes
     arm = mesh_armature(mesh_coll)
     f = file_parts(raw)
     if not _contiguous(f["part_of"]):

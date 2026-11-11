@@ -301,10 +301,14 @@ def back_to_bones(obj) -> None:
     sim.invalidate(obj)
 
 
-def attach_to_bones(obj) -> str:
+CHANGED = "Differs from the file ("        # starts the notice of a Part attached though its grid changes it
+
+
+def attach_to_bones(obj, force: bool = False) -> str:
     """Make a Keep Structure Part follow a bone grid found for it, as Rebuild from Bones finds one: its particles
     keep their places as offsets from the bones, its values, skin and link tails stay. Returns the notice; raises
-    ``ValueError`` (the Part left as it was) when no grid of the armature's bones makes the same mesh."""
+    ``ValueError`` (the Part left as it was) when no grid of the armature's bones makes the same mesh. ``force``
+    keeps a grid that changes the Part, the notice then starting with ``CHANGED``."""
     from . import fileio, generate, props
     coll = reference.cloth_of(obj)
     if not canon.file_part(obj) or canon.attached(obj) or not fileio.keeps_structure(coll):
@@ -328,19 +332,24 @@ def attach_to_bones(obj) -> str:
     p = obj.ree_gpuc_part
     keys = (canon.KEY, canon.EDITED_KEY, canon.OVERRIDES_KEY, canon.MAPPING_KEY)
     saved = {k: obj[k].to_dict() if hasattr(obj[k], "to_dict") else list(obj[k]) for k in keys if k in obj.keys()}
-    settings = {"other_diagonal": p.other_diagonal, "diagonal_bend": p.diagonal_bend, "link_preset": p.link_preset}
+    grid_props = ("rows", "cols", "closed", "sub_rows", "sub_cols")
+    settings = {"other_diagonal": p.other_diagonal, "diagonal_bend": p.diagonal_bend, "link_preset": p.link_preset,
+                "root_joint": p.root_joint, **{k: getattr(p, k) for k in grid_props}}
     tails = {s: tuple(getattr(getattr(p, s), n) for n in ("k", "k2", "lo", "hi", "conditional")) for s in gp.SHAPES}
     own ={(int(a), int(b), int(t)): gp.tail_bytes(*map(float, tail))
            for (a, b, t, _), tail in zip(canon.links(old), canon.link_tails(obj, old))}
 
     def undo():
-        for k in (canon.RECIPE_KEY, canon.ATTACHED_KEY) + keys:
+        for k in (canon.RECIPE_KEY, canon.ATTACHED_KEY, canon.FILE_GRID_KEY) + keys:
             if k in obj.keys():
                 del obj[k]
         for k, v in saved.items():
             obj[k] = v
         p.other_diagonal, p.diagonal_bend = settings["other_diagonal"], settings["diagonal_bend"]
         p.link_preset = settings["link_preset"]
+        for k in grid_props:
+            setattr(p, k, settings[k])
+        p.root_joint = settings["root_joint"]
         for s, (k, k2, lo, hi, cond) in tails.items():
             t = getattr(p, s)
             t.k, t.k2, t.lo, t.hi, t.conditional = k, k2, lo, hi, cond
@@ -356,6 +365,12 @@ def attach_to_bones(obj) -> str:
         lay["centre"] = grid.order_columns(node_co[:lay["node_cols"]], "CLOSED" if lay["closed"] else "OPEN")[2]
         lay.update(generate._particles(lay, node_co))
         p.other_diagonal = fileio._other_diagonal(f, sel, lay["rows"], lay["cols"], lay["closed"])
+        for k in grid_props:
+            setattr(p, k, lay[k])
+        obj[canon.FILE_GRID_KEY] = [int(lay["rows"]), int(lay["cols"]), int(lay["closed"])]
+        if not p.root_joint:                 # the bone a Part made from these chains takes, unused till ticked
+            parent = arm.data.bones[lay["nodes"][0]].parent
+            p.root_joint = parent.name if parent is not None else lay["nodes"][0]
         p.diagonal_bend = lay["diagonal_bend"]
         count = collections.defaultdict(collections.Counter)
         for a, b, t, s in gl:
@@ -381,13 +396,15 @@ def attach_to_bones(obj) -> str:
     except Exception:
         undo()
         raise
-    if why:
+    if why and not force:
         undo()
         raise ValueError(f"its bone grid would change it ({why})")
     loose = _name_weld_bones(obj, coll)
     from . import sim
     sim.invalidate(obj)
     text = "Follows its bones: Regenerate rebuilds it from them, Edit as Mesh stops it following them"
+    if why:
+        text = f"{CHANGED}{why}). " + text
     if loose:
         text += f"; {loose} welds hold particles between its bones and stop at a change of density"
     return text

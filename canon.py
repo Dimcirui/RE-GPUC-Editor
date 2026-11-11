@@ -227,11 +227,14 @@ def _bake(obj, g) -> None:
     tris, tri_uv = topology.triangles(faces, face_uv)
     co = g["co"]
     own = overrides(obj, g)
+    file_grid = obj.get(FILE_GRID_KEY)                 # another density: no particle is the file's any more
+    same = file_grid is None or list(file_grid) == [g["rows"], g["cols"], int(g["closed"])]
+    src = np.arange(count(g)) if same else np.full(count(g), -1)
     obj[EDITED_KEY] = [n for k, n in enumerate(s.lower() for s in grid.SHAPES) if k not in own]
     store(obj, {"locked": True, "count": count(g), "tile": g["tile"], "co": co, "tris": tris, "tri_uv": tri_uv,
                 "links": links(g), "tails": link_tails(obj, g), "nodes": g["nodes"], "skin": g["skin"],
                 "skin_w": g["skin_w"], "normal": topology.normals(co, tris), "faces": faces, "face_uv": face_uv,
-                "src": np.arange(count(g)), "tri_flags": gpuc_build.tangent_flags(faces, corners), "editable": True,
+                "src": src, "tri_flags": gpuc_build.tangent_flags(faces, corners), "editable": True,
                 **{n: g[n] for n in FIELD_NAMES}})
 
 
@@ -259,6 +262,7 @@ def attached(obj) -> bool:
     return has(obj) and ATTACHED_KEY in obj.keys()
 
 
+FILE_GRID_KEY = "ree_gpuc_file_grid"   # on a file Part attached to bones: (rows, cols, closed) of its file grid
 MESH_KEY = "ree_gpuc_from_mesh"          # on a Part made from a mesh (``structure.from_mesh``)
 FILE_KEY = "ree_gpuc_file_part"          # on a Part imported with Keep Structure: its part's index in the file
 
