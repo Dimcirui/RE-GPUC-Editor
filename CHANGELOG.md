@@ -40,6 +40,7 @@
 
 ### Fixed
 - **Finding the exported `.mesh`** — the export also looks for the `.mesh` named after the Mesh Collection, passes over a same-name one of another skeleton, says the folder and names it looked for, and says when the `.mesh` is another game's.
+- **Too many skin bones for RE9** — the export says how many bones skin the cloth and that RE9 files take 256, instead of "skin index out of range".
 - **Collision planes and spheres of some game files** — they were read as other data: they now import, and an exported cloth keeps them.
 
 ## 0.4.1

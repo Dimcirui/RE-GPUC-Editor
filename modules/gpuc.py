@@ -292,6 +292,11 @@ def read_skin(raw, i, layout):
     return [(v >> s) & 1023 for v in (a, b) for s in (0, 10, 20)], w
 
 
+def skin_limit(layout):
+    """How many skin bones (section 11 entries) a particle's skin indices can reach."""
+    return 256 if layout is RE9 else 1024
+
+
 def write_skin(rec, off, idx, w, layout):
     """Write skin influences into a particle record at off (8 index bytes + 8 weight bytes).
     Influences with weight 0 are dropped; at most skin_slots(layout) may remain."""
@@ -299,7 +304,7 @@ def write_skin(rec, off, idx, w, layout):
     n = skin_slots(layout)
     if len(pairs) > n:
         raise ValueError(f"{len(pairs)} skin influences, {layout.name} takes {n}")
-    if any(not 0 <= k < (256 if layout is RE9 else 1024) for k, _ in pairs):
+    if any(not 0 <= k < skin_limit(layout) for k, _ in pairs):
         raise ValueError(f"skin index out of range: {pairs}")
     pairs += [(0, 0)] * (8 - len(pairs))
     ks, ws = [k for k, _ in pairs], [x for _, x in pairs]

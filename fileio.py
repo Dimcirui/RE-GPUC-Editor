@@ -1153,6 +1153,9 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
     spec = gpuc_build.ClothSpec(np.vstack(positions), np.concatenate(sim_weight), skin_bones, skin_w, faces, uvs,
                                 outputs, np.concatenate(bend), batch_of, tri_flags)
     skin_table = sorted({b for row, w in zip(skin_bones, skin_w) for b, x in zip(row, w) if x})
+    if not is_re4 and len(skin_table) > gpuc.skin_limit(layout):
+        raise ExportError(f"{len(skin_table)} bones skin the cloth's particles, and {game_name(ext)} files take "
+                          f"{gpuc.skin_limit(layout)} at most: skin the Parts to fewer bones")
     link_tail = lambda typ, a, b: shapes.get((min(a, b), max(a, b), typ))  # noqa: E731
     if is_re4:
         part_vals = [vals[part_objs.index(o)] for o in order]
