@@ -44,7 +44,7 @@ To update, uninstall the old version first. Earlier versions were installed as `
 4. Set particle values in the Particles panel: "Paint" paints the chosen value as vertex weights, "Set on Selected" sets an exact value. Weights 0 to 1 map to the Part's Mapping Range.
 5. Configure the Header, Configs, Parts and colliders in the Object properties tab, or apply presets.
 6. (Optional) Preview under GPUC: Preview Simulation > Simulate.
-7. Export the mesh with the RE Mesh Editor, then export the cloth with "Export" under GPUC: General Tools. The export checks the cloth against the exported `.mesh`: the one in Mesh File, else the same-name `.mesh` beside the `.gpuc`, else the one other `.mesh` there with the cloth's skeleton, whose name the `.gpuc` then takes. Without one it is refused; Force Export exports anyway, the driven joints' indices then taken from the scene's weights. An imported cloth exported As Imported needs no `.mesh`.
+7. Export the mesh with the RE Mesh Editor, then export the cloth with "Export" under GPUC: General Tools. The export checks the cloth against the exported `.mesh`: the one in Mesh File, else beside the `.gpuc` the `.mesh` named as the `.gpuc`, then as the Mesh Collection, then the one other `.mesh` there with the cloth's skeleton; one named otherwise gives the `.gpuc` its name. The export says when the `.mesh` is another game's than the one exported for. Without one it is refused; Force Export exports anyway, the driven joints' indices then taken from the scene's weights. An imported cloth exported As Imported needs no `.mesh`.
 
 After you move bones in Edit Mode, the affected Parts rebuild when you leave it. "Check" reports problems with every Part of the active cloth.
 

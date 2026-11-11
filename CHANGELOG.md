@@ -37,6 +37,7 @@
 - **Attach to Bones** — says plainly when a part is no bone grid.
 
 ### Fixed
+- **Finding the exported `.mesh`** — the export also looks for the `.mesh` named after the Mesh Collection, passes over a same-name one of another skeleton, says the folder and names it looked for, and says when the `.mesh` is another game's.
 - **Collision planes and spheres of some game files** — they were read as other data: they now import, and an exported cloth keeps them.
 
 ## 0.4.1

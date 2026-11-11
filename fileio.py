@@ -386,37 +386,83 @@ def matching_meshes(folder: str, arm) -> list:
 
 
 FORCE_HINT = "or turn on Force Export to export without one"
+MESH_GAMES = {"241111606": gp.EXT, "250925211": gp.RE9_EXT, "260209350": gp.ONI_EXT}   # a .mesh version's .gpuc
 
 
-def export_mesh(coll, path: str, mesh_file: str = "") -> tuple:
+def mesh_game_problem(found: str, game: str) -> str:
+    """The note when a .mesh is another game's than ``game`` ("" when not, or its game is not known)."""
+    want = MESH_GAMES.get(found.rsplit(".", 1)[-1]) if found else None
+    if want is None or not game or want == game:
+        return ""
+    return (f"{os.path.basename(found)} is a {game_name(want)} mesh, and the export is for {game_name(game)}: set Game "
+            f"to {game_name(want)}")
+
+
+def export_mesh(coll, path: str, mesh_file: str = "", mesh_coll=None) -> tuple:
     """Return (the .mesh an export calibrates against, the path to export to, notes); raises ``ExportError``.
-    ``mesh_file``, else the same-name .mesh beside ``path``; its skeleton must be the cloth armature's. Without
-    either, the one .mesh beside ``path`` with the armature's skeleton, and the .gpuc takes its name."""
+    ``mesh_file``, else beside ``path`` the .mesh named as the .gpuc, then as ``mesh_coll`` (an RE Mesh Editor
+    collection is named after its file), then the one other .mesh there; each must have the cloth armature's
+    skeleton. One named otherwise than the .gpuc gives the .gpuc its name."""
     arm = _cloth_armature(coll)
     if arm is None:
         raise ExportError("the cloth has no armature to match a .mesh against")
-    found, why = find_mesh(coll, mesh_file, path, last=False)
-    if found:
+    bones = [b.name for b in arm.data.bones]
+    other = next((o for o in mesh_coll.all_objects if o.type == "ARMATURE"), None) if mesh_coll is not None else None
+    if other is not None and other != arm and [b.name for b in other.data.bones] != bones:
+        raise ExportError(f"the cloth is on {arm.name}, not on {other.name} of {mesh_coll.name}: move it there with "
+                          f"Fit to Mesh, or pick the cloth's mesh collection")
+
+    def fits(found):
         try:
-            if mesh_file_bones(found)[0] != [b.name for b in arm.data.bones]:
-                raise ExportError("its skeleton is not the cloth armature's")
+            return mesh_file_bones(found)[0] == bones, ""
         except ExportError as e:
-            raise ExportError(f"{os.path.basename(found)} does not match this cloth: {e}. Export the mesh this cloth "
-                              f"belongs to, {FORCE_HINT}") from e
+            return False, str(e)
+
+    if mesh_file or reference_mesh_file(coll):
+        found, why = find_mesh(coll, mesh_file, path, last=False)
+        if not found:
+            raise ExportError(f"{why}: {FORCE_HINT}")
+        ok, err = fits(found)
+        if not ok:
+            err = err or f"its skeleton is not {arm.name}'s"
+            raise ExportError(f"{os.path.basename(found)} does not match this cloth: {err}. Export the mesh this cloth "
+                              f"belongs to, {FORCE_HINT}")
         return found, path, []
-    if mesh_file:
-        raise ExportError(f"{why}: {FORCE_HINT}")
     folder = os.path.dirname(bpy.path.abspath(path))
-    others = matching_meshes(folder, arm)
+    name = os.path.basename(path)
+    stems = [name.split(".gpuc")[0]]
+    if mesh_coll is not None:
+        stem = mesh_coll.name.split(".mesh")[0]
+        if stem and stem not in stems:
+            stems.append(stem)
+    tried, wrong = [], []
+    for stem in stems:
+        found, why = companion_mesh(os.path.join(folder, stem + ".gpuc"))
+        if not found:
+            if why.startswith(f"no {stem}.mesh"):
+                tried.append(stem)
+                continue
+            raise ExportError(f"{why}, {FORCE_HINT}")
+        ok, err = fits(found)
+        if not ok:
+            wrong.append(f"{os.path.basename(found)} " + (f"cannot be read: {err}" if err else "has another skeleton"))
+            continue
+        if stem == stems[0]:
+            return found, path, []
+        renamed = os.path.join(folder, stem + (name[name.find(".gpuc"):] if ".gpuc" in name else os.path.splitext(name)[1]))
+        return found, renamed, [f"Found {os.path.basename(found)} beside it: exported as {os.path.basename(renamed)}"]
+    others = [o for o in matching_meshes(folder, arm) if os.path.basename(o).split(".mesh.")[0] not in stems]
+    looked = " or ".join(f"{s}.mesh" for s in tried)
+    where = f"in {folder}" if folder else "beside the .gpuc"
+    said = (f"no {looked} {where}" if looked else f"no .mesh of {arm.name}'s skeleton {where}") +         (f" ({'; '.join(wrong)})" if wrong else "")
     if len(others) > 1:
-        raise ExportError(f"{why}, and {len(others)} other meshes there have the cloth's skeleton "
+        raise ExportError(f"{said}, and {len(others)} other meshes there have the cloth's skeleton "
                           f"({', '.join(os.path.basename(o) for o in others[:3])}): paste the one into Mesh File, "
                           f"{FORCE_HINT}")
     if not others:
-        raise ExportError(f"{why}, and no other .mesh there has the cloth's skeleton. Export the mesh beside it, paste "
-                          f"its path into Mesh File, {FORCE_HINT}")
+        raise ExportError(f"{said}, and no other .mesh there has the cloth's skeleton ({arm.name}). Export the mesh "
+                          f"there, paste its path into Mesh File, {FORCE_HINT}")
     stem = os.path.basename(others[0]).split(".mesh.")[0]
-    name = os.path.basename(path)
     renamed = os.path.join(folder, stem + (name[name.find(".gpuc"):] if ".gpuc" in name else os.path.splitext(name)[1]))
     return others[0], renamed, [f"Found {os.path.basename(others[0])} beside it (no same-name .mesh): exported as "
                                 f"{os.path.basename(renamed)}"]
@@ -822,7 +868,10 @@ def export(coll, path: str, mesh_coll=None, joints: str = "FILE", game: str = ""
     elif force or _cloth_armature(coll) is None:          # no armature: build_bytes says why it cannot export
         found = find_mesh(coll, mesh_file, path)[0]
     else:
-        found, path, notes = export_mesh(coll, path, mesh_file)
+        found, path, notes = export_mesh(coll, path, mesh_file, mesh_coll)
+        why = mesh_game_problem(found, game or props.header(coll).ree_gpuc_header.game)
+        if why:
+            notes = notes + [why]
     data, more = build_bytes(coll, mesh_coll, joints, game, found, path)
     notes = notes + more
     with open(path, "wb") as f:
