@@ -7,7 +7,9 @@ Maintenance constraints:
   name and normals. ``count``, ``faces``, ``face_uvs``, ``links`` and ``particle_uv`` read it, or a bone grid.
 - A Part made from bones also stores its bone grid under ``RECIPE_KEY`` (row by row, row 0 at the top, the
   bones' rest heads in armature space; ``sub_rows`` / ``sub_cols`` particles between bones, ``anchor_rows`` over the
-  top row and ``hem_rows`` under the bottom one, ``mask`` and ``slits`` its ``grid.Shape``; its per-particle arrays
+  top row and ``hem_rows`` under the bottom one, ``side_cols`` (left, right) beside an open grid, ``row_steps`` and
+  ``col_steps`` the particles between each two bones when they differ, ``mask`` and ``slits`` its ``grid.Shape``,
+  a node named "" a short chain's past its end; its per-particle arrays
   are its shape's particles, 4 node indices of skin each). While ``ATTACHED_KEY`` is set it follows the grid: ``store`` of a grid writes the grid and
   its mesh (``_bake``), valid rest-position edits are committed as offsets from ``base_co`` (the faces keep their
   winding), and changes to topology, particle IDs or UV are undone by ``restore``. ``load`` then also holds the
@@ -121,7 +123,8 @@ def has(obj) -> bool:
 
 
 GRID_KEYS = ("rows", "cols", "closed", "sub_rows", "sub_cols", "node_rows", "node_cols", "node_co", "base_co",
-             "rest_offset", "centre", "diagonal_bend", "anchor_rows", "anchor_gap", "hem_rows", "mask", "slits")
+             "rest_offset", "centre", "diagonal_bend", "anchor_rows", "anchor_gap", "hem_rows", "mask", "slits",
+             "row_steps", "col_steps", "side_cols")
 
 
 def load(obj) -> dict:
@@ -157,7 +160,11 @@ def _load_grid(c, obj, vals) -> dict:
     flat = [int(k) for k in c.get("slits", ())]
     slits = [(flat[k], flat[k + 1]) for k in range(0, len(flat), 2)]
     n = len(grid.shape(rows, cols, bool(c["closed"]), mask, slits))
+    row_steps = [int(x) for x in c["row_steps"]] if "row_steps" in c else grid.steps(sr, nr - 1)
+    col_steps = [int(x) for x in c["col_steps"]] if "col_steps" in c else grid.steps(sc, nc if c["closed"] else nc - 1)
+    side = [int(x) for x in c.get("side_cols", (0, 0))]
     return {"locked": False, "count": n, "base_co": base, "rest_offset": offset, "mask": mask, "slits": slits,
+            "row_steps": row_steps, "col_steps": col_steps, "side_cols": side,
             "rows": rows, "cols": cols, "closed": bool(c["closed"]), "tile": int(c["tile"]), "co": co,
             "nodes": nodes, "node_rows": nr, "node_cols": nc, "sub_rows": sr, "sub_cols": sc, "node_co": node_co,
             "anchor_rows": int(c.get("anchor_rows", 0)), "anchor_gap": float(c.get("anchor_gap", 0.01)),
@@ -218,6 +225,7 @@ def store(obj, data: dict) -> None:
                        "anchor_rows": int(data.get("anchor_rows", 0)), "anchor_gap": float(data.get("anchor_gap", 0.01)),
                        "hem_rows": int(data.get("hem_rows", 0)),
                        "mask": [int(k) for k in data.get("mask", ())],
+                       **{k: [int(x) for x in data[k]] for k in ("row_steps", "col_steps", "side_cols") if k in data},
                        "slits": [int(x) for cut in data.get("slits", ()) for x in cut],
                        "node_co": fl(data["node_co"]), "skin": [int(x) for x in np.asarray(data["skin"]).ravel()],
                        "skin_w": fl(data["skin_w"]), "centre": [] if data["centre"] is None else fl(data["centre"]),
@@ -245,6 +253,9 @@ def _bake(obj, g) -> None:
     order = obj.get(FILE_ORDER_KEY)
     src = (np.asarray(order, np.int64) if order is not None else np.arange(count(g))) if same         else np.full(count(g), -1)
     nodes, skin, skin_w = g["nodes"], g["skin"], g["skin_w"]
+    if "" in nodes:                                    # a short chain's nodes past its end skin no particle
+        at = np.cumsum([bool(n) for n in nodes]) - 1
+        skin, nodes = at[np.asarray(skin, np.int64)], [n for n in nodes if n]
     kept = obj.get(FILE_SKIN_KEY) if same else None
     if kept is not None:
         nodes = [str(b) for b in kept["nodes"]]
@@ -289,9 +300,13 @@ FILE_SPLIT_KEY = "ree_gpuc_file_split"  # ... and its quads split at the other d
 
 
 def file_grid_key(d: dict) -> list:
-    """(rows, cols, closed), then a shaped grid's ``_grid_key`` rest: what a grid the file's particles are must
-    have."""
-    return [int(d["rows"]), int(d["cols"]), int(bool(d["closed"]))] + _grid_key(d)[4:]
+    """(rows, cols, closed), then a shaped grid's ``_grid_key`` rest and its own steps and side columns: what a
+    grid the file's particles are must have."""
+    key = [int(d["rows"]), int(d["cols"]), int(bool(d["closed"]))] + _grid_key(d)[4:]
+    rs, cs, side = list(d.get("row_steps") or ()), list(d.get("col_steps") or ()), list(d.get("side_cols") or (0, 0))
+    if len(set(rs)) > 1 or len(set(cs)) > 1 or any(side):   # steps of their own, side columns: them too
+        key += [-1, *rs, -1, *cs, -1, *side]
+    return key
 MESH_KEY = "ree_gpuc_from_mesh"          # on a Part made from a mesh (``structure.from_mesh``)
 FILE_KEY = "ree_gpuc_file_part"          # on a Part imported from its file: its part's index in the file
 

@@ -54,17 +54,13 @@ class REE_GPUC_Weld(bpy.types.PropertyGroup):
 
 def node_particles(d) -> dict:
     """Each bone's particle on a Part made from bones: its lattice node's, the one the export uses."""
+    from . import generate
     from .modules import grid
-    first = grid.shape(d["rows"], d["cols"], d["closed"], d.get("mask", ()), d.get("slits", ())).first         if "rows" in d else None
+    first = grid.shape(d["rows"], d["cols"], d["closed"], d.get("mask", ()), d.get("slits", ())).first
     out = {}
-    for j, name in enumerate(d["nodes"]):
-        r, c = divmod(j, d["node_cols"])
-        k = (d.get("anchor_rows", 0) + r * (d["sub_rows"] + 1)) * d["cols"] + c * (d["sub_cols"] + 1)
-        if first is not None:
-            k = int(first[k])
-            if k < 0:                                        # its cells left out
-                continue
-        out[name] = k
+    for name, k in zip(d["nodes"], generate.node_points(d)):
+        if name and first[k] >= 0:                         # neither past a short chain's end nor left out
+            out[name] = int(first[k])
     return out
 
 
@@ -80,10 +76,16 @@ def _layout(part) -> dict:
     every redraw)."""
     from . import canon
     c = part[canon.RECIPE_KEY]
-    return {"nodes": [str(b) for b in c["nodes"]], "node_cols": int(c["node_cols"]), "sub_rows": int(c["sub_rows"]),
-            "sub_cols": int(c["sub_cols"]), "cols": int(c["cols"]), "anchor_rows": int(c.get("anchor_rows", 0)),
-            "rows": int(c["rows"]), "closed": bool(c["closed"]), "mask": [int(k) for k in c.get("mask", ())],
-            "slits": [(int(f[k]), int(f[k + 1])) for f in [list(c.get("slits", ()))] for k in range(0, len(f), 2)]}
+    flat = [int(x) for x in c.get("slits", ())]
+    out = {"nodes": [str(b) for b in c["nodes"]], "node_rows": int(c["node_rows"]), "node_cols": int(c["node_cols"]),
+           "sub_rows": int(c["sub_rows"]), "sub_cols": int(c["sub_cols"]), "cols": int(c["cols"]),
+           "anchor_rows": int(c.get("anchor_rows", 0)), "hem_rows": int(c.get("hem_rows", 0)), "rows": int(c["rows"]),
+           "closed": bool(c["closed"]), "mask": [int(k) for k in c.get("mask", ())],
+           "slits": [(flat[k], flat[k + 1]) for k in range(0, len(flat), 2)]}
+    for k in ("row_steps", "col_steps", "side_cols"):
+        if k in c:
+            out[k] = [int(x) for x in c[k]]
+    return out
 
 
 def pairs(obj) -> list:

@@ -75,44 +75,134 @@ def chains_from_parents(arm) -> list[list[str]]:
 
 
 def heads(arm, names) -> np.ndarray:
-    """The bones' rest heads in armature space."""
+    """The bones' rest heads in armature space; NaN for a node named "" (a short chain's past its end)."""
     bones = arm.data.bones
-    return np.array([tuple(bones[n].head_local) for n in names], np.float32).reshape(-1, 3)
+    return np.array([tuple(bones[n].head_local) if n else (np.nan,) * 3 for n in names],
+                    np.float32).reshape(-1, 3)
 
 
 def layout(arm, cols, closed="AUTO", truncate=False, sub_rows=0, sub_cols=0, anchor_rows=0, anchor_gap=0.01,
-           hem_rows=0) -> dict:
-    """The bone grid the chains make and the particle grid on it."""
+           hem_rows=0, side_cols=0) -> dict:
+    """The bone grid the chains make and the particle grid on it. Chains of different lengths are cut to the
+    shortest with ``truncate``; else the shorter ones end early, the faces past their ends left out."""
     if len(cols) < 2:
         raise GenerateError(f"a part needs at least two chains (the columns); {len(cols)} selected")
     lengths = sorted({len(c) for c in cols})
-    if len(lengths) > 1 and not truncate:
-        raise GenerateError(f"the chains have {', '.join(map(str, lengths))} bones: use chains of the same length, "
-                            "or turn on Cut to the shortest chain")
-    nr = lengths[0]
-    if nr < 2:
+    if lengths[0] < 2:
         raise GenerateError("the chains need at least two bones each (the rows)")
+    nr = lengths[0] if truncate else lengths[-1]
     cols = [c[:nr] for c in cols]
     order, is_closed, centre = grid.order_columns(heads(arm, [c[0] for c in cols]), closed)
     cols = [cols[k] for k in order]
-    nodes = [cols[c][r] for r in range(nr) for c in range(len(cols))]
+    nodes = [cols[c][r] if r < len(cols[c]) else "" for r in range(nr) for c in range(len(cols))]
     lay = {"node_rows": nr, "node_cols": len(cols), "sub_rows": sub_rows, "sub_cols": sub_cols,
            "closed": is_closed, "centre": centre, "nodes": nodes, "anchor_rows": int(anchor_rows),
-           "anchor_gap": float(anchor_gap), "hem_rows": int(hem_rows)}
+           "anchor_gap": float(anchor_gap), "hem_rows": int(hem_rows),
+           "side_cols": [0, 0] if is_closed else [int(side_cols)] * 2}
+    lay["mask"] = short_chain_mask(lay)
     return {**lay, **_particles(lay, heads(arm, nodes))}
+
+
+def lattice_steps(d: dict) -> tuple:
+    """(particles between each two bones down the chains, across them, side columns (left, right)) of a bone
+    grid; its own lists, else its Sub Rows / Sub Cols for every gap."""
+    nr, nc, closed = d["node_rows"], d["node_cols"], d["closed"]
+    rs = [int(x) for x in d["row_steps"]] if d.get("row_steps") is not None else grid.steps(d["sub_rows"], nr - 1)
+    cs = [int(x) for x in d["col_steps"]] if d.get("col_steps") is not None else None
+    if cs is None:
+        cs = grid.steps(d["sub_cols"], nc if closed else nc - 1)
+    side = (0, 0) if closed else tuple(int(x) for x in d.get("side_cols", (0, 0)))
+    return rs, cs, side
+
+
+def grid_dims(d: dict) -> tuple:
+    """(rows, cols) of a bone grid's particles, with its anchor, hem and side rows."""
+    rs, cs, (left, right) = lattice_steps(d)
+    rows, cols = grid.dims(d["node_rows"], d["node_cols"], rs, cs, d["closed"])
+    return rows + d.get("anchor_rows", 0) + d.get("hem_rows", 0), cols + left + right
+
+
+def node_points(d: dict) -> list:
+    """Each bone node's lattice point (r * cols + c), row by row."""
+    rs, cs, (left, _) = lattice_steps(d)
+    _, cols = grid_dims(d)
+    rl, cl = grid.node_lines(rs, d["node_rows"]), grid.node_lines(cs, d["node_cols"], d["closed"])
+    above = d.get("anchor_rows", 0)
+    return [(above + rl[r]) * cols + left + cl[c] for r in range(d["node_rows"]) for c in range(d["node_cols"])]
+
+
+def short_chain_mask(d: dict) -> list:
+    """The cells past the end of a short chain (a column whose nodes end early, named ""): a cell between two
+    chains goes where either has ended."""
+    nr, nc, closed = d["node_rows"], d["node_cols"], d["closed"]
+    nodes = d["nodes"]
+    if "" not in nodes:
+        return []
+    rs, cs, (left, right) = lattice_steps(d)
+    rows, cols = grid_dims(d)
+    rl, cl = grid.node_lines(rs, nr), grid.node_lines(cs, nc, closed)
+    above = d.get("anchor_rows", 0)
+    end = []
+    for c in range(nc):
+        have = [r for r in range(nr) if nodes[r * nc + c]]
+        end.append(rows - 1 if have[-1] == nr - 1 else above + rl[have[-1]])
+    span = cols if closed else cols - 1
+    out = []
+    for cell in range(span):
+        x = cell - left
+        if x < 0:
+            a = b = 0
+        elif not closed and x >= cl[-1]:
+            a = b = nc - 1
+        else:
+            a = min(int(np.searchsorted(cl, x, side="right")) - 1, nc - 1)
+            b = (a + 1) % nc if closed else min(a + 1, nc - 1)
+        out += [r * span + cell for r in range(rows - 1) if r + 1 > min(end[a], end[b])]
+    return sorted(out)
 
 
 def _particles(lay: dict, node_co) -> dict:
     nr, nc = lay["node_rows"], lay["node_cols"]
-    pos, skin, weight = grid.subdivide(np.asarray(node_co, float).reshape(nr, nc, 3), lay["sub_rows"],
-                                       lay["sub_cols"], lay["closed"], lay["centre"])
-    rows, cols = grid.dims(nr, nc, lay["sub_rows"], lay["sub_cols"], lay["closed"])
+    rs, cs, (left, right) = lattice_steps(lay)
+    node = np.asarray(node_co, float).reshape(nr, nc, 3).copy()
+    gone = np.isnan(node[..., 0])
+    for c in range(nc):                                # past a short chain's end: on along its last bone
+        for r in range(nr):
+            if gone[r, c]:
+                if r < 2 or gone[r - 1, c] and r - 1 < 2:
+                    raise GenerateError("a chain needs at least two bones")
+                node[r, c] = 2 * node[r - 1, c] - node[r - 2, c]
+    pos, skin, weight = grid.subdivide(node, rs, cs, lay["closed"], lay["centre"])
+    if gone.any():                                     # skinned to the chain's last bone instead
+        to = np.arange(nr * nc)
+        for c in range(nc):
+            last = max(r for r in range(nr) if not gone[r, c])
+            for r in range(last + 1, nr):
+                to[r * nc + c] = last * nc + c
+        skin, weight = _merged(to[skin], weight)
+    rows, cols = grid.dims(nr, nc, rs, cs, lay["closed"])
+    pos, skin, weight = grid.extend_cols(pos, skin, weight, rows, cols, left, right)
+    cols += left + right
     above, below = lay.get("anchor_rows", 0), lay.get("hem_rows", 0)
     pos, skin, weight = grid.extend(pos, skin, weight, cols, above, lay.get("anchor_gap", 0.01), below)
     rows += above + below
     sh = grid.shape(rows, cols, lay["closed"], lay.get("mask", ()), lay.get("slits", ()))
-    return {"rows": rows, "cols": cols, "node_co": node_co, "co": pos[sh.point], "skin": skin[sh.point],
-            "skin_w": weight[sh.point]}
+    return {"rows": rows, "cols": cols, "node_co": node.reshape(-1, 3).astype(np.float32), "co": pos[sh.point],
+            "skin": skin[sh.point], "skin_w": weight[sh.point], "row_steps": rs, "col_steps": cs,
+            "side_cols": [left, right]}
+
+
+def _merged(skin, weight) -> tuple:
+    """Skin with each bone once per particle (weights summed), its slots kept."""
+    skin, weight = np.asarray(skin).copy(), np.asarray(weight, float).copy()
+    for i in range(len(skin)):
+        idx, inv = np.unique(skin[i], return_inverse=True)
+        if len(idx) == skin.shape[1]:
+            continue
+        w = np.bincount(inv, weights=weight[i], minlength=len(idx))
+        skin[i] = np.concatenate([idx, np.full(skin.shape[1] - len(idx), idx[0])])
+        weight[i] = np.concatenate([w, np.zeros(skin.shape[1] - len(idx))])
+    return skin, weight
 
 
 def unique_name(prefix: str, suffix: str = "") -> str:
@@ -229,10 +319,11 @@ def check(obj) -> list[str]:
     arm = obj.ree_gpuc_part.armature
     if arm is None or arm.type != "ARMATURE":
         return ["the part has no armature"]
-    missing = [b for b in d["nodes"] if b not in arm.data.bones]
+    missing = [b for b in d["nodes"] if b and b not in arm.data.bones]
     if missing:
         return [f"{len(missing)} bones are gone: {', '.join(missing[:4])}"]
-    moved = np.linalg.norm(heads(arm, d["nodes"]) - d["node_co"], axis=1)
+    have = [k for k, b in enumerate(d["nodes"]) if b]
+    moved = np.linalg.norm(heads(arm, [d["nodes"][k] for k in have]) - d["node_co"][have], axis=1)
     far = np.where(moved > 1e-5)[0]
     if len(far):
         return [f"{len(far)} bones moved off the rest heads the part was made from (up to {moved.max() * 100:.2f} cm)"]
@@ -264,8 +355,8 @@ def _resample_lattice(values, old: dict, new: dict) -> np.ndarray:
     trailing = values.shape[1:]
     v = values.reshape(old["rows"], old["cols"], *trailing)
     r_new, c_new = np.divmod(np.arange(new["rows"] * new["cols"]), new["cols"])
-    r = _old_rows(r_new, old, new)
-    c = c_new / (new["sub_cols"] + 1) * (old["sub_cols"] + 1)            # in old particle columns
+    r = _old_place(r_new, old, new, True)
+    c = _old_place(c_new, old, new, False)
     r0 = np.clip(np.floor(r).astype(int), 0, old["rows"] - 1)
     r1 = np.minimum(r0 + 1, old["rows"] - 1)
     fr = np.clip(r - r0, 0.0, 1.0)
@@ -277,10 +368,9 @@ def _resample_lattice(values, old: dict, new: dict) -> np.ndarray:
         c0 = np.clip(np.floor(c).astype(int), 0, old["cols"] - 1)
         c1 = np.minimum(c0 + 1, old["cols"] - 1)
         fc = np.clip(c - c0, 0.0, 1.0)
-        if new["closed"]:
-            seam = c > old["cols"] - 1
-            c0[seam], c1[seam] = old["cols"] - 1, 0
-            fc[seam] = (c[seam] - (old["cols"] - 1)) / (old["sub_cols"] + 1)
+        seam = c > old["cols"] - 1                     # a new ring's gap between the old last column and the first
+        c0[seam], c1[seam] = old["cols"] - 1, 0
+        fc[seam] = c[seam] - (old["cols"] - 1)
     fr = fr.reshape((-1,) + (1,) * len(trailing))
     fc = fc.reshape((-1,) + (1,) * len(trailing))
     top = v[r0, c0] * (1 - fc) + v[r0, c1] * fc
@@ -288,18 +378,35 @@ def _resample_lattice(values, old: dict, new: dict) -> np.ndarray:
     return top * (1 - fr) + bottom * fr
 
 
-def _old_rows(r_new, old: dict, new: dict) -> np.ndarray:
-    """Each new particle row as a (fractional) row of the old grid: anchor rows to anchor rows (counted from the top
-    row down), the grid between them by density, hem rows to hem rows (the old bottom row when it had none)."""
-    a_o, a_n = old.get("anchor_rows", 0), new.get("anchor_rows", 0)
-    h_o, h_n = old.get("hem_rows", 0), new.get("hem_rows", 0)
-    body_o, body_n = old["rows"] - a_o - h_o, new["rows"] - a_n - h_n
-    r = np.asarray(r_new, float)
-    out = a_o + (r - a_n) / (new["sub_rows"] + 1) * (old["sub_rows"] + 1)
-    above = r < a_n
-    out[above] = np.maximum(a_o - (a_n - r[above]), 0.0)
-    below = r >= a_n + body_n
-    out[below] = a_o + body_o - 1 + np.minimum(r[below] - (a_n + body_n) + 1, h_o)
+def _axis(d: dict, rows: bool) -> tuple:
+    """(rows before the bones, each bone's row, rows after them, closed) down a bone grid; or the same across
+    it (side columns, each chain's column)."""
+    rs, cs, (left, right) = lattice_steps(d)
+    if rows:
+        return d.get("anchor_rows", 0), grid.node_lines(rs, d["node_rows"]), d.get("hem_rows", 0), False
+    return left, grid.node_lines(cs, d["node_cols"], d["closed"]), right, d["closed"]
+
+
+def _old_place(x, old: dict, new: dict, rows: bool) -> np.ndarray:
+    """New particle rows (or columns; fractional) as places on the old grid: between the bones by the bones'
+    places, anchor rows and left side columns counted from the first bone, hem rows and right side columns from the
+    last (the old last bone's when it had none); a new ring's gap after the last chain past the old last column."""
+    lead_o, lines_o, trail_o, closed_o = _axis(old, rows)
+    lead_n, lines_n, trail_n, closed_n = _axis(new, rows)
+    body = np.asarray(x, float) - lead_n
+    nodes = np.arange(len(lines_n))
+    if closed_n:
+        u = np.interp(body % lines_n[-1], lines_n, nodes)
+    else:
+        u = np.interp(body, lines_n, nodes)
+    out = np.interp(u, np.arange(len(lines_o)), lines_o) + lead_o
+    if closed_n and not closed_o:
+        past = u > len(lines_o) - 1
+        out[past] = lead_o + lines_o[-1] + (u[past] - (len(lines_o) - 1))
+    if not closed_n:
+        before, after = body < 0, body > lines_n[-1]
+        out[before] = np.maximum(lead_o + body[before], 0.0)
+        out[after] = lead_o + lines_o[-1] + np.minimum(body[after] - lines_n[-1], trail_o)
     return out
 
 
@@ -312,31 +419,36 @@ def _carry_shape(old: dict, new: dict) -> tuple:
         return [], []
     rows, cols, closed = new["rows"], new["cols"], new["closed"]
     span_o, span_n = (old["cols"] if old["closed"] else old["cols"] - 1), (cols if closed else cols - 1)
-    scale = (old["sub_cols"] + 1) / (new["sub_cols"] + 1)
-    mid = _old_rows(np.arange(rows - 1) + 0.5, old, new) if rows > 1 else np.zeros(0)
+    mid_r = _old_place(np.arange(rows - 1) + 0.5, old, new, True)
+    mid_c = _old_place(np.arange(span_n) + 0.5, old, new, False)
     gone = set(sh.mask)
     mask = []
     for r in range(rows - 1):
-        ro = min(int(np.floor(mid[r])), old["rows"] - 2)
+        ro = min(max(int(np.floor(mid_r[r])), 0), old["rows"] - 2)
         for c in range(span_n):
-            co = int(np.floor((c + 0.5) * scale)) % span_o if old["closed"] else min(int(np.floor((c + 0.5) * scale)), span_o - 1)
+            co = int(np.floor(mid_c[c]))
+            co = co % span_o if old["closed"] else min(max(co, 0), span_o - 1)
             if ro * span_o + co in gone:
                 mask.append(r * span_n + c)
-    at = _old_rows(np.arange(rows), old, new)
+    at_r = _old_place(np.arange(rows), old, new, True)
+    at_c = _old_place(np.arange(cols), old, new, False)
     slits = []
     for c, top in sh.slits:
-        cn = int(round(c / scale))
-        cn = cn % cols if closed else cn
-        tn = int(np.argmin(np.abs(at - top)))
-        if 0 <= tn < rows - 1 and 0 <= cn < cols and (closed or 0 < cn < cols - 1):
+        far = np.abs(at_c - c)
+        if old["closed"]:
+            far = np.minimum(far, old["cols"] - far)
+        cn = int(np.argmin(np.round(far, 6)))            # halfway between two: the first
+        tn = int(np.argmin(np.round(np.abs(at_r - top), 6)))
+        if 0 <= tn < rows - 1 and (closed or 0 < cn < cols - 1):
             slits.append((cn, tn))
     return mask, sorted(set(slits))
 
 
 def regenerate(obj, closed=None, sub_rows=None, sub_cols=None, anchor_rows=None, anchor_gap=None,
-               hem_rows=None, mask=None, slits=None) -> None:
+               hem_rows=None, mask=None, slits=None, side_cols=None) -> None:
     """The particles made again from the bones' rest heads, with a new ring or density if given; every value kept
-    (the groups' latest first; carried over the grid when its size changes)."""
+    (the groups' latest first; carried over the grid when its size changes). A grid with its own particles between
+    each two bones keeps them until another Sub Rows / Sub Cols is given."""
     if not canon.attached(obj):
         raise GenerateError(f"{obj.name} does not follow its bones: it is not regenerated")
     canon.restore(obj)
@@ -345,23 +457,31 @@ def regenerate(obj, closed=None, sub_rows=None, sub_cols=None, anchor_rows=None,
     arm = obj.ree_gpuc_part.armature
     if arm is None or arm.type != "ARMATURE":
         raise GenerateError(f"{obj.name} has no armature")
-    missing = [b for b in old["nodes"] if b not in arm.data.bones]
+    missing = [b for b in old["nodes"] if b and b not in arm.data.bones]
     if missing:
         raise GenerateError(f"{len(missing)} bones are gone ({', '.join(missing[:4])}): generate the part again")
     d = dict(old)
-    if closed is not None:
-        d["closed"] = bool(closed)
-    if sub_rows is not None:
-        d["sub_rows"] = int(sub_rows)
-    if sub_cols is not None:
-        d["sub_cols"] = int(sub_cols)
+    if closed is not None and bool(closed) != old["closed"]:
+        d["closed"], d["col_steps"] = bool(closed), None
+    if sub_rows is not None and int(sub_rows) != old["sub_rows"]:
+        d["sub_rows"], d["row_steps"] = int(sub_rows), None
+    if sub_cols is not None and int(sub_cols) != old["sub_cols"]:
+        d["sub_cols"], d["col_steps"] = int(sub_cols), None
     for key, value, kind in (("anchor_rows", anchor_rows, int), ("anchor_gap", anchor_gap, float),
                              ("hem_rows", hem_rows, int)):
         if value is not None:
             d[key] = kind(value)
-    d["rows"], d["cols"] = grid.dims(d["node_rows"], d["node_cols"], d["sub_rows"], d["sub_cols"], d["closed"])
-    d["rows"] += d["anchor_rows"] + d["hem_rows"]
-    carried = _carry_shape(old, d) if (d["rows"], d["cols"], d["closed"]) != (old["rows"], old["cols"], old["closed"])         or (d["anchor_rows"], d["hem_rows"]) != (old["anchor_rows"], old["hem_rows"]) else (old["mask"], old["slits"])
+    if side_cols is not None:
+        d["side_cols"] = [int(side_cols)] * 2
+    if d["closed"]:
+        d["side_cols"] = [0, 0]
+    rs, cs, side = lattice_steps(d)
+    d["row_steps"], d["col_steps"], d["side_cols"] = rs, cs, list(side)
+    d["rows"], d["cols"] = grid_dims(d)
+    now = (rs, cs, side, d["closed"], d["anchor_rows"], d["hem_rows"])
+    same = now == (old["row_steps"], old["col_steps"], tuple(old["side_cols"]), old["closed"], old["anchor_rows"],
+                   old["hem_rows"])
+    carried = (old["mask"], old["slits"]) if same else _carry_shape(old, d)
     d["mask"] = list(mask) if mask is not None else carried[0]
     d["slits"] = [tuple(x) for x in slits] if slits is not None else carried[1]
     node_co = heads(arm, d["nodes"])
@@ -373,9 +493,7 @@ def regenerate(obj, closed=None, sub_rows=None, sub_cols=None, anchor_rows=None,
     d["co"] = d["base_co"] + d["rest_offset"]
     from .modules.gpuc_build import validate_geometry
     validate_geometry(d["co"], [(f[0], f[k], f[k + 1]) for f in canon.faces(d) for k in range(1, len(f) - 1)])
-    if ((d["rows"], d["cols"]) != (old["rows"], old["cols"]) or d["closed"] != old["closed"]
-            or (d["anchor_rows"], d["hem_rows"]) != (old["anchor_rows"], old["hem_rows"])
-            or (canon.shape(d).mask, canon.shape(d).slits) != (canon.shape(old).mask, canon.shape(old).slits)):
+    if not same or (canon.shape(d).mask, canon.shape(d).slits) != (canon.shape(old).mask, canon.shape(old).slits):
         for name in canon.FIELD_NAMES:
             d[name] = resample(old[name], old, d)
         if d["anchor_rows"] > old["anchor_rows"]:              # new anchor rows are pinned, as new Parts' are

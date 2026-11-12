@@ -2192,12 +2192,14 @@ def ancestors(arm) -> dict:
 
 
 def _down_chains(names: list, nc: int, ancestors: dict) -> bool:
-    """Whether a lattice of bones (row by row, ``nc`` a row) runs down its chains: neighbours down a column share
-    more ancestors than neighbours along a row (a chain's bones, or bones hung off one chain, as RE9's are)."""
+    """Whether a lattice of bones (row by row, ``nc`` a row, "" for none) runs down its chains: neighbours down a
+    column share more ancestors than neighbours along a row (a chain's bones, or bones hung off one chain, as
+    RE9's are)."""
     def shared(a, b):
         return len((ancestors.get(a, set()) | {a}) & (ancestors.get(b, set()) | {b}))
-    down = [shared(names[j], names[j + nc]) for j in range(len(names) - nc)]
-    along = [shared(names[j], names[j + 1]) for j in range(len(names) - 1) if j % nc != nc - 1]
+    down = [shared(names[j], names[j + nc]) for j in range(len(names) - nc) if names[j] and names[j + nc]]
+    along = [shared(names[j], names[j + 1]) for j in range(len(names) - 1)
+             if j % nc != nc - 1 and names[j] and names[j + 1]]
     return not down or not along or float(np.mean(down)) > float(np.mean(along))
 
 
@@ -2418,56 +2420,75 @@ def _lattice(skin, sw, pos, sh, bones: list, bend: bool, ancestors=None, heads=N
 
 
 def _lattice_by(node, rows_follow: bool, skin, sw, pos, sh, bones, bend, ancestors) -> tuple:
-    """``_lattice`` with the lattice points' bones from ``node`` (a bone index, None for no node); with
-    ``rows_follow``, anchor and hem rows must follow the bones of the rows they extend on the node columns."""
+    """``_lattice`` with the lattice points' bones from ``node`` (a bone index, None for no node). The bones' rows
+    and columns are the ones some node lies on; the rows before and after them are anchor and hem rows, the columns
+    beside them (an open grid's) side columns, and with ``rows_follow`` a row or column of nodes on the bones of the
+    one next to it is one of those too. A column's nodes run down from the first bones' row and may end early (a
+    short chain); a node the shape left out takes the one other bone round it (``_left_out_bone``)."""
     rows, cols, closed = sh.rows, sh.cols, sh.closed
-    span = cols if closed else cols - 1
     first = sh.first
-    bone = {p: node(p) for p in range(rows * cols)}
-    why = _LATTICE_STEPS[0]
-    # anchor rows over the top and hem rows under the bottom (generate.layout), fewer than the rows between
-    for above, below in sorted(((a, b) for a in range(4) for b in range(4) if 2 * (a + b) < rows), key=sum):
-        body = rows - above - below
-        on = {p for p in range(above * cols, (above + body) * cols) if bone[p] is not None}
-        for sr in range(body - 1):
-            if (body - 1) % (sr + 1):
-                continue
-            for sc in range(span):
-                if span % (sc + 1):
-                    continue
-                at = [(above + r) * cols + c for r in range(0, body, sr + 1) for c in range(0, cols, sc + 1)]
-                if {p for p in at if first[p] >= 0} != on:
-                    continue
-                top, bottom = above * cols, (above + body - 1) * cols
-                node_cols = range(0, cols, sc + 1)
-                if rows_follow and any(bone[r * cols + c] != bone[top + c] for r in range(above) for c in node_cols):
-                    continue
-                if rows_follow and any(bone[r * cols + c] != bone[bottom + c]
-                                       for r in range(above + body, rows) for c in node_cols):
-                    continue
-                found = {p: bone[p] for p in at if first[p] >= 0}
-                gone = [p for p in at if first[p] < 0]
-                for p in gone:                         # a node its shape left out: the one other bone round it
-                    found[p] = _left_out_bone(p, sh, skin, sw, set(found.values()), sr, sc)
-                if None in found.values():
-                    continue
-                names = [bones[found[p]] for p in at]
-                if len(set(names)) != len(names):
-                    why = max(why, _LATTICE_STEPS[1], key=_LATTICE_STEPS.index)
-                    continue
-                if ancestors is not None and not _down_chains(names, len(node_cols), ancestors):
-                    why = _LATTICE_STEPS[2]
-                    continue
-                gap = 0.01
-                if above:
-                    both = [(first[(above - 1) * cols + c], first[above * cols + c]) for c in range(cols)]
-                    both = [(a, b) for a, b in both if a >= 0 and b >= 0]
-                    gap = float(np.median([np.linalg.norm(pos[a] - pos[b]) for a, b in both])) if both else 0.01
-                lay = {"node_rows": (body - 1) // (sr + 1) + 1, "node_cols": len(range(0, cols, sc + 1)),
-                       "sub_rows": sr, "sub_cols": sc, "closed": closed, "nodes": names, "diagonal_bend": bend,
-                       "anchor_rows": above, "anchor_gap": gap, "hem_rows": below}
-                return lay, ""
-    return None, why
+    bone = [node(p) for p in range(rows * cols)]
+    on = {p for p in range(rows * cols) if bone[p] is not None}
+    if not on:
+        return None, _LATTICE_STEPS[0]
+    nrows = sorted({p // cols for p in on})
+    ncols = sorted({p % cols for p in on})
+
+    def line(r, along):                                 # the nodes' bones on a row (or a column)
+        return [bone[r * cols + c] if along else bone[c * cols + r] for c in (ncols if along else nrows)]
+
+    if rows_follow:                                     # rows and columns that repeat their neighbour's bones
+        while len(nrows) > 2 and nrows[1] == nrows[0] + 1 and line(nrows[0], True) == line(nrows[1], True):
+            nrows.pop(0)
+        while len(nrows) > 2 and nrows[-2] == nrows[-1] - 1 and line(nrows[-1], True) == line(nrows[-2], True):
+            nrows.pop()
+        if not closed:
+            while len(ncols) > 2 and ncols[1] == ncols[0] + 1 and line(ncols[0], False) == line(ncols[1], False):
+                ncols.pop(0)
+            while len(ncols) > 2 and ncols[-2] == ncols[-1] - 1 and line(ncols[-1], False) == line(ncols[-2], False):
+                ncols.pop()
+        keep_r, keep_c = set(nrows), set(ncols)
+        on = {p for p in on if p // cols in keep_r and p % cols in keep_c}
+    above, below = nrows[0], rows - 1 - nrows[-1]
+    left, right = (0, 0) if closed else (ncols[0], cols - 1 - ncols[-1])
+    if closed and ncols[0] != 0:
+        return None, _LATTICE_STEPS[0]                  # another placement starts the ring at a chain
+    if len(nrows) < 2 or len(ncols) < 2 or max(above, below, left, right) > 3 or 2 * (above + below) >= rows \
+            or (not closed and 2 * (left + right) >= cols):
+        return None, _LATTICE_STEPS[0]
+    at = [r * cols + c for r in nrows for c in ncols]
+    if not on <= set(at):
+        return None, _LATTICE_STEPS[0]
+    found = {p: bone[p] for p in at if bone[p] is not None}
+    step_r = max(np.diff(nrows)) - 1
+    step_c = max(np.diff(ncols)) - 1
+    for p in at:                                        # a node its shape left out: the one other bone round it
+        if p not in found and first[p] < 0:
+            b = _left_out_bone(p, sh, skin, sw, set(found.values()), step_r, step_c)
+            if b is not None:
+                found[p] = b
+    for c in ncols:                                     # each chain from the first bones' row down, maybe ending early
+        have = [r for r in nrows if r * cols + c in found]
+        if len(have) < 2 or have != nrows[:len(have)]:
+            return None, _LATTICE_STEPS[0]
+    names = [bones[found[p]] if p in found else "" for p in at]
+    named = [n for n in names if n]
+    if len(set(named)) != len(named):
+        return None, _LATTICE_STEPS[1]
+    if ancestors is not None and not _down_chains(names, len(ncols), ancestors):
+        return None, _LATTICE_STEPS[2]
+    gap = 0.01
+    if above:
+        both = [(first[(above - 1) * cols + c], first[above * cols + c]) for c in range(cols)]
+        both = [(a, b) for a, b in both if a >= 0 and b >= 0]
+        gap = float(np.median([np.linalg.norm(pos[a] - pos[b]) for a, b in both])) if both else 0.01
+    row_steps = [int(x) - 1 for x in np.diff(nrows)]
+    col_steps = [int(x) - 1 for x in np.diff(ncols)] + ([cols - ncols[-1] + ncols[0] - 1] if closed else [])
+    lay = {"node_rows": len(nrows), "node_cols": len(ncols), "sub_rows": int(round(np.mean(row_steps))),
+           "sub_cols": int(round(np.mean(col_steps))), "row_steps": row_steps, "col_steps": col_steps,
+           "side_cols": [left, right], "closed": closed, "nodes": names, "diagonal_bend": bend,
+           "anchor_rows": above, "anchor_gap": gap, "hem_rows": below}
+    return lay, ""
 
 
 def _other_diagonal(f, sel, lay) -> bool:

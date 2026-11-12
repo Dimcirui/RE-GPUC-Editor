@@ -37,7 +37,7 @@ def _refresh(scene, objects):
                 problems = generate.check(obj)
                 if problems and canon.attached(obj):
                     if (arm is not None and arm.type == "ARMATURE"
-                            and all(n in arm.data.bones for n in canon.recipe(obj)["nodes"])):
+                            and all(n in arm.data.bones for n in canon.recipe(obj)["nodes"] if n)):
                         generate.regenerate(obj)
                         problems = generate.check(obj)
                 _status(obj, "; ".join(problems) if problems else "ok")

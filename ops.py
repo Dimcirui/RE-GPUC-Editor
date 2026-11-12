@@ -442,7 +442,10 @@ RING = [("AUTO", "Auto", "Closed if the chains go all the way around"),
 
 class _PartOptions:
     closed: bpy.props.EnumProperty(name="Ring", items=RING, default="AUTO")
-    truncate: bpy.props.BoolProperty(name="Cut to the shortest chain")
+    truncate: bpy.props.BoolProperty(
+        name="Cut to the shortest chain",
+        description="Cut every chain to the shortest one's length. Off, a shorter chain ends early and the faces "
+                    "past its end are left out")
     sub_rows: bpy.props.IntProperty(name="Between bones, down", default=0, min=0, max=8,
                                     description="Extra particles between two bones of a chain. 0: one per bone")
     sub_cols: bpy.props.IntProperty(name="Between chains, across", default=0, min=0, max=8,
@@ -458,6 +461,10 @@ class _PartOptions:
         name="Hem Rows", default=0, min=0, max=3,
         description="Rows past the chains' ends, as far apart as the last rows and skinned as the bottom row, "
                     "so the cloth reaches a hem below the last bones")
+    side_cols: bpy.props.IntProperty(
+        name="Side Columns", default=0, min=0, max=3,
+        description="Columns beside an open part's first and last chains, as far apart as the edge columns and "
+                    "skinned as them, so the cloth reaches past the outer chains")
     project: bpy.props.BoolProperty(
         name="Project onto Mesh", default=False,
         description="Move the particles onto the mid-surface of the cloth mesh skinned to these bones, as rest "
@@ -475,7 +482,8 @@ class _PartOptions:
     def draw(self, context):
         col = self.layout.column()
         col.use_property_split = True
-        for name in ("closed", "truncate", "sub_rows", "sub_cols", "anchor_rows", "anchor_gap", "hem_rows", "project"):
+        for name in ("closed", "truncate", "sub_rows", "sub_cols", "anchor_rows", "anchor_gap", "hem_rows",
+                     "side_cols", "project"):
             col.prop(self, name)
 
     def execute(self, context):
@@ -486,7 +494,7 @@ class _PartOptions:
                                  f"Create a new GPUC collection for parts from bones")
         try:
             lay = generate.layout(arm, self.chains(arm), self.closed, self.truncate, self.sub_rows, self.sub_cols,
-                                  self.anchor_rows, self.anchor_gap, self.hem_rows)
+                                  self.anchor_rows, self.anchor_gap, self.hem_rows, self.side_cols)
         except (generate.GenerateError, ValueError) as e:
             self.report({"ERROR"}, str(e))
             return {"CANCELLED"}
@@ -574,6 +582,10 @@ class REE_GPUC_OT_regenerate_part(bpy.types.Operator):
         name="Hem Rows", default=0, min=0, max=3,
         description="Rows past the chains' ends, as far apart as the last rows and skinned as the bottom row, "
                     "so the cloth reaches a hem below the last bones")
+    side_cols: bpy.props.IntProperty(
+        name="Side Columns", default=0, min=0, max=3,
+        description="Columns beside an open part's first and last chains, as far apart as the edge columns and "
+                    "skinned as them, so the cloth reaches past the outer chains")
     project: bpy.props.BoolProperty(
         name="Project onto Mesh", default=False, options={"SKIP_SAVE"},
         description="Move the particles onto the mid-surface of the cloth mesh skinned to these bones, as rest "
@@ -598,11 +610,12 @@ class REE_GPUC_OT_regenerate_part(bpy.types.Operator):
             if canon.attached(obj):
                 d = canon.recipe(obj)
                 self.anchor_rows, self.anchor_gap, self.hem_rows = d["anchor_rows"], d["anchor_gap"], d["hem_rows"]
+                self.side_cols = max(d["side_cols"])
 
     def draw(self, context):
         col = self.layout.column()
         col.use_property_split = True
-        for name in ("closed", "sub_rows", "sub_cols", "anchor_rows", "anchor_gap", "hem_rows", "project"):
+        for name in ("closed", "sub_rows", "sub_cols", "anchor_rows", "anchor_gap", "hem_rows", "side_cols", "project"):
             col.prop(self, name)
 
     def execute(self, context):
@@ -614,8 +627,10 @@ class REE_GPUC_OT_regenerate_part(bpy.types.Operator):
             self.report({"ERROR"}, f"{obj.name} is in Edit Mode. Return to Object Mode first")
             return {"CANCELLED"}
         try:
+            side = canon.recipe(obj)["side_cols"] if canon.attached(obj) else [0, 0]
             generate.regenerate(obj, self.closed == "CLOSED", self.sub_rows, self.sub_cols, self.anchor_rows,
-                                self.anchor_gap, self.hem_rows)
+                                self.anchor_gap, self.hem_rows,
+                                side_cols=None if self.side_cols == max(side) else self.side_cols)
         except generate.GenerateError as e:
             self.report({"ERROR"}, str(e))
             return {"CANCELLED"}

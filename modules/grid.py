@@ -67,12 +67,39 @@ def _circle_centre(xy):
     return None if spread <= 0 or radius > 5 * spread else np.array([cx, cy])
 
 
-def dims(node_rows: int, node_cols: int, sub_rows: int, sub_cols: int, closed: bool) -> tuple[int, int]:
+def steps(sub, gaps: int) -> list:
+    """Particles between each two neighbouring bones: ``sub`` for every one of the ``gaps``, or its own list."""
+    if isinstance(sub, (int, np.integer)):
+        return [int(sub)] * gaps
+    out = [int(x) for x in sub]
+    if len(out) != gaps:
+        raise GridError(f"{len(out)} steps given for {gaps} gaps between bones")
+    return out
+
+
+def node_lines(sub, nodes: int, closed: bool = False) -> list:
+    """The particle row (or column) of each bone node, from the top (or the first column); a ring's also the
+    first node's again after the last gap."""
+    gaps = steps(sub, nodes if closed else nodes - 1)
+    return [int(x) for x in np.concatenate([[0], np.cumsum(np.array(gaps) + 1)])]
+
+
+def dims(node_rows: int, node_cols: int, sub_rows, sub_cols, closed: bool) -> tuple[int, int]:
     """The particle grid's rows and columns: sub_rows particles between two bones down a chain, sub_cols columns
-    between two neighbouring chains (a closed ring also between the last chain and the first)."""
-    rows = (node_rows - 1) * (sub_rows + 1) + 1
-    cols = node_cols * (sub_cols + 1) if closed else (node_cols - 1) * (sub_cols + 1) + 1
-    return rows, cols
+    between two neighbouring chains (a closed ring also between the last chain and the first); either a number for
+    every gap or a list, one per gap."""
+    rows = node_lines(sub_rows, node_rows)[-1] + 1
+    lines = node_lines(sub_cols, node_cols, closed)
+    return rows, (lines[-1] if closed else lines[-1] + 1)
+
+
+def _segment(lines: list, x: int) -> tuple:
+    """(the node gap a particle row or column lies in, its share of the way across it); on the last node, that
+    node and no share."""
+    k = int(np.searchsorted(lines, x, side="right")) - 1
+    if k >= len(lines) - 1:
+        return len(lines) - 1, 0.0
+    return k, (x - lines[k]) / (lines[k + 1] - lines[k])
 
 
 def extend(pos, skin, weight, cols: int, above: int = 0, gap: float = 0.01, below: int = 0) -> tuple:
@@ -93,24 +120,43 @@ def extend(pos, skin, weight, cols: int, above: int = 0, gap: float = 0.01, belo
     return np.concatenate(parts_p), np.concatenate(parts_s), np.concatenate(parts_w)
 
 
-def subdivide(nodes, sub_rows: int, sub_cols: int, closed: bool, centre=None):
+def extend_cols(pos, skin, weight, rows: int, cols: int, left: int = 0, right: int = 0) -> tuple:
+    """A particle grid with ``left`` columns before its first column and ``right`` after its last, each as far from
+    the next as its own two edge columns, skinned as the column it extends. Returns (pos, skin, weight)."""
+    pos, skin, weight = np.asarray(pos, float), np.asarray(skin), np.asarray(weight, float)
+    if not (left or right) or cols < 2:
+        return pos, skin, weight
+    p = pos.reshape(rows, cols, 3)
+    s_, w_ = skin.reshape(rows, cols, -1), weight.reshape(rows, cols, -1)
+    first, last = p[:, :1], p[:, -1:]
+    step_l, step_r = p[:, :1] - p[:, 1:2], p[:, -1:] - p[:, -2:-1]
+    parts_p = [first + step_l * k for k in range(left, 0, -1)] + [p] + [last + step_r * k for k in range(1, right + 1)]
+    parts_s = [s_[:, :1]] * left + [s_] + [s_[:, -1:]] * right
+    parts_w = [w_[:, :1]] * left + [w_] + [w_[:, -1:]] * right
+    width = cols + left + right
+    return (np.concatenate(parts_p, axis=1).reshape(rows * width, 3),
+            np.concatenate(parts_s, axis=1).reshape(rows * width, -1),
+            np.concatenate(parts_w, axis=1).reshape(rows * width, -1))
+
+
+def subdivide(nodes, sub_rows, sub_cols, closed: bool, centre=None):
     """The particles of a grid of bone heads (node_rows x node_cols x 3, row 0 at the top): each particle's
     position, and its skin as the 4 corner bones (flat node indices) and their bilinear weights. A particle on a
     bone is that bone's alone. Around an axis (centre: its x, y) the in-between columns follow the circle (angle
-    and distance from the axis are interpolated, not the chord); without one, straight lines."""
+    and distance from the axis are interpolated, not the chord); without one, straight lines. ``sub_rows`` and
+    ``sub_cols``: a number for every gap between bones, or a list (``steps``)."""
     nodes = np.asarray(nodes, float)
     nr, nc = nodes.shape[:2]
     rows, cols = dims(nr, nc, sub_rows, sub_cols, closed)
+    row_lines, col_lines = node_lines(sub_rows, nr), node_lines(sub_cols, nc, closed)
     pos = np.empty((rows * cols, 3))
     skin = np.empty((rows * cols, 4), np.int64)
     weight = np.empty((rows * cols, 4))
     for r in range(rows):
-        r0, v = divmod(r, sub_rows + 1)
-        v /= sub_rows + 1
+        r0, v = _segment(row_lines, r)
         r1 = min(r0 + 1, nr - 1)
         for c in range(cols):
-            c0, u = divmod(c, sub_cols + 1)
-            u /= sub_cols + 1
+            c0, u = _segment(col_lines, c)
             c1 = (c0 + 1) % nc if closed else min(c0 + 1, nc - 1)
             corners = [(r0, c0), (r0, c1), (r1, c0), (r1, c1)]
             w = np.array([(1 - u) * (1 - v), u * (1 - v), (1 - u) * v, u * v])
