@@ -535,9 +535,13 @@ class REE_GPUC_OT_part_from_selected(_PartOptions, bpy.types.Operator):
         return generate.chains_from_selected(arm)
 
 
+_PART_ITEMS: list = []                 # Blender keeps no reference to a dynamic enum's strings
+
+
 def _part_items(self, context):
     s = _settings(context)
-    return [(o.name, o.name, "") for o in props.parts(s.target) if canon.attached(o)] or [("", "No part", "")]
+    _PART_ITEMS[:] = [(o.name, o.name, "") for o in props.parts(s.target) if canon.has(o)] or [("", "No part", "")]
+    return _PART_ITEMS
 
 
 def _default_part(context):
@@ -625,7 +629,8 @@ class REE_GPUC_OT_regenerate_part(bpy.types.Operator):
 
 
 class REE_GPUC_OT_select_part_bones(bpy.types.Operator):
-    """Select the bones a part was made from (Pose Mode on its armature)"""
+    """Select the bones a Part follows: the ones it was made from, or an imported Part's skin bones (Pose Mode on
+    its armature)"""
     bl_idname = "ree_gpuc.select_part_bones"
     bl_label = "Select Part Bones"
     bl_options = {"REGISTER", "UNDO"}
@@ -639,7 +644,7 @@ class REE_GPUC_OT_select_part_bones(bpy.types.Operator):
     def invoke(self, context, event):
         default = _default_part(context)
         name = default if isinstance(default, str) else default.name if default else ""
-        if name:
+        if name in {key for key, _, _ in _part_items(self, context)}:
             self.part = name
         return context.window_manager.invoke_props_dialog(self)
 
