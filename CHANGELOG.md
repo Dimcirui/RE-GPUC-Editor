@@ -15,7 +15,7 @@
 - **Triangle tangent flags** — on an editable imported Part's faces, as attributes you can read and set; new triangles whose UVs span no area get the flag the game's files give them.
 - **Attach to Bones** — an imported Part found to be a grid of bone chains follows its bones, and stays its file's Part.
 - **Slits and faces left out** — a Part made from bones can be cut down a column or leave faces out (GPUC: Particles > Shape, in Edit Mode); the shape carries over a change of density and comes back when the file is imported again.
-- **Attach to Bones on more game files** — the grid is found from the Part's quads whatever its particles' order, with slits and faces left out, so RE9 skirts and dresses and many Wilds files attach; the file's skin and quad splits stay while the Part keeps its file's density.
+- **Attach to Bones on more game files** — the grid is found from the Part's quads whatever its particles' order, with slits and faces left out, so RE9 skirts, dresses and coats and many Wilds files attach; the bones are found by where they are, also in files that skin each bone halfway down it. The file's skin and quad splits stay while the Part keeps its file's density.
 - **Anchor and hem rows** — a Part made from bones can have pinned rows above its top bones and rows past its chains' ends, as the game's files do; they come back when the file is imported again.
 - **Project onto Mesh** — an option when creating or regenerating a Part from bones: its particles move onto the mid-surface of the cloth mesh skinned to its bones, and it still regenerates.
 - **Fit to Mesh** — moves a cloth's particles onto another mesh with the same faces, such as the same mesh sculpted or converted for another character, and onto its armature and game.

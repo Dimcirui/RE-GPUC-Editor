@@ -326,7 +326,8 @@ def attach_to_bones(obj, force: bool = False) -> str:
     f = fileio.file_parts(fileio.stored_file(coll))
     i = int(obj[canon.FILE_KEY])
     sel = np.where(f["part_of"] == i)[0]
-    lay, links, gl = fileio._recognise(f, i, [b.name for b in arm.data.bones], fileio.ancestors(arm))
+    lay, links, gl = fileio._recognise(f, i, [b.name for b in arm.data.bones], fileio.ancestors(arm),
+                                       fileio.bone_heads(arm))
     if lay is None:
         raise ValueError(links)
     order = np.asarray(lay.pop("order"), np.int64)       # the file part's particle for each of the grid's

@@ -2306,14 +2306,15 @@ def _shape_of(faces, n: int, rows: int, cols: int, closed: bool, point) -> tuple
     return sh, np.array(to, np.int64)
 
 
-def _recognise(f: dict, i: int, bones: list, above=None) -> tuple:
+def _recognise(f: dict, i: int, bones: list, above=None, heads=None) -> tuple:
     """Return (layout, links {(a, b, type): tail}, ``grid.links``) for a file part the generator could make, else
     (None, reason, None). Its quads are laid out on a lattice by unfolding them, whatever its particles' order: cells
     without a quad are left out of its shape, two particles on a point are a slit's. The layout's ``order`` gives
-    the file part's particle for each of the layout's, and the links are in the layout's indices. Particles skinned
-    to a single bone are the bone nodes and must lie on a sub-lattice, each column's down its chain when ``above``
-    (each bone's ancestors) is given; up to 3 rows over it and under it whose particles on its columns follow its
-    top and bottom rows' bones are anchor and hem rows."""
+    the file part's particle for each of the layout's, and the links are in the layout's indices. The bone nodes
+    must lie on a sub-lattice, each column's down its chain when ``above`` (each bone's ancestors) is given: the
+    particles on their skin bones' heads (``heads``, game space, by bone index), else the particles skinned to a
+    single bone, some files skinning each bone's particles halfway down it; up to 3 rows over it and under it are
+    anchor and hem rows."""
     sel = np.where(f["part_of"] == i)[0]
     base, n = int(sel[0]), len(sel)
     own = {(min(a, b) - base, max(a, b) - base, t): tail for a, b, t, tail in f["links"]
@@ -2345,7 +2346,7 @@ def _recognise(f: dict, i: int, bones: list, above=None) -> tuple:
             if rank < 1:
                 rank, why = 1, "its links are not the ones its grid makes"
             continue
-        lay, why_not = _lattice(skin[order], sw[order], pos[order], sh, bones, bend, above)
+        lay, why_not = _lattice(skin[order], sw[order], pos[order], sh, bones, bend, above, heads)
         if lay is None:
             step = 2 + _LATTICE_STEPS.index(why_not)
             if step > rank:
@@ -2376,22 +2377,58 @@ _LATTICE_STEPS = ("its particles skinned to one bone alone lie on no lattice of 
                   "a bone sits on two of its particles", "its bones down a column are not one chain")
 
 
-def _lattice(skin, sw, pos, sh, bones: list, bend: bool, ancestors=None) -> tuple:
-    """The bone layout of a part laid out as ``sh``: its anchor and hem rows and its bone nodes' sub-lattice;
-    (layout, "") or (None, why not)."""
-    rows, cols, closed = sh.rows, sh.cols, sh.closed
-    span = cols if closed else cols - 1
-    first = sh.first
+def bone_heads(arm) -> np.ndarray:
+    """The armature's bone heads in game space, by bone index (``_recognise``)."""
+    m = ROTATE_BACK @ np.array(arm.matrix_world, float)
+    co = np.array([tuple(b.head_local) for b in arm.data.bones], float).reshape(-1, 3)
+    return co @ m[:3, :3].T + m[:3, 3]
 
-    def bone(p):                                       # the one bone a lattice point's particle follows, else None
+
+def _lattice(skin, sw, pos, sh, bones: list, bend: bool, ancestors=None, heads=None) -> tuple:
+    """The bone layout of a part laid out as ``sh``: its anchor and hem rows and its bone nodes' sub-lattice;
+    (layout, "") or (None, why not). With ``heads``, nodes by place first (``_recognise``), then by skin."""
+    first = sh.first
+    why = _LATTICE_STEPS[0]
+
+    def single(p):                                     # the one bone a lattice point's particle follows, else None
         k = first[p]
         return int(skin[k][int(np.argmax(sw[k]))]) if k >= 0 and (sw[k] > 0).sum() == 1 else None
 
-    why = "its particles skinned to one bone alone lie on no lattice of its grid"
-    # anchor rows over the top and hem rows under the bottom follow the bones of the row they extend (generate.layout)
-    for above, below in sorted(((a, b) for a in range(4) for b in range(4) if a + b < rows - 1), key=sum):
+    rules = [(single, True)]
+    if heads is not None:
+        edges = [np.linalg.norm(pos[q[k]] - pos[q[(k + 1) % 4]]) for q in sh.faces for k in range(4)]
+        near = max(0.001, 0.1 * float(np.median(edges)))
+
+        def on_head(p):                                # the skin bone whose head the particle sits on, else None
+            k = first[p]
+            if k < 0:
+                return None
+            own = [int(b) for b, x in zip(skin[k], sw[k]) if x > 0 and 0 <= b < len(heads)]
+            if not own:
+                return None
+            d = np.linalg.norm(heads[own] - pos[k], axis=1)
+            return own[int(np.argmin(d))] if d.min() < near else None
+        rules.insert(0, (on_head, False))
+    for node, rows_follow in rules:
+        lay, why_not = _lattice_by(node, rows_follow, skin, sw, pos, sh, bones, bend, ancestors)
+        if lay is not None:
+            return lay, ""
+        why = max(why, why_not, key=_LATTICE_STEPS.index)
+    return None, why
+
+
+def _lattice_by(node, rows_follow: bool, skin, sw, pos, sh, bones, bend, ancestors) -> tuple:
+    """``_lattice`` with the lattice points' bones from ``node`` (a bone index, None for no node); with
+    ``rows_follow``, anchor and hem rows must follow the bones of the rows they extend on the node columns."""
+    rows, cols, closed = sh.rows, sh.cols, sh.closed
+    span = cols if closed else cols - 1
+    first = sh.first
+    bone = {p: node(p) for p in range(rows * cols)}
+    why = _LATTICE_STEPS[0]
+    # anchor rows over the top and hem rows under the bottom (generate.layout), fewer than the rows between
+    for above, below in sorted(((a, b) for a in range(4) for b in range(4) if 2 * (a + b) < rows), key=sum):
         body = rows - above - below
-        single = {p for p in range(above * cols, (above + body) * cols) if bone(p) is not None}
+        on = {p for p in range(above * cols, (above + body) * cols) if bone[p] is not None}
         for sr in range(body - 1):
             if (body - 1) % (sr + 1):
                 continue
@@ -2399,15 +2436,16 @@ def _lattice(skin, sw, pos, sh, bones: list, bend: bool, ancestors=None) -> tupl
                 if span % (sc + 1):
                     continue
                 at = [(above + r) * cols + c for r in range(0, body, sr + 1) for c in range(0, cols, sc + 1)]
-                if {p for p in at if first[p] >= 0} != single:
+                if {p for p in at if first[p] >= 0} != on:
                     continue
                 top, bottom = above * cols, (above + body - 1) * cols
                 node_cols = range(0, cols, sc + 1)
-                if any(bone(r * cols + c) != bone(top + c) for r in range(above) for c in node_cols):
+                if rows_follow and any(bone[r * cols + c] != bone[top + c] for r in range(above) for c in node_cols):
                     continue
-                if any(bone(r * cols + c) != bone(bottom + c) for r in range(above + body, rows) for c in node_cols):
+                if rows_follow and any(bone[r * cols + c] != bone[bottom + c]
+                                       for r in range(above + body, rows) for c in node_cols):
                     continue
-                found = {p: bone(p) for p in at if first[p] >= 0}
+                found = {p: bone[p] for p in at if first[p] >= 0}
                 gone = [p for p in at if first[p] < 0]
                 for p in gone:                         # a node its shape left out: the one other bone round it
                     found[p] = _left_out_bone(p, sh, skin, sw, set(found.values()), sr, sc)
@@ -2415,10 +2453,10 @@ def _lattice(skin, sw, pos, sh, bones: list, bend: bool, ancestors=None) -> tupl
                     continue
                 names = [bones[found[p]] for p in at]
                 if len(set(names)) != len(names):
-                    why = "a bone sits on two of its particles"
+                    why = max(why, _LATTICE_STEPS[1], key=_LATTICE_STEPS.index)
                     continue
                 if ancestors is not None and not _down_chains(names, len(node_cols), ancestors):
-                    why = "its bones down a column are not one chain"
+                    why = _LATTICE_STEPS[2]
                     continue
                 gap = 0.01
                 if above:
@@ -2536,7 +2574,7 @@ def _rebuild_generated(path: str, mesh_coll, force: bool = False) -> tuple:
 
     found = []
     for i in range(len(r["parts"])):
-        lay, links, gl = _recognise(f, i, bones, ancestors(arm))
+        lay, links, gl = _recognise(f, i, bones, ancestors(arm), bone_heads(arm))
         if lay is None:
             return keep(f"part {i} {r['parts'][i]['part_name']}: {links}")
         found.append((lay, links, gl))
