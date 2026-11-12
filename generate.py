@@ -313,8 +313,14 @@ def check(obj) -> list[str]:
     """What no longer matches the armature: missing bones, or bones whose rest head moved (a Part that does not
     follow its bones: ``fileio.locked_problems``)."""
     if not canon.attached(obj):
-        from . import fileio
-        return fileio.locked_problems(obj)
+        from . import fileio, fit, follow
+        problems = fileio.locked_problems(obj)
+        n, far = follow.moved(obj)
+        if n and not problems:
+            why = fit._fittable(obj)
+            problems.append(f"{n} skin bones moved since its particles were placed (up to {far * 100:.2f} cm): "
+                            + (f"they cannot follow them, as {why}" if why else "Follow Bones moves them along"))
+        return problems
     d = canon.recipe(obj)
     arm = obj.ree_gpuc_part.armature
     if arm is None or arm.type != "ARMATURE":

@@ -611,6 +611,8 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
         elif canon.editable_part(obj):
             layout.label(text="As in its file: edit particles and faces in Edit Mode", icon="UNLOCKED")
             layout.operator("ree_gpuc.attach_to_bones", icon="BONE_DATA")
+        if canon.has(obj) and not canon.attached(obj) and "Follow Bones" in str(obj.get("ree_gpuc_check", "")):
+            layout.operator("ree_gpuc.follow_bones", icon="BONE_DATA")
         if canon.editable_part(obj):
             _skin_rows(layout, obj)
         elif canon.locked(obj):

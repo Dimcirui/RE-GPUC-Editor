@@ -276,7 +276,8 @@ def edit_as_mesh(obj) -> None:
         if names is not None:
             w[weld.BONES_KEY] = names
     canon.build_mesh(obj)
-    from . import sim
+    from . import follow, sim
+    follow.record(obj)                               # its particles are placed for the bones as they are now
     sim.invalidate(obj)
 
 
@@ -646,6 +647,8 @@ def from_mesh(src, coll, config=None) -> tuple:
     canon.fit_ranges(obj, values)
     canon.store(obj, data)
     canon.build_mesh(obj)
+    from . import follow
+    follow.record(obj)
     text = (f"Made from {src.name}: {n} particles, {len(links)} links. List the bones it drives (Driven Bones) and "
             f"paint Simulation weight 0 where it is held")
     if outside:

@@ -1398,6 +1398,33 @@ class REE_GPUC_OT_attach_to_bones(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class REE_GPUC_OT_follow_bones(bpy.types.Operator):
+    """Move the Part's particles with its skin bones, from where the bones were when the particles were placed to
+    where they are now, as the armature carries the skin. A Part does this by itself when the bones change"""
+    bl_idname = "ree_gpuc.follow_bones"
+    bl_label = "Follow Bones"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return context.mode == "OBJECT" and props.is_part(obj) and canon.has(obj) and not canon.attached(obj)
+
+    def execute(self, context):
+        from . import follow
+        objs = [o for o in context.selected_objects if props.is_part(o) and canon.has(o) and not canon.attached(o)]
+        objs = objs or [context.active_object]
+        total = 0
+        for obj in objs:
+            try:
+                total += follow.follow(obj)
+            except ValueError as e:
+                return refused(self, f"{obj.name}: {e}")
+            obj["ree_gpuc_check"] = "; ".join(generate.check(obj)) or "ok"
+        self.report({"INFO"}, f"{total} particles moved with their bones")
+        return {"FINISHED"}
+
+
 class REE_GPUC_OT_back_to_bones(bpy.types.Operator):
     """Lay the Part out from its bones again, as before Edit as Mesh: its particle, face and skin edits are lost,
     its values and settings from then are back"""
@@ -1792,7 +1819,7 @@ CLASSES = (REE_GPUC_OT_import, REE_GPUC_FH_import, REE_GPUC_OT_export, REE_GPUC_
            REE_GPUC_OT_reset_rest_offsets, REE_GPUC_OT_part_shape, REE_GPUC_OT_set_value, REE_GPUC_OT_paint, REE_GPUC_OT_normalize_skin,
            REE_GPUC_OT_edit_as_mesh, REE_GPUC_OT_back_to_bones, REE_GPUC_OT_driven_add,
            REE_GPUC_OT_driven_remove, REE_GPUC_OT_driven_from_skin, REE_GPUC_OT_part_from_mesh,
-           REE_GPUC_OT_attach_to_bones, REE_GPUC_OT_fit_to_mesh,
+           REE_GPUC_OT_attach_to_bones, REE_GPUC_OT_follow_bones, REE_GPUC_OT_fit_to_mesh,
            REE_GPUC_OT_simulate, REE_GPUC_OT_sim_reset, REE_GPUC_OT_import_reference,
            REE_GPUC_OT_drive_vertices, REE_GPUC_OT_drive_select_near, REE_GPUC_OT_drive_spread_lods)
 

@@ -12,7 +12,7 @@ import bpy
 import numpy as np
 from mathutils.bvhtree import BVHTree
 
-from . import canon, fileio, generate, props
+from . import canon, fileio, follow, generate, props
 
 NEAREST = 4            # triangles a particle is bound to
 FAR = 0.1              # m: particles farther from every source triangle stay where they are
@@ -142,6 +142,14 @@ def _set_rest(obj, co_local) -> None:
     canon.restore(obj)
 
 
+def _world_rest(arm) -> dict:
+    """Each bone's rest matrix in world space."""
+    if arm is None or arm.type != "ARMATURE":
+        return {}
+    mw = np.array(arm.matrix_world, float)
+    return {b.name: mw @ np.array(b.matrix_local, float) for b in arm.data.bones}
+
+
 def move_cloth_to(coll, arm) -> None:
     """Put the cloth on another armature: its header (so its Configs and Parts, in armature space), each Part's skin,
     its collision ends and its reference skeleton."""
@@ -180,6 +188,8 @@ def fit_cloth(coll, source, target, use_target_armature=True, game="") -> str:
              + np.array(o.matrix_world)[:3, 3] for o in parts}
     new_arm = next((o for o in target.all_objects if o.type == "ARMATURE"), None) if use_target_armature else None
     old_arm = generate._armature(coll)
+    skins = {o: canon.load(o) for o in parts}
+    old_rest = _world_rest(old_arm)
     if new_arm is not None and new_arm != old_arm:
         move_cloth_to(coll, new_arm)
         for o in parts:
@@ -189,17 +199,23 @@ def fit_cloth(coll, source, target, use_target_armature=True, game="") -> str:
     else:
         new_arm = None
     moved, far, mm = 0, 0, []
+    new_rest = _world_rest(new_arm) if new_arm is not None else None
     for o in parts:
         places, bound, dist = map_points(world[o], src_v, tris, dst_v)
+        if new_rest is not None and not bound.all():       # off the mesh: carried by their skin to the new bones
+            d = skins[o]
+            places[~bound] = follow.carried(world[o], d["nodes"], d["skin"], d["skin_w"], old_rest, new_rest)[~bound]
         inv = np.linalg.inv(np.array(o.matrix_world))
         _set_rest(o, places @ inv[:3, :3].T + inv[:3, 3])
         moved += int(bound.sum())
         far += int((~bound).sum())
         mm += (np.linalg.norm(places - world[o], axis=1)[bound] * 1000).tolist()
+        follow.record(o)
     text = (f"{moved} particles moved onto {target.name} ({len(pairs)} meshes"
             f"{f', median {np.median(mm):.1f} mm' if mm else ''})")
     if far:
-        text += f"; {far} more than {FAR * 100:.0f} cm from {source.name} stay where they were"
+        text += (f"; {far} more than {FAR * 100:.0f} cm from {source.name} "
+                 + ("went with their skin bones" if new_rest is not None else "stay where they were"))
     if new_arm is not None:
         text += f"; the cloth is now on {new_arm.name}"
     head = props.header(coll)

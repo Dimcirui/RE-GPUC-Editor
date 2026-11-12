@@ -1,4 +1,5 @@
-"""Keep generated Parts in sync with committed rest-bone changes.
+"""Keep Parts in sync with committed rest-bone changes: a Part made from bones is regenerated, any other one
+follows its skin bones (``follow``).
 
 Edit-mode changes wait for the armature to leave Edit Mode. Pose/animation updates with unchanged rest
 heads do no work. Failed or locked Parts keep their geometry and show the problem in the Part panel.
@@ -6,7 +7,7 @@ heads do no work. Failed or locked Parts keep their geometry and show the proble
 import bpy
 import numpy as np
 
-from . import canon, generate, props, sim
+from . import canon, follow, generate, props, sim
 
 _busy = False
 _snapshots = {}
@@ -34,6 +35,9 @@ def _refresh(scene, objects):
                 continue
             _pending_parts.discard(obj.name)
             try:
+                follow.ensure(obj)
+                if not canon.attached(obj) and follow.moved(obj)[0] and not _unmovable(obj):
+                    follow.follow(obj)                 # the particles go with their skin bones
                 problems = generate.check(obj)
                 if problems and canon.attached(obj):
                     if (arm is not None and arm.type == "ARMATURE"
@@ -45,6 +49,11 @@ def _refresh(scene, objects):
                 _status(obj, f"Automatic rebuild failed: {e}")
     finally:
         _busy = False
+
+
+def _unmovable(obj) -> str:
+    from . import fit
+    return fit._fittable(obj)
 
 
 def _snapshot(arm):
