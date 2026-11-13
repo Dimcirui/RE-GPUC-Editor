@@ -17,6 +17,7 @@ Maintenance constraints:
   from the exported .mesh's vertices (``mesh_file_vertices``)."""
 import base64
 import collections
+import re
 import importlib
 import json
 import math
@@ -2225,15 +2226,25 @@ def ancestors(arm) -> dict:
 
 
 def _down_chains(names: list, nc: int, ancestors: dict) -> bool:
-    """Whether a lattice of bones (row by row, ``nc`` a row, "" for none) runs down its chains: neighbours down a
-    column share more ancestors than neighbours along a row (a chain's bones, or bones hung off one chain, as
-    RE9's are)."""
+    """Whether a lattice of bones (row by row, ``nc`` a row, "" for none) runs down its chains. By the names first:
+    neighbours down a column more often differ only in their trailing number (JacketASec_00, JacketASec_01) than
+    neighbours along a row (JacketASec_00, JacketBSec_00); with names that do not tell (one bone per particle, all
+    named alike), by the hierarchy: neighbours down a column share more ancestors (a chain's bones, or bones hung
+    off one chain)."""
+    def stem(n):
+        return re.sub(r"[\d_.]+$", "", n)
+
     def shared(a, b):
         return len((ancestors.get(a, set()) | {a}) & (ancestors.get(b, set()) | {b}))
-    down = [shared(names[j], names[j + nc]) for j in range(len(names) - nc) if names[j] and names[j + nc]]
-    along = [shared(names[j], names[j + 1]) for j in range(len(names) - 1)
+    down = [(names[j], names[j + nc]) for j in range(len(names) - nc) if names[j] and names[j + nc]]
+    along = [(names[j], names[j + 1]) for j in range(len(names) - 1)
              if j % nc != nc - 1 and names[j] and names[j + 1]]
-    return not down or not along or float(np.mean(down)) > float(np.mean(along))
+    if not down or not along:
+        return True
+    by_name = [float(np.mean([stem(a) == stem(b) for a, b in pairs])) for pairs in (down, along)]
+    if abs(by_name[0] - by_name[1]) > 0.25:
+        return by_name[0] > by_name[1]
+    return float(np.mean([shared(a, b) for a, b in down])) > float(np.mean([shared(a, b) for a, b in along]))
 
 
 def _placements(faces, n: int, pos):
@@ -2346,7 +2357,8 @@ def _recognise(f: dict, i: int, bones: list, above=None, heads=None) -> tuple:
     (None, reason, None). Its quads are laid out on a lattice by unfolding them, whatever its particles' order: cells
     without a quad are left out of its shape, two particles on a point are a slit's. The layout's ``order`` gives
     the file part's particle for each of the layout's, and the links are in the layout's indices. The bone nodes
-    must lie on a sub-lattice, each column's down its chain when ``above`` (each bone's ancestors) is given: the
+    must lie on a sub-lattice, each column's down its chain when ``above`` (each bone's ancestors) is given (a
+    placement across the chains taken only when no other fits, as for one bone per particle): the
     particles on their skin bones' heads (``heads``, game space, by bone index), else the particles skinned to a
     single bone, some files skinning each bone's particles halfway down it; up to 3 rows over it and under it are
     anchor and hem rows."""
@@ -2364,6 +2376,7 @@ def _recognise(f: dict, i: int, bones: list, above=None, heads=None) -> tuple:
     skin, sw, pos = f["skin"][sel], f["skin_w"][sel], f["pos"][sel]
     why = f"its {n} particles and their quads lie on no rows-by-columns grid" + free
     rank = 0                                           # how far the best placement got: its reason is given
+    fallback = None
     for rows, cols, closed, point, _ in _placements(faces, n, pos):
         sh, to = _shape_of(faces, n, rows, cols, closed, point)
         if sh is None:
@@ -2388,7 +2401,15 @@ def _recognise(f: dict, i: int, bones: list, above=None, heads=None) -> tuple:
                 rank, why = step, why_not
             continue
         lay.update(mask=list(sh.mask), slits=[tuple(x) for x in sh.slits], order=order.tolist())
-        return lay, mine, gl
+        across = lay.pop("across", False)               # its columns run across the chains: another may not
+        own_order = bool((to == np.arange(n)).all())    # the file's particles in the grid's order (one we wrote)
+        if own_order and not across:
+            return lay, mine, gl
+        rank_of = (not own_order) + 2 * across
+        if fallback is None or rank_of < fallback[0]:
+            fallback = (rank_of, (lay, mine, gl))
+    if fallback is not None:
+        return fallback[1]
     return None, why, None
 
 
@@ -2456,8 +2477,9 @@ def _lattice_by(node, rows_follow: bool, skin, sw, pos, sh, bones, bend, ancesto
     """``_lattice`` with the lattice points' bones from ``node`` (a bone index, None for no node). The bones' rows
     and columns are the ones some node lies on; the rows before and after them are anchor and hem rows, the columns
     beside them (an open grid's) side columns, and with ``rows_follow`` a row or column of nodes on the bones of the
-    one next to it is one of those too. A column's nodes run down from the first bones' row and may end early (a
-    short chain); a node the shape left out takes the one other bone round it (``_left_out_bone``)."""
+    one next to it is one of those too. A column may lack nodes anywhere (a chain that starts lower, ends early or
+    skips a row), as long as it keeps two; a node the shape left out takes the one other bone round it
+    (``_left_out_bone``)."""
     rows, cols, closed = sh.rows, sh.cols, sh.closed
     first = sh.first
     bone = [node(p) for p in range(rows * cols)]
@@ -2486,7 +2508,7 @@ def _lattice_by(node, rows_follow: bool, skin, sw, pos, sh, bones, bend, ancesto
     left, right = (0, 0) if closed else (ncols[0], cols - 1 - ncols[-1])
     if closed and ncols[0] != 0:
         return None, _LATTICE_STEPS[0]                  # another placement starts the ring at a chain
-    if len(nrows) < 2 or len(ncols) < 2 or max(above, below, left, right) > 3 or 2 * (above + below) >= rows \
+    if len(nrows) < 2 or len(ncols) < 2 or max(above, below) > 3 or 2 * (above + below) >= rows \
             or (not closed and 2 * (left + right) >= cols):
         return None, _LATTICE_STEPS[0]
     at = [r * cols + c for r in nrows for c in ncols]
@@ -2500,16 +2522,14 @@ def _lattice_by(node, rows_follow: bool, skin, sw, pos, sh, bones, bend, ancesto
             b = _left_out_bone(p, sh, skin, sw, set(found.values()), step_r, step_c)
             if b is not None:
                 found[p] = b
-    for c in ncols:                                     # each chain from the first bones' row down, maybe ending early
-        have = [r for r in nrows if r * cols + c in found]
-        if len(have) < 2 or have != nrows[:len(have)]:
+    for c in ncols:                                     # each chain at least two bones, maybe lacking some
+        if sum(1 for r in nrows if r * cols + c in found) < 2:
             return None, _LATTICE_STEPS[0]
     names = [bones[found[p]] if p in found else "" for p in at]
     named = [n for n in names if n]
     if len(set(named)) != len(named):
         return None, _LATTICE_STEPS[1]
-    if ancestors is not None and not _down_chains(names, len(ncols), ancestors):
-        return None, _LATTICE_STEPS[2]
+    across = ancestors is not None and not _down_chains(names, len(ncols), ancestors)
     gap = 0.01
     if above:
         both = [(first[(above - 1) * cols + c], first[above * cols + c]) for c in range(cols)]
@@ -2521,6 +2541,8 @@ def _lattice_by(node, rows_follow: bool, skin, sw, pos, sh, bones, bend, ancesto
            "sub_cols": int(round(np.mean(col_steps))), "row_steps": row_steps, "col_steps": col_steps,
            "side_cols": [left, right], "closed": closed, "nodes": names, "diagonal_bend": bend,
            "anchor_rows": above, "anchor_gap": gap, "hem_rows": below}
+    if across:                                          # taken only when no placement runs down the chains
+        lay["across"] = True
     return lay, ""
 
 
@@ -2650,7 +2672,8 @@ def _rebuild_generated(path: str, mesh_coll, force: bool = False) -> tuple:
     for i, (block, (lay, links, gl)) in enumerate(zip(r["parts"], found)):
         sel = np.where(f["part_of"] == i)[0]
         node_co = generate.heads(arm, lay["nodes"])
-        lay["centre"] = grid.order_columns(node_co[:lay["node_cols"]], "CLOSED" if lay["closed"] else "OPEN")[2]
+        lay["centre"] = grid.order_columns(generate.tops(node_co, lay["node_cols"]),
+                                         "CLOSED" if lay["closed"] else "OPEN")[2]
         lay.update(generate._particles(lay, node_co))
         obj = generate.new_part(coll, arm, lay, cfg_objs[min(block["config"], len(cfg_objs) - 1)])
         tails = {}

@@ -139,12 +139,14 @@ def extend_cols(pos, skin, weight, rows: int, cols: int, left: int = 0, right: i
             np.concatenate(parts_w, axis=1).reshape(rows * width, -1))
 
 
-def subdivide(nodes, sub_rows, sub_cols, closed: bool, centre=None):
+def subdivide(nodes, sub_rows, sub_cols, closed: bool, centre=None, segments: bool = False):
     """The particles of a grid of bone heads (node_rows x node_cols x 3, row 0 at the top): each particle's
     position, and its skin as the 4 corner bones (flat node indices) and their bilinear weights. A particle on a
     bone is that bone's alone. Around an axis (centre: its x, y) the in-between columns follow the circle (angle
     and distance from the axis are interpolated, not the chord); without one, straight lines. ``sub_rows`` and
-    ``sub_cols``: a number for every gap between bones, or a list (``steps``)."""
+    ``sub_cols``: a number for every gap between bones, or a list (``steps``). With ``segments`` the skin down the
+    chains is half a bone on: each bone has the particles halfway down it alone and shares the one on its head with
+    the bone above, as RE9's coats are skinned; the positions stay."""
     nodes = np.asarray(nodes, float)
     nr, nc = nodes.shape[:2]
     rows, cols = dims(nr, nc, sub_rows, sub_cols, closed)
@@ -155,6 +157,12 @@ def subdivide(nodes, sub_rows, sub_cols, closed: bool, centre=None):
     for r in range(rows):
         r0, v = _segment(row_lines, r)
         r1 = min(r0 + 1, nr - 1)
+        k0, f = r0, v                                  # the skin's rows: the positions', or half a bone on
+        if segments and nr > 1:
+            at = min(max(r0 + v - 0.5, 0.0), nr - 1.0)
+            k0 = min(int(np.floor(at)), nr - 2)
+            f = at - k0
+        k1 = min(k0 + 1, nr - 1)
         for c in range(cols):
             c0, u = _segment(col_lines, c)
             c1 = (c0 + 1) % nc if closed else min(c0 + 1, nc - 1)
@@ -163,8 +171,12 @@ def subdivide(nodes, sub_rows, sub_cols, closed: bool, centre=None):
             pts = np.array([nodes[a, b] for a, b in corners])
             i = r * cols + c
             pos[i] = _blend(pts, w, centre)
-            skin[i] = [a * nc + b for a, b in corners]
-            weight[i] = w
+            if segments:
+                skin[i] = [a * nc + b for a, b in ((k0, c0), (k0, c1), (k1, c0), (k1, c1))]
+                weight[i] = [(1 - u) * (1 - f), u * (1 - f), (1 - u) * f, u * f]
+            else:
+                skin[i] = [a * nc + b for a, b in corners]
+                weight[i] = w
     return pos, skin, weight
 
 

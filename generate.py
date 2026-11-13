@@ -81,8 +81,18 @@ def heads(arm, names) -> np.ndarray:
                     np.float32).reshape(-1, 3)
 
 
+def tops(node_co, node_cols: int) -> np.ndarray:
+    """Each chain's first bone head (row by row node heads, NaN for a node a chain lacks)."""
+    co = np.asarray(node_co, float).reshape(-1, node_cols, 3)
+    out = np.empty((node_cols, 3))
+    for c in range(node_cols):
+        have = co[~np.isnan(co[:, c, 0]), c]
+        out[c] = have[0] if len(have) else np.nan
+    return out
+
+
 def layout(arm, cols, closed="AUTO", truncate=False, sub_rows=0, sub_cols=0, anchor_rows=0, anchor_gap=0.01,
-           hem_rows=0, side_cols=0) -> dict:
+           hem_rows=0, side_cols=0, skin_style="HEADS") -> dict:
     """The bone grid the chains make and the particle grid on it. Chains of different lengths are cut to the
     shortest with ``truncate``; else the shorter ones end early, the faces past their ends left out."""
     if len(cols) < 2:
@@ -98,7 +108,7 @@ def layout(arm, cols, closed="AUTO", truncate=False, sub_rows=0, sub_cols=0, anc
     lay = {"node_rows": nr, "node_cols": len(cols), "sub_rows": sub_rows, "sub_cols": sub_cols,
            "closed": is_closed, "centre": centre, "nodes": nodes, "anchor_rows": int(anchor_rows),
            "anchor_gap": float(anchor_gap), "hem_rows": int(hem_rows),
-           "side_cols": [0, 0] if is_closed else [int(side_cols)] * 2}
+           "side_cols": [0, 0] if is_closed else [int(side_cols)] * 2, "skin_style": str(skin_style)}
     lay["mask"] = short_chain_mask(lay)
     return {**lay, **_particles(lay, heads(arm, nodes))}
 
@@ -166,25 +176,41 @@ def _particles(lay: dict, node_co) -> dict:
     rs, cs, (left, right) = lattice_steps(lay)
     node = np.asarray(node_co, float).reshape(nr, nc, 3).copy()
     gone = np.isnan(node[..., 0])
-    for c in range(nc):                                # past a short chain's end: on along its last bone
+    for c in range(nc):                                # a chain's missing nodes: between its bones, or on past them
+        have = [r for r in range(nr) if not gone[r, c]]
+        if len(have) < 2:
+            raise GenerateError("a chain needs at least two bones")
         for r in range(nr):
-            if gone[r, c]:
-                if r < 2 or gone[r - 1, c] and r - 1 < 2:
-                    raise GenerateError("a chain needs at least two bones")
-                node[r, c] = 2 * node[r - 1, c] - node[r - 2, c]
-    pos, skin, weight = grid.subdivide(node, rs, cs, lay["closed"], lay["centre"])
-    if gone.any():                                     # skinned to the chain's last bone instead
+            if not gone[r, c]:
+                continue
+            up, down = [x for x in have if x < r], [x for x in have if x > r]
+            if up and down:
+                a, b = up[-1], down[0]
+                node[r, c] = node[a, c] + (node[b, c] - node[a, c]) * (r - a) / (b - a)
+            else:
+                a, b = (have[0], have[1]) if not up else (have[-2], have[-1])
+                node[r, c] = node[a, c] + (node[b, c] - node[a, c]) * (r - a) / (b - a)
+    segments = lay.get("skin_style", "HEADS") == "SEGMENTS"
+    pos, skin, weight = grid.subdivide(node, rs, cs, lay["closed"], lay["centre"], segments)
+    if gone.any():                                     # skinned to the chain's nearest bone instead
         to = np.arange(nr * nc)
         for c in range(nc):
-            last = max(r for r in range(nr) if not gone[r, c])
-            for r in range(last + 1, nr):
-                to[r * nc + c] = last * nc + c
+            have = [r for r in range(nr) if not gone[r, c]]
+            for r in range(nr):
+                if gone[r, c]:
+                    to[r * nc + c] = min(have, key=lambda x: (abs(x - r), x)) * nc + c
         skin, weight = _merged(to[skin], weight)
     rows, cols = grid.dims(nr, nc, rs, cs, lay["closed"])
     pos, skin, weight = grid.extend_cols(pos, skin, weight, rows, cols, left, right)
     cols += left + right
     above, below = lay.get("anchor_rows", 0), lay.get("hem_rows", 0)
     pos, skin, weight = grid.extend(pos, skin, weight, cols, above, lay.get("anchor_gap", 0.01), below)
+    if segments and below:                             # past the last heads: the last bones' alone
+        weight = np.asarray(weight, float).copy()
+        for i in range((rows + above) * cols, len(weight)):
+            last = np.asarray(skin[i]) // nc == nr - 1
+            if (weight[i] * last).sum() > 0:
+                weight[i] = weight[i] * last / (weight[i] * last).sum()
     rows += above + below
     sh = grid.shape(rows, cols, lay["closed"], lay.get("mask", ()), lay.get("slits", ()))
     return {"rows": rows, "cols": cols, "node_co": node.reshape(-1, 3).astype(np.float32), "co": pos[sh.point],
@@ -277,7 +303,7 @@ def new_part(coll, arm, lay: dict, config=None) -> bpy.types.Object:
     (layout()), with default values."""
     existing = props.parts(coll)
     tile = max((p.ree_gpuc_part.uv_tile for p in existing), default=-1) + 1
-    first = lay["nodes"][0]
+    first = next(n for n in lay["nodes"] if n)          # a chain may lack its first nodes
     name = unique_name("GPUC_PART_", "_" + first.rsplit("_", 1)[0])
     obj = bpy.data.objects.new(name, bpy.data.meshes.new(name))
     obj["TYPE"] = props.PART_TYPE
@@ -451,7 +477,7 @@ def _carry_shape(old: dict, new: dict) -> tuple:
 
 
 def regenerate(obj, closed=None, sub_rows=None, sub_cols=None, anchor_rows=None, anchor_gap=None,
-               hem_rows=None, mask=None, slits=None, side_cols=None) -> None:
+               hem_rows=None, mask=None, slits=None, side_cols=None, skin_style=None) -> None:
     """The particles made again from the bones' rest heads, with a new ring or density if given; every value kept
     (the groups' latest first; carried over the grid when its size changes). A grid with its own particles between
     each two bones keeps them until another Sub Rows / Sub Cols is given."""
@@ -479,6 +505,8 @@ def regenerate(obj, closed=None, sub_rows=None, sub_cols=None, anchor_rows=None,
             d[key] = kind(value)
     if side_cols is not None:
         d["side_cols"] = [int(side_cols)] * 2
+    if skin_style is not None:
+        d["skin_style"] = str(skin_style)
     if d["closed"]:
         d["side_cols"] = [0, 0]
     rs, cs, side = lattice_steps(d)
@@ -492,7 +520,7 @@ def regenerate(obj, closed=None, sub_rows=None, sub_cols=None, anchor_rows=None,
     d["slits"] = [tuple(x) for x in slits] if slits is not None else carried[1]
     node_co = heads(arm, d["nodes"])
     if d["closed"] or d["centre"] is not None:          # the axis again from the new top row
-        _, _, d["centre"] = grid.order_columns(node_co[:d["node_cols"]], "CLOSED" if d["closed"] else "OPEN")
+        _, _, d["centre"] = grid.order_columns(tops(node_co, d["node_cols"]), "CLOSED" if d["closed"] else "OPEN")
     d.update(_particles(d, node_co))
     d["base_co"] = canon.f32(d["co"])
     d["rest_offset"] = resample(old["rest_offset"], old, d)

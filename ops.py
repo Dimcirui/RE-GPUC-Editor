@@ -441,6 +441,12 @@ RING = [("AUTO", "Auto", "Closed if the chains go all the way around"),
         ("OPEN", "Open", "Leave one side open, e.g. a cape or a panel")]
 
 
+SKIN_STYLES = [("HEADS", "Bone Heads", "A particle on a bone's head is that bone's alone; the ones between two bones "
+                                       "share them"),
+               ("SEGMENTS", "Bone Segments", "Each bone has the particles halfway down it alone and shares the one "
+                                             "on its head with the bone above, as RE9's coats are skinned")]
+
+
 class _PartOptions:
     closed: bpy.props.EnumProperty(name="Ring", items=RING, default="AUTO")
     truncate: bpy.props.BoolProperty(
@@ -466,6 +472,8 @@ class _PartOptions:
         name="Side Columns", default=0, min=0, max=3,
         description="Columns beside an open part's first and last chains, as far apart as the edge columns and "
                     "skinned as them, so the cloth reaches past the outer chains")
+    skin_style: bpy.props.EnumProperty(name="Skin", items=SKIN_STYLES, default="HEADS",
+                                       description="How the particles down a chain are skinned to its bones")
     project: bpy.props.BoolProperty(
         name="Project onto Mesh", default=False,
         description="Move the particles onto the mid-surface of the cloth mesh skinned to these bones, as rest "
@@ -484,7 +492,7 @@ class _PartOptions:
         col = self.layout.column()
         col.use_property_split = True
         for name in ("closed", "truncate", "sub_rows", "sub_cols", "anchor_rows", "anchor_gap", "hem_rows",
-                     "side_cols", "project"):
+                     "side_cols", "skin_style", "project"):
             col.prop(self, name)
 
     def execute(self, context):
@@ -495,7 +503,8 @@ class _PartOptions:
                                  f"Create a new GPUC collection for parts from bones")
         try:
             lay = generate.layout(arm, self.chains(arm), self.closed, self.truncate, self.sub_rows, self.sub_cols,
-                                  self.anchor_rows, self.anchor_gap, self.hem_rows, self.side_cols)
+                                  self.anchor_rows, self.anchor_gap, self.hem_rows, self.side_cols,
+                                  self.skin_style)
         except (generate.GenerateError, ValueError) as e:
             self.report({"ERROR"}, str(e))
             return {"CANCELLED"}
@@ -587,6 +596,8 @@ class REE_GPUC_OT_regenerate_part(bpy.types.Operator):
         name="Side Columns", default=0, min=0, max=3,
         description="Columns beside an open part's first and last chains, as far apart as the edge columns and "
                     "skinned as them, so the cloth reaches past the outer chains")
+    skin_style: bpy.props.EnumProperty(name="Skin", items=SKIN_STYLES, default="HEADS",
+                                       description="How the particles down a chain are skinned to its bones")
     project: bpy.props.BoolProperty(
         name="Project onto Mesh", default=False, options={"SKIP_SAVE"},
         description="Move the particles onto the mid-surface of the cloth mesh skinned to these bones, as rest "
@@ -612,11 +623,13 @@ class REE_GPUC_OT_regenerate_part(bpy.types.Operator):
                 d = canon.recipe(obj)
                 self.anchor_rows, self.anchor_gap, self.hem_rows = d["anchor_rows"], d["anchor_gap"], d["hem_rows"]
                 self.side_cols = max(d["side_cols"])
+                self.skin_style = d["skin_style"]
 
     def draw(self, context):
         col = self.layout.column()
         col.use_property_split = True
-        for name in ("closed", "sub_rows", "sub_cols", "anchor_rows", "anchor_gap", "hem_rows", "side_cols", "project"):
+        for name in ("closed", "sub_rows", "sub_cols", "anchor_rows", "anchor_gap", "hem_rows", "side_cols",
+                     "skin_style", "project"):
             col.prop(self, name)
 
     def execute(self, context):
@@ -631,7 +644,8 @@ class REE_GPUC_OT_regenerate_part(bpy.types.Operator):
             side = canon.recipe(obj)["side_cols"] if canon.attached(obj) else [0, 0]
             generate.regenerate(obj, self.closed == "CLOSED", self.sub_rows, self.sub_cols, self.anchor_rows,
                                 self.anchor_gap, self.hem_rows,
-                                side_cols=None if self.side_cols == max(side) else self.side_cols)
+                                side_cols=None if self.side_cols == max(side) else self.side_cols,
+                                skin_style=self.skin_style)
         except generate.GenerateError as e:
             self.report({"ERROR"}, str(e))
             return {"CANCELLED"}

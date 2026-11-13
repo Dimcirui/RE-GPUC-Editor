@@ -9,7 +9,7 @@ Maintenance constraints:
   bones' rest heads in armature space; ``sub_rows`` / ``sub_cols`` particles between bones, ``anchor_rows`` over the
   top row and ``hem_rows`` under the bottom one, ``side_cols`` (left, right) beside an open grid, ``row_steps`` and
   ``col_steps`` the particles between each two bones when they differ, ``mask`` and ``slits`` its ``grid.Shape``,
-  a node named "" a short chain's past its end; its per-particle arrays
+  a node named "" one a chain lacks, ``skin_style`` HEADS or SEGMENTS (``grid.subdivide``); its per-particle arrays
   are its shape's particles, 4 node indices of skin each). While ``ATTACHED_KEY`` is set it follows the grid: ``store`` of a grid writes the grid and
   its mesh (``_bake``), valid rest-position edits are committed as offsets from ``base_co`` (the faces keep their
   winding), and changes to topology, particle IDs or UV are undone by ``restore``. ``load`` then also holds the
@@ -124,7 +124,7 @@ def has(obj) -> bool:
 
 GRID_KEYS = ("rows", "cols", "closed", "sub_rows", "sub_cols", "node_rows", "node_cols", "node_co", "base_co",
              "rest_offset", "centre", "diagonal_bend", "anchor_rows", "anchor_gap", "hem_rows", "mask", "slits",
-             "row_steps", "col_steps", "side_cols")
+             "row_steps", "col_steps", "side_cols", "skin_style")
 
 
 def load(obj) -> dict:
@@ -165,6 +165,7 @@ def _load_grid(c, obj, vals) -> dict:
     side = [int(x) for x in c.get("side_cols", (0, 0))]
     return {"locked": False, "count": n, "base_co": base, "rest_offset": offset, "mask": mask, "slits": slits,
             "row_steps": row_steps, "col_steps": col_steps, "side_cols": side,
+            "skin_style": str(c.get("skin_style", "HEADS")),
             "rows": rows, "cols": cols, "closed": bool(c["closed"]), "tile": int(c["tile"]), "co": co,
             "nodes": nodes, "node_rows": nr, "node_cols": nc, "sub_rows": sr, "sub_cols": sc, "node_co": node_co,
             "anchor_rows": int(c.get("anchor_rows", 0)), "anchor_gap": float(c.get("anchor_gap", 0.01)),
@@ -226,6 +227,7 @@ def store(obj, data: dict) -> None:
                        "hem_rows": int(data.get("hem_rows", 0)),
                        "mask": [int(k) for k in data.get("mask", ())],
                        **{k: [int(x) for x in data[k]] for k in ("row_steps", "col_steps", "side_cols") if k in data},
+                       "skin_style": str(data.get("skin_style", "HEADS")),
                        "slits": [int(x) for cut in data.get("slits", ()) for x in cut],
                        "node_co": fl(data["node_co"]), "skin": [int(x) for x in np.asarray(data["skin"]).ravel()],
                        "skin_w": fl(data["skin_w"]), "centre": [] if data["centre"] is None else fl(data["centre"]),
@@ -257,6 +259,8 @@ def _bake(obj, g) -> None:
         at = np.cumsum([bool(n) for n in nodes]) - 1
         skin, nodes = at[np.asarray(skin, np.int64)], [n for n in nodes if n]
     kept = obj.get(FILE_SKIN_KEY) if same else None
+    if kept is not None and str(kept.get("style", "HEADS")) != g.get("skin_style", "HEADS"):
+        kept = None                                    # another skin style chosen since: that one
     if kept is not None:
         nodes = [str(b) for b in kept["nodes"]]
         skin = np.asarray(kept["skin"], np.int64).reshape(count(g), -1)

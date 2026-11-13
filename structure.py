@@ -387,7 +387,10 @@ def attach_to_bones(obj, force: bool = False) -> str:
 
     try:
         node_co = generate.heads(arm, lay["nodes"])
-        lay["centre"] = grid.order_columns(node_co[:lay["node_cols"]], "CLOSED" if lay["closed"] else "OPEN")[2]
+        lay["centre"] = grid.order_columns(generate.tops(node_co, lay["node_cols"]),
+                                         "CLOSED" if lay["closed"] else "OPEN")[2]
+        lay["skin_style"] = min(("HEADS", "SEGMENTS"), key=lambda style: _skin_gap(
+            generate._particles({**lay, "skin_style": style}, node_co), lay["nodes"], old))
         lay.update(generate._particles(lay, node_co))
         p.other_diagonal = fileio._other_diagonal(f, sel, {**lay, "order": order})
         for k in grid_props:
@@ -396,8 +399,9 @@ def attach_to_bones(obj, force: bool = False) -> str:
         if (order != np.arange(len(order))).any():
             obj[canon.FILE_ORDER_KEY] = order.tolist()
         if not p.root_joint:                 # the bone a Part made from these chains takes, unused till ticked
-            parent = arm.data.bones[lay["nodes"][0]].parent
-            p.root_joint = parent.name if parent is not None else lay["nodes"][0]
+            first = next(n for n in lay["nodes"] if n)
+            parent = arm.data.bones[first].parent
+            p.root_joint = parent.name if parent is not None else first
         p.diagonal_bend = lay["diagonal_bend"]
         count = collections.defaultdict(collections.Counter)
         for a, b, t, s in gl:
@@ -429,7 +433,8 @@ def attach_to_bones(obj, force: bool = False) -> str:
                 new = canon.load(obj)
                 why = _attach_differences(obj, old, new, own)
         if why == "skin":                    # the file's skin is kept while the Part keeps its file's grid
-            obj[canon.FILE_SKIN_KEY] = {"nodes": list(old["nodes"]), "skin": [int(x) for x in old["skin"].ravel()],
+            obj[canon.FILE_SKIN_KEY] = {"style": lay["skin_style"], "nodes": list(old["nodes"]),
+                                        "skin": [int(x) for x in old["skin"].ravel()],
                                         "skin_w": [float(x) for x in canon.f32(old["skin_w"]).ravel()]}
             canon.rebake(obj)
             canon.build_mesh(obj)
@@ -451,6 +456,23 @@ def attach_to_bones(obj, force: bool = False) -> str:
     if loose:
         text += f"; {loose} welds hold particles between its bones and stop at a change of density"
     return text
+
+
+def _skin_gap(grid_data, nodes, old) -> float:
+    """How far a bone grid's skin (``generate._particles``) is from a Part's: the weight moved, summed over its
+    particles."""
+    total = 0.0
+    for i in range(len(old["skin"])):
+        mine = collections.Counter()
+        for j, w in zip(grid_data["skin"][i], grid_data["skin_w"][i]):
+            if w > 0 and nodes[int(j)]:
+                mine[nodes[int(j)]] += float(w)
+        theirs = collections.Counter()
+        for j, w in zip(old["skin"][i], old["skin_w"][i]):
+            if w > 0:
+                theirs[old["nodes"][int(j)]] += float(w)
+        total += sum(abs(mine[b] - theirs[b]) for b in set(mine) | set(theirs))
+    return total
 
 
 def _file_splits(obj, old) -> list:
