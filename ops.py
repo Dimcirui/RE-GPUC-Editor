@@ -375,7 +375,7 @@ class REE_GPUC_OT_new_config(bpy.types.Operator):
 
 
 class REE_GPUC_OT_check(bpy.types.Operator):
-    """Compare every part of the active cloth with its bones"""
+    """Compare every part of the active cloth with its bones, and with the mesh its particles were anchored to"""
     bl_idname = "ree_gpuc.check"
     bl_label = "Check"
 
@@ -385,8 +385,9 @@ class REE_GPUC_OT_check(bpy.types.Operator):
 
     def execute(self, context):
         bad = 0
+        from . import anchors
         for obj in props.parts(_settings(context).target):
-            problems = generate.check(obj)
+            problems = generate.check(obj) + anchors.problems(obj)
             obj["ree_gpuc_check"] = "; ".join(problems) if problems else "ok"
             bad += bool(problems)
             if problems:
@@ -1425,6 +1426,60 @@ class REE_GPUC_OT_follow_bones(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class _AnchorOp:
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == "OBJECT" and bool(props.parts(_settings(context).target))
+
+    def _parts(self, context):
+        coll = _settings(context).target
+        chosen = [o for o in context.selected_objects if props.is_part(o) and o.name in coll.all_objects]
+        return chosen or props.parts(coll)
+
+
+class REE_GPUC_OT_refit_to_mesh(_AnchorOp, bpy.types.Operator):
+    """Move the particles with the mesh they were anchored to, by how far it moved under each since: an edit made
+    to them stays. Then anchor them to it again. The selected Parts of the active cloth, else all of them"""
+    bl_idname = "ree_gpuc.refit_to_mesh"
+    bl_label = "Refit to Mesh"
+
+    def execute(self, context):
+        from . import anchors
+        total, left = 0, []
+        for obj in self._parts(context):
+            try:
+                total += anchors.refit(obj)
+            except ValueError as e:
+                left.append(f"{obj.name}: {e}")
+                continue
+            obj["ree_gpuc_check"] = "; ".join(generate.check(obj) + anchors.problems(obj)) or "ok"
+        if left and not total:
+            return refused(self, "; ".join(left[:2]))
+        self.report({"WARNING"} if left else {"INFO"},
+                    f"{total} particles moved with the mesh" + (f"; not moved: {'; '.join(left[:2])}" if left else ""))
+        return {"FINISHED"}
+
+
+class REE_GPUC_OT_anchor_to_mesh(_AnchorOp, bpy.types.Operator):
+    """Anchor the particles to their armature's mesh as they are now, so that a later change of the mesh shows in
+    Check and Refit to Mesh moves them with it. The selected Parts of the active cloth, else all of them"""
+    bl_idname = "ree_gpuc.anchor_to_mesh"
+    bl_label = "Anchor to Mesh"
+
+    def execute(self, context):
+        from . import anchors
+        objs = self._parts(context)
+        counts = [anchors.record(o) for o in objs]
+        for obj in objs:
+            obj["ree_gpuc_check"] = "; ".join(generate.check(obj) + anchors.problems(obj)) or "ok"
+        if not any(counts):
+            return refused(self, "No particle lies within 10 cm of a mesh of the armature's mesh collection")
+        self.report({"INFO"}, f"{sum(counts)} particles anchored to the mesh")
+        return {"FINISHED"}
+
+
 class REE_GPUC_OT_back_to_bones(bpy.types.Operator):
     """Lay the Part out from its bones again, as before Edit as Mesh: its particle, face and skin edits are lost,
     its values and settings from then are back"""
@@ -1819,7 +1874,8 @@ CLASSES = (REE_GPUC_OT_import, REE_GPUC_FH_import, REE_GPUC_OT_export, REE_GPUC_
            REE_GPUC_OT_reset_rest_offsets, REE_GPUC_OT_part_shape, REE_GPUC_OT_set_value, REE_GPUC_OT_paint, REE_GPUC_OT_normalize_skin,
            REE_GPUC_OT_edit_as_mesh, REE_GPUC_OT_back_to_bones, REE_GPUC_OT_driven_add,
            REE_GPUC_OT_driven_remove, REE_GPUC_OT_driven_from_skin, REE_GPUC_OT_part_from_mesh,
-           REE_GPUC_OT_attach_to_bones, REE_GPUC_OT_follow_bones, REE_GPUC_OT_fit_to_mesh,
+           REE_GPUC_OT_attach_to_bones, REE_GPUC_OT_follow_bones, REE_GPUC_OT_refit_to_mesh,
+           REE_GPUC_OT_anchor_to_mesh, REE_GPUC_OT_fit_to_mesh,
            REE_GPUC_OT_simulate, REE_GPUC_OT_sim_reset, REE_GPUC_OT_import_reference,
            REE_GPUC_OT_drive_vertices, REE_GPUC_OT_drive_select_near, REE_GPUC_OT_drive_spread_lods)
 

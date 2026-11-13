@@ -879,6 +879,9 @@ def export(coll, path: str, mesh_coll=None, joints: str = "FILE", game: str = ""
             notes = notes + [why]
     data, more = build_bytes(coll, mesh_coll, joints, game, found, path)
     notes = notes + more
+    from . import anchors
+    for obj in props.parts(coll):                    # the mesh changed under the particles since they sat on it
+        notes += [f"{obj.name}: {p}" for p in anchors.problems(obj)]
     with open(path, "wb") as f:
         f.write(data)
     head = props.header(coll)
@@ -2105,6 +2108,11 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
     _keep_capsules(coll, arm, f["caps"], by_hash, notes)
     _keep_shapes(coll, arm, f, by_hash, notes)
     _keep_welds(coll, f, notes)                       # after the collisions: the chain editor's order
+    if mesh_coll is not None and not is_re4:          # where the file's particles sit on its mesh
+        from . import anchors
+        bpy.context.view_layer.update()
+        for obj in props.parts(coll):
+            anchors.record(obj, mesh_coll)
     if f.get("vertex"):
         J, S, V, L, _ = f["vertex"]
         notes.append(f"It drives {J} of {V} mesh vertices ({L} LODs) directly: the file's bindings are kept until "

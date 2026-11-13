@@ -664,8 +664,11 @@ def from_mesh(src, coll, config=None) -> tuple:
     canon.fit_ranges(obj, values)
     canon.store(obj, data)
     canon.build_mesh(obj)
-    from . import follow
+    import bpy
+    from . import anchors, follow
     follow.record(obj)
+    bpy.context.view_layer.update()
+    anchors.record(obj)
     text = (f"Made from {src.name}: {n} particles, {len(links)} links. List the bones it drives (Driven Bones) and "
             f"paint Simulation weight 0 where it is held")
     if outside:
@@ -725,7 +728,8 @@ def adopt(obj) -> str:
     canon.fit_ranges(obj, values)
     canon.store(obj, data)
     canon.build_mesh(obj)
-    from . import sim
+    from . import anchors, sim
+    anchors.remap(obj, keep)                         # the kept particles keep their places on the mesh
     sim.invalidate(obj)
     added = int((keep < 0).sum())
     gone = len(old["co"]) - int((keep >= 0).sum())

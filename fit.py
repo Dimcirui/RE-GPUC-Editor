@@ -91,35 +91,72 @@ def _barycentric(p, a, b, c):
     return 1.0 - u - v, u, v
 
 
-def map_points(points, src_v, tris, dst_v) -> tuple:
-    """New places of world-space points bound to the source surface, on the target surface of the same triangles;
-    returns (places (n, 3), whether each point was bound, its distance to the source)."""
+def bind(points, src_v, tris) -> tuple:
+    """Bind world-space points to the surface (``src_v``, ``tris``): each to its ``NEAREST`` triangles, as (triangle
+    index, -1 for none; barycentric (a, b, c) of its foot on the triangle's plane; its height above it; weight by
+    inverse squared distance), arrays (n, NEAREST[, 3]); and each point's distance to the surface. A point farther
+    than ``FAR`` binds to none."""
+    points = np.asarray(points, float)
+    n = len(points)
+    tri = np.full((n, NEAREST), -1, np.int64)
+    bary = np.zeros((n, NEAREST, 3))
+    height = np.zeros((n, NEAREST))
+    weight = np.zeros((n, NEAREST))
+    dist = np.full(n, np.inf)
+    if not len(tris):
+        return (tri, bary, height, weight), dist
     bvh = BVHTree.FromPolygons(src_v.tolist(), tris.tolist(), all_triangles=True)
-    out = np.array(points, float)
-    bound = np.zeros(len(points), bool)
-    dist = np.full(len(points), np.inf)
-    for i, p in enumerate(np.asarray(points, float)):
+    for i, p in enumerate(points):
         loc, _, _, d0 = bvh.find_nearest(p)
-        if loc is None or d0 > FAR:
-            dist[i] = d0 if d0 is not None else np.inf
+        if loc is None:
             continue
         dist[i] = d0
+        if d0 > FAR:
+            continue
         hits = sorted(bvh.find_nearest_range(p, d0 + max(d0, 0.005)), key=lambda h: h[3])[:NEAREST]
-        acc, wsum = np.zeros(3), 0.0
-        for _, _, fi, d in hits:
+        for k, (_, _, fi, d) in enumerate(hits):
             a, b, c = src_v[tris[fi]]
-            fs, ft = _frame(a, b, c), _frame(*dst_v[tris[fi]])
-            if fs is None or ft is None:
+            fs = _frame(a, b, c)
+            if fs is None:
                 continue
-            height = float(np.dot(p - a, fs[2]))       # the distance from the triangle's plane is kept
-            wa, wb, wc = _barycentric(p - height * fs[2], a, b, c)   # outside the triangle: on its plane
+            h = float(np.dot(p - a, fs[2]))           # the distance from the triangle's plane is kept
+            tri[i, k] = fi
+            bary[i, k] = _barycentric(p - h * fs[2], a, b, c)   # outside the triangle: on its plane
+            height[i, k] = h
+            weight[i, k] = 1.0 / (d * d + 1e-8)
+    return (tri, bary, height, weight), dist
+
+
+def place(binding, dst_v, tris, points) -> tuple:
+    """The bound points' places on a surface of the same triangles (``bind``): (places, the given ``points`` where
+    unbound; whether each is bound)."""
+    tri, bary, height, weight = binding
+    out = np.array(points, float)
+    bound = np.zeros(len(out), bool)
+    for i in range(len(out)):
+        acc, wsum = np.zeros(3), 0.0
+        for k in range(tri.shape[1]):
+            fi = tri[i, k]
+            if fi < 0 or fi >= len(tris):
+                continue
             ta, tb, tc = dst_v[tris[fi]]
-            w = 1.0 / (d * d + 1e-8)
-            acc += w * (wa * ta + wb * tb + wc * tc + height * ft[2])
-            wsum += w
+            ft = _frame(ta, tb, tc)
+            if ft is None:
+                continue
+            wa, wb, wc = bary[i, k]
+            acc += weight[i, k] * (wa * ta + wb * tb + wc * tc + height[i, k] * ft[2])
+            wsum += weight[i, k]
         if wsum:
             out[i] = acc / wsum
             bound[i] = True
+    return out, bound
+
+
+def map_points(points, src_v, tris, dst_v) -> tuple:
+    """New places of world-space points bound to the source surface, on the target surface of the same triangles;
+    returns (places (n, 3), whether each point was bound, its distance to the source)."""
+    binding, dist = bind(points, src_v, tris)
+    out, bound = place(binding, dst_v, tris, points)
     return out, bound, dist
 
 
@@ -211,6 +248,10 @@ def fit_cloth(coll, source, target, use_target_armature=True, game="") -> str:
         far += int((~bound).sum())
         mm += (np.linalg.norm(places - world[o], axis=1)[bound] * 1000).tolist()
         follow.record(o)
+    bpy.context.view_layer.update()
+    from . import anchors
+    for o in parts:
+        anchors.record(o, target)                     # where they now sit on the target mesh
     text = (f"{moved} particles moved onto {target.name} ({len(pairs)} meshes"
             f"{f', median {np.median(mm):.1f} mm' if mm else ''})")
     if far:

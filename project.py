@@ -143,6 +143,8 @@ def project_part(obj) -> str:
     co = base + off
     canon.set_positions(obj, co)
     canon.build_mesh(obj)
+    from . import anchors
+    anchors.record(obj)                               # where it now sits on the mesh
     moved = np.linalg.norm(off, axis=1) * 1000
     text = f"Projected onto the mesh: {taken} particles hit it (median {np.median(moved[ok]) if taken else 0:.1f} mm)"
     if int(filled.sum()) > taken:
