@@ -1549,7 +1549,7 @@ def _build_re4(coll, head, cfg_objs, part_objs):
                 raise ExportError(f"RE4 has no particle field {name}")
             for j in changed:
                 particle_changes.setdefault(int(sel[j]), {})[name] = float(value[j])
-    # Only edited link shapes and welds are patched; other tails stay byte-exact.
+    # Only links whose tail changed and edited welds are patched; other tails stay byte-exact.
     per_part = {i: canon.link_tails(o, canon.load(o)) for i, o in part_by_index.items()}
     taken = collections.Counter()
     starts = {i: int(np.flatnonzero(f["part_of"] == i)[0]) for i in part_by_index}
@@ -1574,10 +1574,9 @@ def _build_re4(coll, head, cfg_objs, part_objs):
                     raise ExportError("RE4 cannot change weld link types")
                 tails[k] = gp.tail_bytes(*obj.ree_gpuc_weld.tail())
         else:
-            obj = part_by_index[i]
-            shape = grid.SHAPES[_shape(typ, a, b, f["pos"])].lower()
-            if shape in obj.get(canon.EDITED_KEY, ()):
-                tails[k] = gp.tail_bytes(*per_part[i][taken[i]])
+            now = gp.tail_bytes(*map(float, per_part[i][taken[i]]))
+            if now != bytes(tail):
+                tails[k] = now
             taken[i] += 1
     try:
         return re4.patch(raw, header, cfg_changes, part_changes, particle_changes, tails), notes
@@ -2103,7 +2102,6 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
         if is_re4:
             obj["ree_gpuc_re4_index"] = i
         _set_part(obj, block, r["tails"][i], None, cfg_objs, notes)
-        obj[canon.EDITED_KEY] = []
         if block["use_root_joint"] and block["root_hash"] not in by_hash:
             obj[ROOT_HASH_KEY] = gp.signed(block["root_hash"])
     _keep_capsules(coll, arm, f["caps"], by_hash, notes)
@@ -2855,7 +2853,7 @@ def update_existing(path: str, coll, mesh_coll=None) -> list:
             d["tails"] = np.array([gp.tail_values(t) for a, b, _, t in f["links"]
                                    if first <= a < first + len(sel) and first <= b < first + len(sel)],
                                   np.float32).reshape(-1, 4)
-            obj[canon.EDITED_KEY] = []
+            d["own"] = np.ones(len(d["tails"]), bool)  # the file's tails
         else:
             spread = [s for s, n in _tail_spread(f, sel).items() if n > 1]
             if spread:

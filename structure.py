@@ -154,30 +154,27 @@ def _skin(obj, keep, old, slots) -> tuple:
 
 
 def _links(obj, faces, co, keep, old) -> tuple:
-    """(links (a, b, type, shape), their tails) of the faces; a link both of whose particles are kept, between them
-    in the file too, keeps its tail. A link the old faces did not give (one its file adds) stays while both its
+    """(links (a, b, type, shape), their tails, whether each tail is its own) of the faces; a link both of whose
+    particles are kept, between them before too, keeps its tail and whether it is its own; a new one takes its
+    shape's tail on the Part. A link the old faces did not give (one its file adds) stays while both its
     particles do, and one they gave that the Part did not hold stays away between the same two."""
     bend = obj.ree_gpuc_part.diagonal_bend
     ln = topology.links_of(faces, bend)
-    before = {(min(int(a), int(b)), max(int(a), int(b)), int(t)): (int(s), tuple(map(float, tail)))
-              for (a, b, t, s), tail in zip(old["links"], old["tails"])}
-    common = {}
-    for s in range(len(gp.SHAPES)):
-        tails = collections.Counter(tail for (shape, tail) in before.values() if shape == s)
-        if tails:
-            common[s] = tails.most_common(1)[0][0]
+    before = {(min(int(a), int(b)), max(int(a), int(b)), int(t)): (int(s), tuple(map(float, tail)), bool(own))
+              for (a, b, t, s), tail, own in zip(old["links"], old["tails"], old["own"])}
     shape_tail = [getattr(obj.ree_gpuc_part, n).tail() for n in gp.SHAPES]
-    out, tails = [], []
+    out, tails, owns = [], [], []
     for a, b, t in ln.tolist():
         ka, kb = keep[a], keep[b]
         was = before.get((min(ka, kb), max(ka, kb), t)) if ka >= 0 and kb >= 0 else None
         if was is not None:
-            shape, tail = was
+            shape, tail, own = was
         else:
             shape = 2 if t == 1 else 3 if t != 0 else (0 if gpuc_build.direction(co[a], co[b]) == "vert" else 1)
-            tail = common.get(shape, shape_tail[shape])
+            tail, own = shape_tail[shape], False
         out.append((a, b, t, shape))
         tails.append(tail)
+        owns.append(own)
     if old.get("faces") is not None:
         now = {k: v for v, k in enumerate(keep) if k >= 0}
         gone = set()
@@ -186,16 +183,18 @@ def _links(obj, faces, co, keep, old) -> tuple:
                 gone.add((min(now[a], now[b]), max(now[a], now[b]), t))
         if gone:
             kept = [k for k, (a, b, t, _) in enumerate(out) if (min(a, b), max(a, b), t) not in gone]
-            out, tails = [out[k] for k in kept], [tails[k] for k in kept]
+            out, tails, owns = [out[k] for k in kept], [tails[k] for k in kept], [owns[k] for k in kept]
         made = {(int(a), int(b), int(t)) for a, b, t, _ in out}
         for a, b, t in sorted(topology.extra_links(old["faces"], old["links"])):
             if a in now and b in now:
                 na, nb = sorted((now[a], now[b]))
                 if (na, nb, t) not in made:
-                    shape, tail = before[(a, b, t)]
+                    shape, tail, own = before[(a, b, t)]
                     out.append((na, nb, t, shape))
                     tails.append(tail)
-    return np.asarray(out, np.int64).reshape(-1, 4), np.asarray(tails, np.float32).reshape(-1, 4)
+                    owns.append(own)
+    return (np.asarray(out, np.int64).reshape(-1, 4), np.asarray(tails, np.float32).reshape(-1, 4),
+            np.asarray(owns, bool))
 
 
 def _values(obj, keep, old) -> dict:
@@ -682,7 +681,7 @@ def from_mesh(src, coll, config=None) -> tuple:
             "faces": faces, "face_uv": face_uv, "src": np.arange(n), "tri_flags": gpuc_build.tangent_flags(faces, corners),
             "editable": True, **values}
     obj[canon.MESH_KEY] = 1
-    obj[canon.EDITED_KEY] = [s for s in gp.SHAPES]          # the Part's link settings apply to all its links
+    data["own"] = np.zeros(len(links), bool)                # every link takes its shape's tail on the Part
     canon.fit_ranges(obj, values)
     canon.store(obj, data)
     canon.build_mesh(obj)
@@ -731,7 +730,7 @@ def adopt(obj) -> str:
     _check(n, faces, co)
     keep = _kept(ids, co, old["co"])
     names, skin, skin_w = _skin(obj, keep, old, old["skin"].shape[1])
-    links, tails = _links(obj, faces, co, keep, old)
+    links, tails, own = _links(obj, faces, co, keep, old)
     values = _values(obj, keep, old)
     tris, tri_uv = topology.triangles(faces, face_uv)
     face_uv = face_uv - (old["tile"], 0.0)
@@ -742,7 +741,8 @@ def adopt(obj) -> str:
     src = np.where(keep >= 0, old["src"][np.clip(keep, 0, None)], -1)
     tri_flags = _tri_flags(faces, face_uv, tris, keep, old)
     data = {**old, "count": n, "co": co, "tris": tris, "tri_uv": tri_uv - (old["tile"], 0.0), "faces": faces,
-            "face_uv": face_uv, "links": links, "tails": tails, "nodes": names, "skin": skin, "skin_w": skin_w,
+            "face_uv": face_uv, "links": links, "tails": tails, "own": own, "nodes": names, "skin": skin,
+            "skin_w": skin_w,
             "normal": normal, "src": src, "tri_flags": tri_flags, "editable": True, "edited": True, **values}
     dropped = _welds(obj, keep)
     if canon.MAPPING_KEY in obj.keys():

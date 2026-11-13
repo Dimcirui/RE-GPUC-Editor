@@ -14,7 +14,8 @@ This addon allows for creating, editing, importing and exporting RE Engine GPU c
  - Particle values can be painted as vertex weights or set exactly on selected particles.
  - Particles can be moved by hand in Edit Mode; the offsets survive rebuilds.
  - Previews an approximate simulation with gravity, wind and draggable colliders.
- - Presets of headers, configs, parts, collisions and welds can be saved and shared.
+ - Presets of headers, configs and parts, and stiffness presets of the four link shapes, can be saved and shared.
+ - Links can be edited one by one in Edit Mode: their own stiffness, a preset's, removed or added.
 
 ## Supported Games
 | Game | Support |
@@ -96,7 +97,7 @@ Select a generated Part and press Tab to enter Edit Mode. Move particles with `G
 A Part imported from a file (not attached to bones), made from bones and turned with Edit as Mesh, or made from any mesh with Part from Mesh (General panel), is a mesh of quads and triangles: each vertex is a particle, and its links come from the faces, as the game's own cloth is made. In Edit Mode you can move particles, subdivide, cut loops, extrude, delete or fill faces, and cut slits. Its skin is in one vertex group per bone, which you can paint. The changes are taken when you go back to Object Mode.
 
 * Faces must have 3 or 4 corners, every particle must be on a face, and every particle needs a skin weight; otherwise the edit is undone, with the reason in the Part panel.
-* New particles take their values and skin from their vertex groups, which Blender fills in as you edit. New links take the commonest tail of their shape on the Part.
+* New particles take their values and skin from their vertex groups, which Blender fills in as you edit. New links take their shape's overall stiffness.
 * The Part deforms by its armature, so it follows the pose and Blender's Normalize and Auto Normalize change only the bone groups, never the value groups. "Normalize Skin" in the Part panel gives each particle at most the game's number of bones (6, RE9 8), summing to 1, as the export writes them; locked groups keep their weights, and in Weight Paint with a selection mask only the selected particles change.
 * Once a Part is edited, the export writes the whole file again from the Parts instead of patching the original. The driven joints stay where the file binds them, or at their bones' rest when the bones moved (also without an edit); a joint whose particles were removed, or whose bone now skins new particles, is driven by the particles skinned to its bone most.
 * Each face holds its triangles' tangent flags as the attributes `gpuc_tangent_flags_a` (its first triangle) and `gpuc_tangent_flags_b` (a quad's second). Read them in the Spreadsheet and set them with Mesh > Set Attribute in Edit Mode, in an edit that changes no faces. Bits 0–2 flip the tangent at a corner and bit 3 takes no tangent from the UVs; they change how driven joints turn about the cloth's normal, not how the cloth moves. New triangles get bit 3 where their UVs span no area, else 0.
@@ -115,12 +116,26 @@ A Part imported from a file (not attached to bones), made from bones and turned 
 </details>
 
 <details>
+  <summary>Link stiffness and editing links</summary>
+
+Each link has a stiffness of its own, or takes its shape's overall stiffness (Vertical, Ring, Shear, Bend). The links of an imported file keep the file's stiffness as their own, so changing the overall stiffness leaves the file's values as they are.
+
+* Overall Stiffness Settings (Part panel): each shape's overall stiffness, and how many of its links have their own. Apply to All gives every link of the shape the overall stiffness. A stiffness preset applies to the overall stiffness (Apply), or the Part's overall stiffness is saved as one (+).
+* GPUC: Links (sidebar, a Part in Edit Mode): the links between the selected particles are the ones the tools change, of the shapes ticked there. They are drawn thicker; Selected Links Draw Through Objects (Display > Links) draws them in front of every mesh.
+  * Set Stiffness gives them a stiffness of their own; Follow Overall makes them take the overall stiffness again; a stiffness preset gives each its shape's stiffness of the preset; + saves a preset from the first selected link of each shape.
+  * Remove Links removes them; Add Link Between Two adds a link of a shape between two selected particles. The Part is then written again from the Parts on export. A Part that follows its bone grid takes its links from the grid: Edit as Mesh to add or remove links; its links' own stiffness lasts until its grid changes.
+  * Undo and redo in Edit Mode take the link edits back and forth. After particles were added or removed, leave Edit Mode once before editing links.
+* Stiffness presets hold all four shapes and are shared by every game; the built-in ones come from game files.
+
+</details>
+
+<details>
   <summary>Presets</summary>
 
-The GPUC: Presets panel saves Header, Config, Part, Collision, Weld and preview force and collider values as JSON presets, and applies them to selected objects of the same kind (with undo).
+The GPUC: Presets panel saves Header, Config and Part values as JSON presets, and applies them to selected objects of the same kind (with undo).
 
-* Presets are saved per game and apply only to objects of that game. Preview forces and colliders are shared by all games.
-* A Part preset holds the physics values and the four link shapes' settings, not per-particle values.
+* Presets are saved per game and apply only to objects of that game.
+* A Part preset holds the physics values, not the link stiffness (see stiffness presets) or per-particle values.
 * Object references, bone bindings, root joints, particle offsets, skinning and topology are not saved.
 * "Open Preset Folder" opens the folder, so the JSON files can be shared directly.
 

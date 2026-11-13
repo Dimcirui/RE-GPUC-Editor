@@ -307,6 +307,7 @@ class REE_GPUC_PT_display(_Sidebar, bpy.types.Panel):
         if body is not None:
             col = _split(body)
             col.active = s.show_links
+            col.prop(s, "selected_links_in_front")
             col.prop(s, "links_in_front")
             col.prop(s, "link_colour")
             shapes = col.column(heading="Shapes")
@@ -615,6 +616,94 @@ def _fix(layout, text) -> None:
         col.label(text=line, icon="INFO" if k == 0 else "BLANK1")
 
 
+def _overall_stiffness(layout, context, obj) -> None:
+    """The Part's overall stiffness of each link shape, which the links without one of their own take; a
+    stiffness preset to apply to it or save it as."""
+    from . import linkedit
+    p, s = obj.ree_gpuc_part, context.scene.ree_gpuc
+    layout.separator()
+    layout.label(text="Overall Stiffness Settings")
+    row = layout.row(align=True)
+    row.prop(s, "stiffness_preset", text="")
+    row.operator("ree_gpuc.stiffness_apply_overall", text="Apply", icon="CHECKMARK")
+    row.operator("ree_gpuc.stiffness_save_overall", text="", icon="ADD")
+    counts = linkedit.own_counts(obj)
+    for k, (name, label, _) in enumerate(props.LINK_SHAPES):
+        tail = getattr(p, name)
+        own, n = counts[k]
+        header, body = layout.panel(f"ree_gpuc_link_{name}", default_closed=True)
+        row = header.row(align=True)
+        row.label(text=label + (" *" if tail.conditional else "") + (f" ({own} own)" if own else ""))
+        row.prop(tail, "k", text="Stiffness", slider=True)
+        if body is None:
+            continue
+        row = body.row(align=True)
+        row.label(text=f"{n - own} of {n} links take it" if n else "No links of this shape")
+        sub = row.row()
+        sub.enabled = own > 0
+        sub.operator("ree_gpuc.links_follow_all", text="Apply to All").shape = k
+        body.prop(tail, "conditional")
+        sub = body.column(align=True)
+        sub.active = tail.conditional
+        sub.prop(tail, "k2", slider=True)
+        row = sub.row(align=True)
+        row.prop(tail, "lo", text="Low", slider=True)
+        row.prop(tail, "hi", text="High", slider=True)
+        body.label(text=tail.summary())
+
+
+class REE_GPUC_PT_links(_Sidebar, bpy.types.Panel):
+    """The links between the selected particles of the Part in Edit Mode."""
+    bl_label = "GPUC: Links"
+
+    @classmethod
+    def poll(cls, context):
+        from . import linkedit
+        return linkedit.part(context) is not None
+
+    def draw(self, context):
+        from . import linkedit
+        obj = linkedit.part(context)
+        d = canon.load(obj)
+        s = context.scene.ree_gpuc
+        layout = self.layout
+        why = linkedit.why_not(obj, d)
+        if why:
+            layout.label(text=why[0].upper() + why[1:], icon="INFO")
+            return
+        every, idx = linkedit.between(obj, d), linkedit.picked(obj, d, context.scene)
+        ln, tails = canon.links(d), canon.link_tails(obj, d)
+        col = layout.column(align=True)
+        col.label(text=f"{len(idx)} of {len(every)} links between the selected particles")
+        for k, (_, label, _) in enumerate(props.LINK_SHAPES):
+            mine = every[ln[every, 3] == k]
+            text = f"{label}: 0"
+            if len(mine):
+                ks = tails[mine, 0]
+                stiff = f"{ks.min():.3g}" if ks.min() == ks.max() else f"{ks.min():.3g}-{ks.max():.3g}"
+                own = int(d["own"][mine].sum())
+                text = f"{label}: {len(mine)} ({own} own), stiffness {stiff}"
+            row = col.row(align=True)
+            row.active = bool(len(mine))
+            row.prop(s, "link_pick", index=k, text=text)
+        layout.label(text="Stiffness")
+        row = layout.row(align=True)
+        row.operator("ree_gpuc.link_stiffness", icon="MODIFIER")
+        row.operator("ree_gpuc.link_follow", icon="LINKED")
+        row = layout.row(align=True)
+        row.prop(s, "stiffness_preset", text="")
+        row.operator("ree_gpuc.link_save_preset", text="", icon="ADD")
+        layout.operator("ree_gpuc.link_apply_preset", text=f"Apply to {len(idx)} Selected Links", icon="CHECKMARK")
+        layout.label(text="Links")
+        sub = layout.column(align=True)
+        sub.enabled = not linkedit.why_not(obj, d, structure=True)
+        sub.operator("ree_gpuc.link_remove", text=f"Remove {len(idx)} Links", icon="X")
+        sub.operator_menu_enum("ree_gpuc.link_add", "shape", text="Add Link Between Two", icon="ADD")
+        if not sub.enabled:
+            layout.label(text="Edit as Mesh to add or remove links" if d["attached"]
+                         else "Its file's structure stays: tails only", icon="INFO")
+
+
 class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
     bl_label = "GPUC Part"
     KIND = staticmethod(props.is_part)
@@ -680,27 +769,7 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
             col.prop(p, "re4_value_30")
         if (not canon.locked(obj) or canon.made_here(obj)) and not canon.file_part(obj):
             _driven_bones(layout, obj)
-        _split(layout).prop(p, "link_preset")
-        own = canon.overrides(obj, canon.recipe(obj)) if canon.attached(obj) else {}
-        if own:
-            layout.label(text="Links with their own tail (set the shape to clear):", icon="INFO")
-        for k, (name, label, _) in enumerate(props.LINK_SHAPES):
-            tail = getattr(p, name)
-            header, body = layout.panel(f"ree_gpuc_link_{name}", default_closed=True)
-            row = header.row(align=True)
-            mark = (" *" if tail.conditional else "") + (f" ({len(own[k][0])} own)" if k in own else "")
-            row.label(text=label + mark)
-            row.prop(tail, "k", text="Stiffness", slider=True)
-            if body is None:
-                continue
-            body.prop(tail, "conditional")
-            sub = body.column(align=True)
-            sub.active = tail.conditional
-            sub.prop(tail, "k2", slider=True)
-            row = sub.row(align=True)
-            row.prop(tail, "lo", text="Low", slider=True)
-            row.prop(tail, "hi", text="High", slider=True)
-            body.label(text=tail.summary())
+        _overall_stiffness(layout, context, obj)
 
         if not re4_kept:
             layout.separator()
@@ -814,7 +883,7 @@ class REE_GPUC_PT_object_force(_ObjectPanel, bpy.types.Panel):
         sub.label(text=f"Scale x {sim.gain(obj):.3g}")
 
 
-CLASSES = (REE_GPUC_PT_driven_vertices, REE_GPUC_PT_general, REE_GPUC_PT_pose, REE_GPUC_PT_presets, REE_GPUC_PT_clipboard, REE_GPUC_PT_particles, REE_GPUC_UL_colliders, REE_GPUC_PT_simulate,
+CLASSES = (REE_GPUC_PT_driven_vertices, REE_GPUC_PT_general, REE_GPUC_PT_pose, REE_GPUC_PT_presets, REE_GPUC_PT_clipboard, REE_GPUC_PT_particles, REE_GPUC_PT_links, REE_GPUC_UL_colliders, REE_GPUC_PT_simulate,
            REE_GPUC_PT_display, REE_GPUC_PT_uv, REE_GPUC_PT_object_header, REE_GPUC_UL_keys, REE_GPUC_UL_bones, REE_GPUC_PT_object_config,
            REE_GPUC_PT_object_part, REE_GPUC_PT_object_collision, REE_GPUC_PT_object_plane, REE_GPUC_PT_object_collider, REE_GPUC_PT_object_force)
 

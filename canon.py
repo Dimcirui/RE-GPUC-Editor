@@ -131,6 +131,9 @@ def load(obj) -> dict:
     """The Part's mesh: particles, faces, links, skin and values (``"attached"``: it follows its bone grid, whose
     ``GRID_KEYS`` it then also holds)."""
     out = _load_locked(obj[KEY])
+    if out["own"] is None:                             # a scene saved before links kept their own: by the shapes set
+        edited = set(obj.get(EDITED_KEY, ()))
+        out["own"] = np.array([grid.SHAPES[s].lower() not in edited for s in out["links"][:, 3]], bool)
     out["attached"] = attached(obj)
     if out["attached"]:
         g = recipe(obj)
@@ -185,6 +188,7 @@ def _load_locked(c) -> dict:
            "normal": f32(c["normal"]).reshape(-1, 3), "faces": None, "face_uv": None,
            "src": np.asarray(c["src"], np.int64) if "src" in c else np.arange(n),
            "editable": bool(c.get("editable")), "edited": bool(c.get("edited")),
+           "own": np.asarray(c["own"], bool) if "own" in c and len(c["own"]) == len(links) else None,
            **{f: f32(c[f]) if f in c else np.full(n, DEFAULTS[f], np.float32) for f in FIELD_NAMES}}
     if "faces" in c:
         flat, sizes = [int(v) for v in c["faces"]], np.cumsum([0] + [int(k) for k in c["face_n"]])
@@ -203,7 +207,11 @@ def store(obj, data: dict) -> None:
                     "tris": ints(data["tris"]), "tri_uv": fl(data["tri_uv"]), "links": ints(data["links"]),
                     "tails": fl(data["tails"]), "nodes": list(data["nodes"]), "skin": ints(data["skin"]),
                     "skin_w": fl(data["skin_w"]), "normal": fl(data["normal"]),
+                    "own": ints(np.ones(len(np.asarray(data["links"]).reshape(-1, 4)), bool)
+                                if data.get("own") is None else np.asarray(data["own"], bool)),
                     **{n: fl(data[n]) for n in FIELD_NAMES}}
+        if EDITED_KEY in obj.keys():                   # read only from scenes saved before ``own``
+            del obj[EDITED_KEY]
         c = obj[KEY]
         if data.get("faces") is not None:
             c["faces"] = [int(v) for f in data["faces"] for v in f]
@@ -265,9 +273,11 @@ def _bake(obj, g) -> None:
         nodes = [str(b) for b in kept["nodes"]]
         skin = np.asarray(kept["skin"], np.int64).reshape(count(g), -1)
         skin_w = f32(kept["skin_w"]).reshape(count(g), -1)
-    obj[EDITED_KEY] = [n for k, n in enumerate(s.lower() for s in grid.SHAPES) if k not in own]
+    mine = np.zeros(len(links(g)), bool)
+    for idx, _ in own.values():
+        mine[idx] = True
     store(obj, {"locked": True, "count": count(g), "tile": g["tile"], "co": co, "tris": tris, "tri_uv": tri_uv,
-                "links": links(g), "tails": link_tails(obj, g), "nodes": nodes, "skin": skin,
+                "links": links(g), "tails": link_tails(obj, g), "own": mine, "nodes": nodes, "skin": skin,
                 "skin_w": skin_w, "normal": topology.normals(co, tris), "faces": faces, "face_uv": face_uv,
                 "src": src, "tri_flags": gpuc_build.tangent_flags(faces, corners), "editable": True,
                 **{n: g[n] for n in FIELD_NAMES}})
@@ -391,7 +401,9 @@ def links(d: dict) -> np.ndarray:
     return _grid_links[key]
 
 
-EDITED_KEY = "ree_gpuc_tails_edited"       # on a locked Part: the link shapes whose tail was set by hand
+# on a Part of a scene saved before each link kept whether its tail is its own: the link shapes whose tail was set
+# by hand (their links follow the shape's tail, the others keep their own); ``load`` reads it, ``store`` drops it
+EDITED_KEY = "ree_gpuc_tails_edited"
 # on a Part made from bones: links whose tail is not their shape's, kept from a rebuilt file:
 # {"grid": [rows, cols, closed, diagonal bend], shape: {"links": [index into links()], "tails": [k, k2, lo, hi, ...]}};
 # setting a shape's tail drops its entry, a grid of other links ignores them all
@@ -432,9 +444,8 @@ def overrides(obj, d: dict) -> dict:
 
 
 def link_tails(obj, d: dict) -> np.ndarray:
-    """Each link's tail (k, k2, lo, hi) from its shape's settings on the Part, a Part made from bones taking its
-    ``OVERRIDES_KEY`` links' own; a locked Part's links keep the file's tails except for the shapes listed under
-    ``EDITED_KEY``."""
+    """Each link's tail (k, k2, lo, hi): its own (``d["own"]``; a bone grid's ``OVERRIDES_KEY`` links), else its
+    shape's on the Part."""
     part = obj.ree_gpuc_part
     names = [s.lower() for s in grid.SHAPES]
     shape = np.array([getattr(part, n).tail() for n in names], np.float32)
@@ -445,10 +456,42 @@ def link_tails(obj, d: dict) -> np.ndarray:
             out[idx] = tails
         return out
     out = d["tails"].copy()
-    for k, n in enumerate(names):
-        if n in obj.get(EDITED_KEY, ()):
-            out[ln[:, 3] == k] = shape[k]
+    follow = ~np.asarray(d["own"], bool)
+    out[follow] = shape[ln[follow, 3]]
     return out
+
+
+def set_own(obj, idx, tails) -> None:
+    """Give the links ``idx`` (into ``links(load(obj))``) tails of their own; on a Part that follows its bone grid
+    they are kept as its ``OVERRIDES_KEY`` until the grid changes."""
+    d = load(obj)
+    d["tails"] = d["tails"].copy()
+    d["tails"][np.asarray(idx, np.int64)] = np.asarray(tails, np.float32).reshape(-1, 4)
+    d["own"] = d["own"].copy()
+    d["own"][np.asarray(idx, np.int64)] = True
+    _store_own(obj, d)
+
+
+def follow(obj, idx) -> None:
+    """Let the links ``idx`` take their shape's tail on the Part (Apply to All: every link of a shape)."""
+    d = load(obj)
+    d["own"] = d["own"].copy()
+    d["own"][np.asarray(idx, np.int64)] = False
+    _store_own(obj, d)
+
+
+def _store_own(obj, d) -> None:
+    store(obj, d)
+    if d["attached"]:                                  # the grid's own links, for the next bake
+        ln, out = links(d), {"grid": _grid_key(recipe(obj))}
+        for k, n in enumerate(s.lower() for s in grid.SHAPES):
+            mine = np.flatnonzero((ln[:, 3] == k) & d["own"])
+            if len(mine):
+                out[n] = {"links": mine.tolist(), "tails": d["tails"][mine].ravel().tolist()}
+        if len(out) > 1:
+            obj[OVERRIDES_KEY] = out
+        elif OVERRIDES_KEY in obj.keys():
+            del obj[OVERRIDES_KEY]
 
 
 def particle_uv(d: dict) -> np.ndarray:

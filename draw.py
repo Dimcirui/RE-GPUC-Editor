@@ -427,6 +427,7 @@ def _draw_3d():
     base_points = []
     cloth = "CLOTH" in (s.in_front, s.links_in_front)
     cloth_tris = []
+    picked_segs, picked_cols = [], []                  # the links the link tools change (Edit Mode), drawn last
     view_inv = np.linalg.inv(np.array(ctx.region_data.view_matrix, float))
     eye_at = view_inv[:3, 3] if ctx.region_data.is_perspective else None
     for obj in objs:
@@ -480,6 +481,14 @@ def _draw_3d():
             else:
                 rgb = np.tile(PLAIN_LINK, (len(ln), 1))
             lcols.append(np.repeat(np.column_stack([rgb, np.full(len(rgb), 0.9)]), 2, axis=0))
+            if obj.mode == "EDIT" and obj == ctx.active_object:
+                from . import linkedit
+                idx = linkedit.picked(obj, d, ctx.scene)
+                if idx is not None and len(idx):
+                    mine = canon.links(d)[idx]
+                    picked_segs.append(np.stack([pos[mine[:, 0]], pos[mine[:, 1]]], axis=1).reshape(-1, 3))
+                    picked_cols.append(np.repeat(np.column_stack([0.35 * SHAPE_COLOURS[mine[:, 3]] + 0.65,
+                                                                  np.ones(len(mine))]), 2, axis=0))
         if cloth:
             cloth_tris.append(occluder(d, pos, eye_at, -view_inv[:3, 2]))
     weld_pts, weld_big = [], []
@@ -566,6 +575,14 @@ def _draw_3d():
         gpu.state.depth_test_set("LESS_EQUAL")
         for f in later:
             f()
+    if picked_segs:
+        through = s.selected_links_in_front or s.links_in_front == "FRONT"
+        gpu.state.depth_test_set("NONE" if through else "LESS_EQUAL")   # on the cloth's depth when it was drawn
+        shader = gpu.shader.from_builtin("POLYLINE_FLAT_COLOR")
+        shader.uniform_float("viewportSize", gpu.state.viewport_get()[2:])
+        shader.uniform_float("lineWidth", 4.0)
+        batch_for_shader(shader, "LINES", {"pos": np.concatenate(picked_segs).astype(np.float32),
+                                           "color": np.concatenate(picked_cols).astype(np.float32)}).draw(shader)
     gpu.state.depth_mask_set(True)
     gpu.state.depth_test_set("NONE")
     gpu.state.blend_set("NONE")

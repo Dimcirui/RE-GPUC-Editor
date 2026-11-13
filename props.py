@@ -2,8 +2,8 @@
 
 Particle values are not stored here: they live in the Part's canonical data (``canon``) and show on its mesh."""
 import bpy
-from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty, PointerProperty,
-                       StringProperty)
+from bpy.props import (BoolProperty, BoolVectorProperty, EnumProperty, FloatProperty, FloatVectorProperty,
+                       IntProperty, PointerProperty, StringProperty)
 
 COLLECTION_TYPE = "RE_GPUC_COLLECTION"
 HEADER_TYPE = "RE_GPUC_HEADER"
@@ -377,21 +377,8 @@ _applying = False
 
 
 def _tail_edit(self, context):
-    """Set the Part's link preset to Custom; mark the shape so ``canon.link_tails`` applies the tail to every link
-    of that shape, and drop the shape's per-link overrides of a Part made from bones."""
-    obj = self.id_data
-    shape = self.path_from_id().rsplit(".", 1)[-1]
-    if "ree_gpuc_canon" in obj.keys():
-        edited = list(obj.get("ree_gpuc_tails_edited", ()))
-        if shape not in edited:
-            obj["ree_gpuc_tails_edited"] = edited + [shape]
-    if shape in obj.get("ree_gpuc_link_overrides", {}):
-        over = obj["ree_gpuc_link_overrides"].to_dict()
-        del over[shape]
-        if len(over) > 1:
-            obj["ree_gpuc_link_overrides"] = over
-        else:
-            del obj["ree_gpuc_link_overrides"]
+    """Set the Part's link preset to Custom. The shape's links that follow its tail take it; those with a tail of
+    their own keep theirs (``canon.link_tails``)."""
     if not _applying:
         part = self.id_data.ree_gpuc_part
         if part.link_preset != "CUSTOM":
@@ -522,6 +509,11 @@ def _through(what: str) -> list:
             ("CLOTH", "Other Meshes", f"{what} in front of other meshes, hidden behind the near side of the cloth",
              1),
             ("FRONT", "Everything", f"{what} in front of every mesh, the far side of the cloth too", 2)]
+
+
+def _stiffness_items(self, context):
+    from . import presets
+    return presets.stiffness_items(self, context)
 
 
 def _in_front(self, context):
@@ -738,6 +730,15 @@ class REE_GPUC_Settings(bpy.types.PropertyGroup):
     colliders_in_front: BoolProperty(name="Draw Through Objects", default=False, update=_redraw,
                                      description="The colliders in front of every mesh")
     show_links: BoolProperty(name="Links", default=True, update=_redraw)
+    selected_links_in_front: BoolProperty(
+        name="Selected Links Draw Through Objects", default=True, update=_redraw,
+        description="In Edit Mode, the links between the selected particles in front of every mesh, the far side "
+                    "of the cloth too")
+    link_pick: BoolVectorProperty(name="Link Shapes", size=4, default=(True, True, True, True), update=_redraw,
+                                  description="Which shapes of the links between the selected particles the link "
+                                              "tools change: Vertical, Ring, Shear, Bend")
+    stiffness_preset: EnumProperty(name="Stiffness Preset", items=_stiffness_items,
+                                   description="The four link shapes' stiffness: a built-in one or one saved")
     link_colour: EnumProperty(name="Link colours", default="SHAPE", update=_redraw,
                               items=[("SHAPE", "Shape", "Vertical green, ring orange, shear blue, bend pink"),
                                      ("STIFFNESS", "Stiffness", "The shape's k in the weight paint colours: 0 blue to 1 red"),

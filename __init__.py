@@ -1,9 +1,9 @@
 """RE GPUC Editor: Wilds / RE9 / Onimusha cloth generation and RE4 preservation-only editing."""
 from . import autorebuild, canon, collision, draw, ops, props, sim, ui, weld
 from . import wd_api  # noqa: F401 - loaded for Wilds-Dynamics, which finds it in sys.modules (no registering)
-from . import presets
+from . import linkedit, presets
 
-_MODULES = (props, canon, collision, sim, ops, presets, ui, weld, draw, autorebuild)
+_MODULES = (props, canon, collision, sim, ops, presets, linkedit, ui, weld, draw, autorebuild)
 
 
 def register():

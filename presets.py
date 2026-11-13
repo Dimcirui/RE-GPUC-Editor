@@ -1,4 +1,6 @@
-"""Save and apply versioned JSON parameter presets; they hold no object references or generated geometry."""
+"""Save and apply versioned JSON parameter presets of a cloth's Header, Configs and Parts (no object references or
+generated geometry), and stiffness presets: the four link shapes' tails, applied to a Part's overall tails or to
+selected links."""
 import hashlib
 import json
 import math
@@ -19,16 +21,12 @@ KINDS = (
     ("HEADER", "Header", props.HEADER_TYPE, "ree_gpuc_header"),
     ("CONFIG", "Config", props.CONFIG_TYPE, "ree_gpuc_config"),
     ("PART", "Part", props.PART_TYPE, "ree_gpuc_part"),
-    ("COLLISION", "Collision", collision.ROOT_TYPE, "ree_gpuc_capsule"),
-    ("WELD", "Weld", "RE_GPUC_WELD", "ree_gpuc_weld"),
-    ("FORCE", "Preview Force", props.FORCE_TYPE, "ree_gpuc_force"),
-    ("COLLIDER", "Preview Collider", props.COLLIDER_TYPE, "ree_gpuc_collider"),
 )
 GROUPS = {key: group for key, _, _, group in KINDS}
 TYPE_KIND = {typ: key for key, _, typ, _ in KINDS}
-PREVIEW = {"FORCE", "COLLIDER"}
+PREVIEW = set()
 PART_FIELDS = {"friction", "bounce", "stickiness", "surface_area", "plane_bits", "sphere_bits", "capsule_bits",
-               "obb_bits", "clsp_flags_a", "clsp_flags_b", "vertical", "ring", "shear", "bend"}
+               "obb_bits", "clsp_flags_a", "clsp_flags_b"}         # the link tails are stiffness presets
 # Blender does not own dynamic enum strings: keep every list, including earlier types', alive until unregister.
 _enum_cache = {}
 
@@ -86,18 +84,12 @@ def path_for(kind, game, name):
 
 def fields(kind, game):
     if game == re4.EXT:
-        return {"HEADER": {"max_velocity"}, "CONFIG": set(re4.CONFIG),
-                "PART": set(re4.PART) | {"vertical", "ring", "shear", "bend"}}.get(kind,
-                    {"k", "k2", "lo", "hi"} if kind == "WELD" else set())
+        return {"HEADER": {"max_velocity"}, "CONFIG": set(re4.CONFIG), "PART": set(re4.PART)}.get(kind, set())
     return {
         "HEADER": {f[0] for f in props.HEADER_FIELDS},
         "CONFIG": {f[0] for f in props.CONFIG_FIELDS} | {f[0] for f in props.CONFIG_UNKNOWNS}
                   | {"info_state", "translation_curve", "rotation_curve"},
         "PART": PART_FIELDS,
-        "COLLISION": {"offset_a", "radius_a", "offset_b", "radius_b"},
-        "WELD": {"k", "k2", "lo", "hi", "link_type"},
-        "FORCE": {"kind", "enabled", "accel", "lo", "hi", "period"},
-        "COLLIDER": {"kind", "radius", "length", "size", "plane_size"},
     }[kind]
 
 
@@ -107,8 +99,6 @@ def snapshot(obj, scene):
     kind, game = kind_of(obj), game_of(obj, scene)
     if kind is None or not fields(kind, game):
         raise ValueError("This object does not support parameter presets")
-    if kind == "COLLISION":
-        collision.sync(obj)
     data = ops._to_dict(getattr(obj, GROUPS[kind]))
     data = {k: v for k, v in data.items() if k in fields(kind, game)}
     for curve in ("translation_curve", "rotation_curve"):
@@ -214,7 +204,7 @@ def apply(data, objects, scene):
             for curve in ("translation_curve", "rotation_curve"):
                 getattr(obj.ree_gpuc_config, curve).active_key = 0
         sim.invalidate(obj)
-    if kind in {"HEADER", "CONFIG", "COLLISION", "FORCE", "COLLIDER", "WELD"}:
+    if kind in {"HEADER", "CONFIG"}:
         for obj in sim.parts(scene):
             sim.invalidate(obj)
     return len(targets)
@@ -336,6 +326,71 @@ class REE_GPUC_OT_open_preset_folder(bpy.types.Operator):
             self.report({"ERROR"}, str(e))
             return {"CANCELLED"}
         return {"FINISHED"}
+
+
+# --- stiffness presets: {"format": STIFFNESS_FORMAT, "version": 1, "tails": {shape: [k, k2, lo, hi]}} ----------
+STIFFNESS_FORMAT = "ree_gpuc_editor.stiffness"
+_stiffness_cache = {}
+
+
+def stiffness_directory():
+    return root_directory() / "stiffness"
+
+
+def stiffness_items(self, context):
+    """The built-in stiffness presets (``props.LINK_PRESETS``), then the saved ones."""
+    try:
+        names = tuple(sorted((p.stem for p in stiffness_directory().glob("*.json") if p.is_file()), key=str.casefold))
+    except OSError:
+        names = ()
+    if names not in _stiffness_cache:
+        items = [("NONE", "Choose a stiffness preset", "", 0)]
+        for k, (key, (label, desc, _)) in enumerate(props.LINK_PRESETS.items()):
+            items.append(("BUILTIN:" + key, label, desc, k + 1))
+        used = {x[3] for x in items}
+        for name in names:
+            number = int(hashlib.sha256(name.encode("utf-8")).hexdigest()[:7], 16) + 100
+            while number in used:
+                number += 1
+            used.add(number)
+            items.append(("USER:" + name, name, "Saved stiffness preset", number))
+        _stiffness_cache[names] = items
+    return _stiffness_cache[names]
+
+
+def stiffness_tails(choice) -> list:
+    """The preset's four tails (k, k2, lo, hi), in ``props.LINK_SHAPES`` order."""
+    if choice.startswith("BUILTIN:"):
+        return [tuple(t) for t in props.LINK_PRESETS[choice[8:]][2]]
+    if not choice.startswith("USER:"):
+        raise ValueError("Choose a stiffness preset")
+    path = stiffness_directory() / (valid_name(choice[5:]) + ".json")
+    with path.open(encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict) or data.get("format") != STIFFNESS_FORMAT or data.get("version") != VERSION:
+        raise ValueError("Unsupported stiffness preset format or version")
+    out = []
+    for name, _, _ in props.LINK_SHAPES:
+        tail = data.get("tails", {}).get(name)
+        if (not isinstance(tail, list) or len(tail) != 4
+                or not all(type(x) in (int, float) and math.isfinite(x) for x in tail)
+                or not (0 <= tail[0] <= 1 and 0 <= tail[1] <= 1 and 0 <= tail[2] <= 1 and 0 <= tail[3] <= props.HI_MAX)):
+            raise ValueError(f"Invalid {name} tail in the stiffness preset")
+        out.append(tuple(float(x) for x in tail))
+    return out
+
+
+def save_stiffness(name, tails, overwrite=False):
+    """Save four tails (``props.LINK_SHAPES`` order) as a stiffness preset; return its choice."""
+    name = valid_name(name)
+    path = stiffness_directory() / (name + ".json")
+    if path.exists() and not overwrite:
+        raise FileExistsError(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {"format": STIFFNESS_FORMAT, "version": VERSION, "name": name,
+            "tails": {n: [float(x) for x in t] for (n, _, _), t in zip(props.LINK_SHAPES, tails)}}
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return "USER:" + name
 
 
 CLASSES = (REE_GPUC_PresetSettings, REE_GPUC_OT_save_preset, REE_GPUC_OT_apply_preset, REE_GPUC_OT_open_preset_folder)
