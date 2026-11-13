@@ -24,7 +24,7 @@
 - **Attach to Bones on more game files** — the grid is found from the Part's quads whatever its particles' order, with slits and faces left out, so RE9 skirts, dresses and coats and many Wilds files attach; the bones are found by where they are, also in files that skin each bone halfway down it, and the grid may have chains of different lengths, side columns and its own number of particles between each two bones. The file's skin and quad splits stay while the Part keeps its file's density.
 - **Anchor and hem rows** — a Part made from bones can have pinned rows above its top bones and rows past its chains' ends, as the game's files do; they come back when the file is imported again.
 - **Project onto Mesh** — an option when creating or regenerating a Part from bones: its particles move onto the mid-surface of the cloth mesh skinned to its bones, and it still regenerates.
-- **Fit to Mesh** — moves a cloth's particles onto another mesh with the same faces, such as the same mesh sculpted or converted for another character, and onto its armature and game.
+- **Fit to Mesh** — moves a cloth's particles onto another mesh, such as the same mesh sculpted or converted for another character, and onto its armature and game; meshes with other faces map by their UVs, and particles without a paired mesh go as the meshes and bones around them moved.
 - **Driven bones moved off an imported file's binds** — bound again at their rest on export, instead of an error in Check.
 - **Export in a pose** — particles are written where the current pose carries them, as RE Mesh Editor writes the mesh, so a cloth exported with its posed mesh still fits it.
 - **Imported cloths in another game** — a Wilds, RE9 or Onimusha file kept as imported exports for the other two.
