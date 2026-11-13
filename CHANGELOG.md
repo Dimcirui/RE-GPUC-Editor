@@ -47,6 +47,7 @@
 - **Onimusha files that drive mesh vertices** — now import as they are instead of being refused.
 - **Attach to Bones** — says plainly when a part is no bone grid.
 - **Draw Through** — particles and links can now be drawn through other meshes but not through the cloth's own near side (the default), so a sleeve no longer shows its far side and a bend link shows on the concave side only; Everything and Nothing remain.
+- **Preview Simulation** — hidden in Edit Mode unless it is running.
 
 ### Fixed
 - **Finding the exported `.mesh`** — the export also looks for the `.mesh` named after the Mesh Collection, passes over a same-name one of another skeleton, says the folder and names it looked for, and says when the `.mesh` is another game's.

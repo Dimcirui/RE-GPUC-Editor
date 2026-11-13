@@ -205,6 +205,11 @@ class REE_GPUC_PT_particles(_Sidebar, bpy.types.Panel):
 class REE_GPUC_PT_simulate(_Sidebar, bpy.types.Panel):
     bl_label = "GPUC: Preview Simulation"
 
+    @classmethod
+    def poll(cls, context):
+        from . import sim
+        return context.mode != "EDIT_MESH" or sim.running()   # still shown while running, to stop it
+
     def draw(self, context):
         from . import sim
         layout = self.layout
