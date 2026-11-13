@@ -199,7 +199,15 @@ def _load_locked(c) -> dict:
     return out
 
 
+def touched(obj) -> None:
+    """Mark a Part changed for Blender's undo, which reloads only what was marked since its last step: the add-on
+    writes Parts from handlers too (after a step was pushed), and an unmarked object would keep the new data while
+    its mesh goes back."""
+    obj.update_tag(refresh={"OBJECT"})
+
+
 def store(obj, data: dict) -> None:
+    touched(obj)
     fl = lambda a: [float(x) for x in f32(a).ravel()]        # noqa: E731
     if data.get("locked"):
         ints = lambda a: [int(x) for x in np.asarray(a).ravel()]  # noqa: E731
@@ -276,8 +284,17 @@ def _bake(obj, g) -> None:
     mine = np.zeros(len(links(g)), bool)
     for idx, _ in own.values():
         mine[idx] = True
+    ln, tails = links(g), link_tails(obj, g)
+    drop, adds = link_edits(obj, g)
+    keep = np.setdiff1d(np.arange(len(ln)), sorted(drop))
+    ln, tails, mine = ln[keep], tails[keep], mine[keep]
+    if adds:
+        more = np.array(adds, np.float64).reshape(-1, 9)
+        ln = np.vstack([ln, more[:, :4].astype(np.int64)])
+        tails = np.vstack([tails, more[:, 5:].astype(np.float32)])
+        mine = np.append(mine, more[:, 4] > 0)
     store(obj, {"locked": True, "count": count(g), "tile": g["tile"], "co": co, "tris": tris, "tri_uv": tri_uv,
-                "links": links(g), "tails": link_tails(obj, g), "own": mine, "nodes": nodes, "skin": skin,
+                "links": ln, "tails": tails, "own": mine, "nodes": nodes, "skin": skin,
                 "skin_w": skin_w, "normal": topology.normals(co, tris), "faces": faces, "face_uv": face_uv,
                 "src": src, "tri_flags": gpuc_build.tangent_flags(faces, corners), "editable": True,
                 **{n: g[n] for n in FIELD_NAMES}})
@@ -408,6 +425,43 @@ EDITED_KEY = "ree_gpuc_tails_edited"
 # {"grid": [rows, cols, closed, diagonal bend], shape: {"links": [index into links()], "tails": [k, k2, lo, hi, ...]}};
 # setting a shape's tail drops its entry, a grid of other links ignores them all
 OVERRIDES_KEY = "ree_gpuc_link_overrides"
+# on a Part made from bones: links removed from its grid and added to it, while the grid is the same:
+# {"grid": ``_grid_key``, "drop": [index into links() of the grid], "add": [a, b, type, shape, own, k, k2, lo, hi, ...]};
+# its mesh holds the grid's links less the dropped ones, then the added ones (``link_sources``)
+LINK_EDITS_KEY = "ree_gpuc_link_edits"
+
+
+def link_edits(obj, g) -> tuple:
+    """(grid links removed, links added as [a, b, type, shape, own, k, k2, lo, hi]) of the Part's current grid;
+    edits made on another grid are dropped, with a notice."""
+    c = obj.get(LINK_EDITS_KEY)
+    if c is None:
+        return set(), []
+    if list(c.get("grid", ())) != _grid_key(g):
+        del obj[LINK_EDITS_KEY]
+        obj["ree_gpuc_notice"] = "Links added or removed by hand were dropped: the Part's grid changed"
+        return set(), []
+    flat = list(c.get("add", ()))
+    return {int(i) for i in c.get("drop", ())}, [flat[k:k + 9] for k in range(0, len(flat), 9)]
+
+
+def link_sources(obj, g) -> list:
+    """For each link of a Part that follows its bone grid, as its mesh holds them: ("grid", index into the grid's
+    links) or ("add", index into its added links)."""
+    drop, adds = link_edits(obj, g)
+    return ([("grid", i) for i in range(len(links(g))) if i not in drop]
+            + [("add", j) for j in range(len(adds))])
+
+
+def set_link_edits(obj, g, drop, adds) -> None:
+    """Keep the grid's removed and added links (``LINK_EDITS_KEY``) and bake the Part again."""
+    touched(obj)
+    if drop or adds:
+        obj[LINK_EDITS_KEY] = {"grid": _grid_key(g), "drop": sorted(int(i) for i in drop),
+                               "add": [float(x) for row in adds for x in row]}
+    elif LINK_EDITS_KEY in obj.keys():
+        del obj[LINK_EDITS_KEY]
+    rebake(obj)
 
 
 def _grid_key(d: dict) -> list:
@@ -426,6 +480,7 @@ def set_overrides(obj, d: dict, tails, default) -> int:
         own = np.where((ln[:, 3] == k) & (np.abs(tails - default[k]).max(axis=1) > 1e-6))[0]
         if len(own):
             out[n] = {"links": own.tolist(), "tails": tails[own].ravel().tolist()}
+    touched(obj)
     if len(out) > 1:
         obj[OVERRIDES_KEY] = out
     elif OVERRIDES_KEY in obj.keys():
@@ -482,16 +537,28 @@ def follow(obj, idx) -> None:
 
 def _store_own(obj, d) -> None:
     store(obj, d)
-    if d["attached"]:                                  # the grid's own links, for the next bake
-        ln, out = links(d), {"grid": _grid_key(recipe(obj))}
+    if d["attached"]:                                  # the grid's own links and the added ones, for the next bake
+        g = recipe(obj)
+        gl, out = links(g), {"grid": _grid_key(g)}
+        drop, adds = link_edits(obj, g)
+        own = np.zeros(len(gl), bool)
+        tails = np.zeros((len(gl), 4), np.float32)
+        for (kind, i), mine, tail in zip(link_sources(obj, g), d["own"], d["tails"]):
+            if kind == "grid":
+                own[i], tails[i] = mine, tail
+            else:
+                adds[i] = adds[i][:4] + [float(mine)] + [float(x) for x in tail]
         for k, n in enumerate(s.lower() for s in grid.SHAPES):
-            mine = np.flatnonzero((ln[:, 3] == k) & d["own"])
+            mine = np.flatnonzero((gl[:, 3] == k) & own)
             if len(mine):
-                out[n] = {"links": mine.tolist(), "tails": d["tails"][mine].ravel().tolist()}
+                out[n] = {"links": mine.tolist(), "tails": tails[mine].ravel().tolist()}
         if len(out) > 1:
             obj[OVERRIDES_KEY] = out
         elif OVERRIDES_KEY in obj.keys():
             del obj[OVERRIDES_KEY]
+        if adds:
+            obj[LINK_EDITS_KEY] = {"grid": _grid_key(g), "drop": sorted(drop),
+                                   "add": [float(x) for row in adds for x in row]}
 
 
 def particle_uv(d: dict) -> np.ndarray:
@@ -845,6 +912,7 @@ def set_positions(obj, co) -> None:
     validate_geometry(co, d["tris"])
     from .modules import topology
     r, c = obj[RECIPE_KEY], obj[KEY]
+    touched(obj)
     r["rest_offset"] = (co - f32(r["base_co"]).reshape(-1, 3)).ravel().tolist()
     r["co"] = c["co"] = co.ravel().tolist()     # the faces keep the winding they were made with
     c["normal"] = topology.normals(co, d["tris"]).ravel().tolist()
@@ -948,6 +1016,25 @@ def _on_depsgraph(scene, depsgraph):
 
 
 @bpy.app.handlers.persistent
+def _after_history(*_):
+    """After an undo or redo, a Part in Object Mode whose mesh lost step with its data (one restored without the
+    other) gets its mesh again from the data, rather than having the difference taken as an edit."""
+    global _busy
+    _busy = True
+    try:
+        for obj in bpy.data.objects:
+            if obj.get("TYPE") != "RE_GPUC_PART" or not has(obj) or obj.mode != "OBJECT" or obj.data is None:
+                continue
+            me, c = obj.data, obj[KEY]
+            co = np.empty(3 * len(me.vertices), np.float32)
+            me.vertices.foreach_get("co", co)
+            if len(co) != len(c["co"]) or not np.allclose(co, f32(c["co"]), atol=1e-6):
+                build_mesh(obj)
+    finally:
+        _busy = False
+
+
+@bpy.app.handlers.persistent
 def _initialize_mapping(*_):
     # Called after registration (not inside Blender's restricted add-on context), and after file load.
     for obj in bpy.data.objects:
@@ -961,6 +1048,8 @@ def _initialize_mapping(*_):
 
 def register():
     bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph)
+    for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+        handlers.append(_after_history)
     bpy.app.handlers.load_post.append(_initialize_mapping)
     bpy.app.timers.register(_initialize_mapping, first_interval=0.0)
 
@@ -972,3 +1061,6 @@ def unregister():
         bpy.app.handlers.load_post.remove(_initialize_mapping)
     if _on_depsgraph in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.remove(_on_depsgraph)
+    for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post):
+        if _after_history in handlers:
+            handlers.remove(_after_history)

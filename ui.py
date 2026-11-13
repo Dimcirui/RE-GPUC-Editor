@@ -700,8 +700,9 @@ class REE_GPUC_PT_links(_Sidebar, bpy.types.Panel):
         sub.operator("ree_gpuc.link_remove", text=f"Remove {len(idx)} Links", icon="X")
         sub.operator_menu_enum("ree_gpuc.link_add", "shape", text="Add Link Between Two", icon="ADD")
         if not sub.enabled:
-            layout.label(text="Edit as Mesh to add or remove links" if d["attached"]
-                         else "Its file's structure stays: tails only", icon="INFO")
+            layout.label(text="Its file's structure stays: tails only", icon="INFO")
+        elif d["attached"] and obj.get(canon.LINK_EDITS_KEY) is not None:
+            layout.label(text="Links added or removed last until the grid changes", icon="INFO")
 
 
 class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):

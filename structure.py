@@ -353,8 +353,10 @@ def attach_to_bones(obj, force: bool = False) -> str:
     old_file = old
     old = _reordered(old, order, to)
     p = obj.ree_gpuc_part
-    keys = (canon.KEY, canon.EDITED_KEY, canon.OVERRIDES_KEY, canon.MAPPING_KEY)
+    keys = (canon.KEY, canon.EDITED_KEY, canon.OVERRIDES_KEY, canon.MAPPING_KEY, canon.LINK_EDITS_KEY)
     saved = {k: obj[k].to_dict() if hasattr(obj[k], "to_dict") else list(obj[k]) for k in keys if k in obj.keys()}
+    if canon.LINK_EDITS_KEY in obj.keys():               # the grid takes the file's links
+        del obj[canon.LINK_EDITS_KEY]
     grid_props = ("rows", "cols", "closed", "sub_rows", "sub_cols")
     settings = {"other_diagonal": p.other_diagonal, "diagonal_bend": p.diagonal_bend, "link_preset": p.link_preset,
                 "root_joint": p.root_joint, **{k: getattr(p, k) for k in grid_props}}

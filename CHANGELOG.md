@@ -14,7 +14,7 @@
 - **Collision planes and spheres for Wilds, RE9 and Onimusha** — a file's own planes and spheres import as objects and export to their own sections, chosen by the Part's Plane and Sphere Bits; Collision From Bones makes planes for every game.
 - **Triangle tangent flags** — on an editable imported Part's faces, as attributes you can read and set; new triangles whose UVs span no area get the flag the game's files give them.
 - **Attach to Bones** — an imported Part found to be a grid of bone chains follows its bones, and stays its file's Part.
-- **Editing links** — in Edit Mode the links between the selected particles (of the shapes ticked in GPUC: Links) can get a stiffness of their own or a preset's, follow the overall stiffness, be removed, or be added between two particles, with undo.
+- **Editing links** — in Edit Mode the links between the selected particles (of the shapes ticked in GPUC: Links) can get a stiffness of their own or a preset's, follow the overall stiffness, be removed, or be added between two particles, with undo. On a Part that follows its bones the changes last while its grid stays the same, also when the bones move.
 - **Stiffness presets** — the four link shapes' stiffness saved and applied to a Part's overall stiffness or to selected links; the built-in ones are listed with them.
 - **Named problems** — a failed export, import or tool names its problem and shows what it means and how to fix it; the Part panel shows the fix under a Part's problem. General Tools groups its tools under Parts and Mesh.
 - **Anchors** — particles remember where they sit on the mesh; Check and the export say when the mesh moved under them, and Refit to Mesh moves them with it.
@@ -54,6 +54,7 @@
 - **Preview Simulation** — hidden in Edit Mode unless it is running.
 
 ### Fixed
+- **Undo after bones moved** — undoing a bone move no longer leaves a Part's particles off their bones: the Part's data goes back with its mesh, and a mesh that comes back alone is made again from the data instead of being saved as particle offsets.
 - **Finding the exported `.mesh`** — the export also looks for the `.mesh` named after the Mesh Collection, passes over a same-name one of another skeleton, says the folder and names it looked for, and says when the `.mesh` is another game's.
 - **Select Part Bones** — no longer fails with an error when the active Part does not follow its bones; it then selects the Part's skin bones.
 - **Too many skin bones for RE9** — the export says how many bones skin the cloth and that RE9 files take 256, instead of "skin index out of range".

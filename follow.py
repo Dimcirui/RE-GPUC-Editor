@@ -26,6 +26,7 @@ def record(obj) -> None:
             del obj[REST_KEY]
         return
     mats = _rest(arm, canon.load(obj)["nodes"])
+    canon.touched(obj)
     obj[REST_KEY] = {"names": list(mats), "mats": [float(x) for m in mats.values() for x in m.ravel()]}
 
 

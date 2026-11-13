@@ -7,8 +7,9 @@ Maintenance constraints:
 - The links live in the Part's canonical data (an object property), which Edit Mode's undo does not hold. Each
   edit numbers its step on the edit mesh (``STEP_LAYER``, which that undo does hold) and keeps the links of every
   step it made here (``_steps``); after an undo or redo the links of the step the mesh shows are put back.
-- A Part that follows its bone grid takes its links from the grid: its tails can be its links' own (kept as the
-  grid's overrides), but links are added and removed only once it is edited as a mesh."""
+- A Part that follows its bone grid takes its links from the grid: its links' own tails are kept as the grid's
+  overrides, and the links removed and added as its link edits (``canon.LINK_EDITS_KEY``), both while the grid
+  stays the same (bones may move); another grid (density, shape, diagonal settings) drops them."""
 import bmesh
 import bpy
 import numpy as np
@@ -60,10 +61,7 @@ def picked(obj, d, scene):
 def why_not(obj, d, structure: bool = False) -> str:
     """Why the links of the Part in Edit Mode cannot be edited ("" when they can); ``structure``: links added or
     removed."""
-    if structure and d["attached"]:
-        return (f"{obj.name} follows its bone grid, whose links it takes: Edit as Mesh to add or remove links "
-                f"(its tails can be set as it is)")
-    if structure and not d.get("editable"):
+    if structure and not d.get("editable") and not d["attached"]:
         return f"{obj.name} keeps its file's structure as it is: its links can only take other tails"
     if len(selected(obj)) != canon.count(d):
         return f"particles of {obj.name} were added or removed: leave Edit Mode once, then edit its links"
@@ -74,23 +72,24 @@ def why_not(obj, d, structure: bool = False) -> str:
 
 def _state(obj):
     c = obj[canon.KEY]
-    over = obj.get(canon.OVERRIDES_KEY)
-    return (list(c["links"]), list(c["tails"]), list(c["own"]), bool(c.get("edited")),
-            over.to_dict() if over is not None else None)
+    extra = tuple(obj[k].to_dict() if k in obj.keys() else None for k in (canon.OVERRIDES_KEY, canon.LINK_EDITS_KEY))
+    return (list(c["links"]), list(c["tails"]), list(c["own"]), bool(c.get("edited")), extra)
 
 
 def _put(obj, state) -> None:
-    links, tails, own, edited, over = state
+    links, tails, own, edited, extra = state
     c = obj[canon.KEY]
     c["links"], c["tails"], c["own"] = links, tails, own
     if edited:
         c["edited"] = 1
     elif "edited" in c:
         del c["edited"]
-    if over is not None:
-        obj[canon.OVERRIDES_KEY] = over
-    elif canon.OVERRIDES_KEY in obj.keys():
-        del obj[canon.OVERRIDES_KEY]
+    for k, v in zip((canon.OVERRIDES_KEY, canon.LINK_EDITS_KEY), extra):
+        if v is not None:
+            obj[k] = v
+        elif k in obj.keys():
+            del obj[k]
+    canon.touched(obj)
 
 
 def _layer(bm):
@@ -257,8 +256,16 @@ class REE_GPUC_OT_link_remove(_EditOp, bpy.types.Operator):
         if got is None:
             return {"CANCELLED"}
         obj, d, idx = got
-        keep = np.setdiff1d(np.arange(len(d["links"])), idx)
-        _store_links(obj, d, d["links"][keep], d["tails"][keep], d["own"][keep])
+        if d["attached"]:                              # off the grid's links, or out of the added ones
+            g = canon.recipe(obj)
+            drop, adds = canon.link_edits(obj, g)
+            src = canon.link_sources(obj, g)
+            gone = {src[i][1] for i in idx if src[i][0] == "add"}
+            drop |= {src[i][1] for i in idx if src[i][0] == "grid"}
+            canon.set_link_edits(obj, g, drop, [a for j, a in enumerate(adds) if j not in gone])
+        else:
+            keep = np.setdiff1d(np.arange(len(d["links"])), idx)
+            _store_links(obj, d, d["links"][keep], d["tails"][keep], d["own"][keep])
         finish(obj)
         _redraw(context)
         self.report({"INFO"}, f"Removed {len(idx)} links")
@@ -287,8 +294,13 @@ class REE_GPUC_OT_link_add(_EditOp, bpy.types.Operator):
         if ((np.minimum(ln[:, 0], ln[:, 1]) == a) & (np.maximum(ln[:, 0], ln[:, 1]) == b) & (ln[:, 2] == t)).any():
             return refused(self, f"particles {a} and {b} have a {props.LINK_SHAPES[shape][1]} link already")
         tail = getattr(obj.ree_gpuc_part, props.LINK_SHAPES[shape][0]).tail()
-        _store_links(obj, d, np.vstack([ln, [b, a, t, shape]]), np.vstack([d["tails"], tail]),
-                     np.append(d["own"], False))
+        if d["attached"]:
+            g = canon.recipe(obj)
+            drop, adds = canon.link_edits(obj, g)
+            canon.set_link_edits(obj, g, drop, adds + [[b, a, t, shape, 0.0, *tail]])
+        else:
+            _store_links(obj, d, np.vstack([ln, [b, a, t, shape]]), np.vstack([d["tails"], tail]),
+                         np.append(d["own"], False))
         finish(obj)
         _redraw(context)
         self.report({"INFO"}, f"Added a {props.LINK_SHAPES[shape][1]} link")

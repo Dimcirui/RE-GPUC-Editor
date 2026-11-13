@@ -139,11 +139,6 @@ TABLE = [
      "are none.",
      "Import the character's .mesh with RE Mesh Editor, with the cloth on its armature, and check that the cloth "
      "mesh is weighted to these bones."),
-    ("BoneGridLinks", "The links come from the bone grid",
-     [r"whose links it takes"],
-     "A Part that follows its bone grid takes its links from the grid, so links cannot be added or removed; their "
-     "stiffness can be set.",
-     "Edit as Mesh (Part panel) to add or remove links; the Part then stops following its bone grid."),
     ("LinksAfterStructureEdit", "Particles were added or removed",
      [r"leave Edit Mode once, then edit its links"],
      "The links are numbered by the particles as they were when Edit Mode was entered.",
