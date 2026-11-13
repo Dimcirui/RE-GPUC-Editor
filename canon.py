@@ -188,6 +188,7 @@ def _load_locked(c) -> dict:
            "normal": f32(c["normal"]).reshape(-1, 3), "faces": None, "face_uv": None,
            "src": np.asarray(c["src"], np.int64) if "src" in c else np.arange(n),
            "editable": bool(c.get("editable")), "edited": bool(c.get("edited")),
+           "skin_edited": bool(c.get("skin_edited")),
            "own": np.asarray(c["own"], bool) if "own" in c and len(c["own"]) == len(links) else None,
            **{f: f32(c[f]) if f in c else np.full(n, DEFAULTS[f], np.float32) for f in FIELD_NAMES}}
     if "faces" in c:
@@ -228,7 +229,7 @@ def store(obj, data: dict) -> None:
             c["src"] = ints(data.get("src", np.arange(int(data["count"]))))
             if data.get("tri_flags") is not None:
                 c["tri_flags"] = ints(data["tri_flags"])
-        for flag in ("editable", "edited"):
+        for flag in ("editable", "edited", "skin_edited"):
             if data.get(flag):
                 c[flag] = 1
         return
@@ -393,6 +394,21 @@ def faces(d: dict) -> list:
 def editable(d: dict) -> bool:
     """Whether a change to the Part's mesh structure is taken as its new structure (``structure.adopt``)."""
     return d["locked"] and d.get("editable", False) and d.get("faces") is not None and not d.get("attached")
+
+
+RE4_INDEX_KEY = "ree_gpuc_re4_index"     # on an RE4 file's Part: its part index (set by ``fileio``)
+
+
+def skin_shown(obj, d: dict) -> bool:
+    """Whether the Part's skin is its mesh's bone groups, deforming by ``SKIN_MODIFIER``: an imported Part not
+    attached to bones (RE4's keep their file's skin unshown). A Part that is not ``editable`` takes painted
+    weights as its skin alone (``structure.adopt_skin``)."""
+    return d["locked"] and not d.get("attached") and RE4_INDEX_KEY not in obj.keys()
+
+
+def skin_part(obj) -> bool:
+    """``skin_shown`` without loading the Part (the panel asks on every redraw)."""
+    return locked(obj) and RE4_INDEX_KEY not in obj.keys()
 
 
 def face_uvs(d: dict) -> np.ndarray:
@@ -684,8 +700,8 @@ def write_groups(obj, d: dict | None = None) -> None:
 
 def build_mesh(obj) -> None:
     """Rebuilds the mesh (rest pose, armature space), grid UV, attributes and value groups from the canonical
-    data. Bone groups are written for an editable Part only, which keeps its Armature modifier (``keep_modifier``);
-    any other Part loses both and stays in the rest pose."""
+    data. Bone groups are written for a Part whose skin is shown (``skin_shown``), which keeps its Armature
+    modifier (``keep_modifier``); any other Part loses both and stays in the rest pose."""
     d = load(obj)
     me = obj.data
     me.clear_geometry()
@@ -713,6 +729,7 @@ def build_mesh(obj) -> None:
         obj.vertex_groups.remove(g)
     if editable(d):
         write_tangent_flags(obj, d)
+    if skin_shown(obj, d):
         dense = skin_dense(d)
         for k, name in enumerate(d["nodes"]):
             g = obj.vertex_groups.new(name=name)
@@ -741,15 +758,15 @@ def driven_names(obj, d) -> list:
 
 
 def skin_armature(obj):
-    """The armature an editable Part's skin groups deform by (``SKIN_MODIFIER``), None without one."""
+    """The armature a Part's skin groups deform by (``SKIN_MODIFIER``), None without one."""
     arm = obj.ree_gpuc_part.armature
     return arm if arm is not None and arm.type == "ARMATURE" else None
 
 
 def keep_modifier(obj, d) -> None:
-    """Give an editable Part one Armature modifier on its armature, enabled in the viewport, which keeps Blender's
-    normalizing to the bone groups and leaves the value groups out; remove any other Armature modifier."""
-    arm = skin_armature(obj) if editable(d) else None
+    """Give a Part whose skin is shown one Armature modifier on its armature, enabled in the viewport, which keeps
+    Blender's normalizing to the bone groups and leaves the value groups out; remove any other Armature modifier."""
+    arm = skin_armature(obj) if skin_shown(obj, d) else None
     for mod in [m for m in obj.modifiers if m.type == "ARMATURE" and (arm is None or m.name != SKIN_MODIFIER)]:
         obj.modifiers.remove(mod)
     if arm is None:
@@ -862,14 +879,14 @@ def mismatch(obj, positions=True) -> str:
     uv.data.foreach_get("uv", got)
     if not np.allclose(got, want, atol=1e-6):
         return "grid UV moved"
-    if not editable(d) and any(m.type == "ARMATURE" for m in obj.modifiers):
+    if not skin_shown(obj, d) and any(m.type == "ARMATURE" for m in obj.modifiers):
         return "made by an older version"
     for f, w in group_weights(obj, n).items():
         if w is None:
             return f"group {group_name(f)} removed"
         if np.isnan(w).any():
             return f"{int(np.isnan(w).sum())} particles left group {group_name(f)}"
-    if editable(d):
+    if skin_shown(obj, d):
         names, w = skin_groups(obj)
         have = skin_dense(d)
         mine = np.zeros((n, len(names)), np.float32)
@@ -879,8 +896,11 @@ def mismatch(obj, positions=True) -> str:
             elif have[:, k].any():
                 return f"skin group {name} removed"
         if not np.allclose(mine, w, atol=0.5 / 255):
-            return "skin weights changed"
+            return SKIN_CHANGED
     return ""
+
+
+SKIN_CHANGED = "skin weights changed"       # ``mismatch``: the last difference it finds, the structure the same
 
 
 def sync(obj) -> None:
@@ -890,8 +910,9 @@ def sync(obj) -> None:
     for f, v in values(obj, d).items():
         if not np.array_equal(v, d[f]):
             c[f] = [float(x) for x in v]
-    if editable(d):
+    if skin_shown(obj, d):
         keep_modifier(obj, d)
+    if editable(d):
         flags = read_tangent_flags(obj, d)
         if flags is None:
             write_tangent_flags(obj, d)
@@ -967,6 +988,14 @@ def restore(obj) -> str:
             except ValueError as e:
                 build_mesh(obj)
                 obj["ree_gpuc_notice"] = f"Restored the particle mesh: {e}"
+        elif why == SKIN_CHANGED and skin_shown(obj, load(obj)):
+            from . import structure
+            try:
+                obj["ree_gpuc_notice"] = structure.adopt_skin(obj)
+                why = ""
+            except ValueError as e:
+                build_mesh(obj)
+                obj["ree_gpuc_notice"] = f"Restored the skin weights: {e}"
         elif why:
             build_mesh(obj)
             obj["ree_gpuc_notice"] = f"Restored the particle mesh ({why}); only valid rest-position edits are accepted"
@@ -983,7 +1012,8 @@ def _same_shape(obj) -> bool:
     me, c = obj.data, obj[KEY]
     co = np.empty(3 * len(me.vertices), np.float32)
     me.vertices.foreach_get("co", co)
-    return len(co) == len(c["co"]) and np.array_equal(co, f32(c["co"])) and len(me.loops) == len(c["faces"])
+    corners = len(c["faces"]) if "faces" in c else len(c["tris"])       # a Part kept as triangles has no faces
+    return len(co) == len(c["co"]) and np.array_equal(co, f32(c["co"])) and len(me.loops) == corners
 
 
 @bpy.app.handlers.persistent
@@ -1041,8 +1071,12 @@ def _initialize_mapping(*_):
         if has(obj) and MAPPING_KEY not in obj:
             fit_ranges(obj, load(obj))
             write_groups(obj)
-        if locked(obj) and editable_part(obj):
-            keep_modifier(obj, load(obj))
+        if locked(obj) and not attached(obj):
+            d = load(obj)
+            if skin_shown(obj, d) and not skin_group_names(obj) and obj.mode == "OBJECT":
+                build_mesh(obj)                       # a Part from before its skin was shown
+            else:
+                keep_modifier(obj, d)
     return None
 
 

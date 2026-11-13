@@ -47,13 +47,15 @@
 - **Export needs the exported `.mesh`** — a cloth made from bones, and From Mesh joints, are checked against it: Mesh File, else the same-name `.mesh` beside the `.gpuc`, else the one other `.mesh` there with the cloth's skeleton, whose name the `.gpuc` then takes. Without one the export is refused unless Force Export is on.
 - **RE4 Header, Config and Part values** — named by what they may do; their tooltips say their effect is unknown. A new RE4 Config starts at values that move the cloth.
 - **Onimusha files that drive mesh vertices** — now import as they are instead of being refused.
-- **Attach to Bones** — says plainly when a part is no bone grid.
+- **Attach to Bones** — optional: a part that is no bone grid is listed in the import's info messages, without a warning popup.
 - **Link stiffness** — each link keeps a stiffness of its own or follows its shape's overall one; an imported file's links keep theirs when the overall stiffness changes, until Apply to All. The Part panel shows it as Overall Stiffness Settings.
 - **Presets** — GPUC: Presets keeps Header, Config and Part presets; Part presets no longer hold the link stiffness, and Collision, Weld and preview presets are gone.
 - **Draw Through** — particles and links can now be drawn through other meshes but not through the cloth's own near side (the default), so a sleeve no longer shows its far side and a bend link shows on the concave side only; Everything and Nothing remain.
 - **Preview Simulation** — hidden in Edit Mode unless it is running.
 
 ### Fixed
+- **Skin of Parts that keep their file's structure** — such a Part now shows its skin as bone groups and follows the pose; painted weights are written into the file.
+- **Parts with a quad wound the other way** — they are found as grids and attach to their bones.
 - **Undo after bones moved** — undoing a bone move no longer leaves a Part's particles off their bones: the Part's data goes back with its mesh, and a mesh that comes back alone is made again from the data instead of being saved as particle offsets.
 - **Finding the exported `.mesh`** — the export also looks for the `.mesh` named after the Mesh Collection, passes over a same-name one of another skeleton, says the folder and names it looked for, and says when the `.mesh` is another game's.
 - **Select Part Bones** — no longer fails with an error when the active Part does not follow its bones; it then selects the Part's skin bones.

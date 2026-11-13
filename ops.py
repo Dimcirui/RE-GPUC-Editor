@@ -139,11 +139,9 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
             bpy.ops.object.mode_set(mode="OBJECT")
         mode = self.import_mode
         attach = mode == "NEW" and self.attach_bones
-        fell_back = []                                         # (file, why) no Part attached to bones
         if attach and mesh is None:
             attach = False
-            fell_back.append(("", "no mesh collection (attaching parts needs the mesh's bones)"))
-            self.report({"WARNING"}, "No mesh collection: no part attached to bones (that needs the mesh's bones)")
+            self.report({"INFO"}, "No mesh collection: no Part attached to bones (that needs the mesh's bones)")
         done = []
         for path in paths:
             name = os.path.basename(path)
@@ -166,34 +164,13 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
             _settings(context).target = coll
             done.append(name)
             for note in notes:
-                self.report({"WARNING"}, f"{name}: {note}" if len(paths) > 1 else note)
-                if note.startswith(fileio.NOT_ATTACHED):       # note format set by fileio.import_attach
-                    fell_back.append((name, note[len(fileio.NOT_ATTACHED):note.rfind("): ")]))
-        if fell_back and done:
-            _fell_back_popup(context, fell_back)
+                optional = note.startswith((fileio.NOT_ATTACHED, fileio.NOT_ATTACHED_PART))  # attaching is optional
+                self.report({"INFO"} if optional else {"WARNING"}, f"{name}: {note}" if len(paths) > 1 else note)
         if not done:
             return {"CANCELLED"}
         context.scene["REEGpucLastImportedVersion"] = int(fileio.gp.ext_of_path(paths[-1])[1:])
         self.report({"INFO"}, f"Imported {', '.join(done)} ({dict((m[0], m[1]) for m in IMPORT_MODES)[mode]})")
         return {"FINISHED"}
-
-
-def _fell_back_popup(context, fell_back) -> None:
-    """List in a popup the files none of whose parts attached to bones; does nothing in background mode."""
-    if bpy.app.background:
-        return
-    import textwrap
-
-    def draw(menu, _context):
-        col = menu.layout.column()
-        for name, why in fell_back:
-            if name:
-                col.label(text=name, icon="FILE")
-            for k, line in enumerate(textwrap.wrap(why, 90)):
-                col.label(text=line, icon="BLANK1" if k or name else "INFO")
-        col.separator()
-        col.label(text="Their Parts stay as in the file: edit values, or particles and faces in Edit Mode")
-    context.window_manager.popup_menu(draw, title="Not attached to bones", icon="ERROR")
 
 
 class REE_GPUC_FH_import(bpy.types.FileHandler):
@@ -1607,7 +1584,7 @@ class REE_GPUC_OT_normalize_skin(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         obj = context.active_object
-        return props.is_part(obj) and canon.editable_part(obj) and obj.mode in {"OBJECT", "WEIGHT_PAINT"}
+        return props.is_part(obj) and canon.skin_part(obj) and obj.mode in {"OBJECT", "WEIGHT_PAINT"}
 
     def execute(self, context):
         from . import structure

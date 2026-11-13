@@ -139,6 +139,11 @@ TABLE = [
      "are none.",
      "Import the character's .mesh with RE Mesh Editor, with the cloth on its armature, and check that the cloth "
      "mesh is weighted to these bones."),
+    ("SkinBoneNotWritten", "A skin bone cannot be written into the file",
+     [r"its skin bone .* is no bone of", r"skin bones, no room for"],
+     "A Part whose particles and faces stay its file's writes its painted skin into the file, which names each "
+     "skin bone by its place in the mesh's skeleton.",
+     "Paint the weights on bones of the cloth's armature (the mesh's skeleton), or move them to fewer bones."),
     ("LinksAfterStructureEdit", "Particles were added or removed",
      [r"leave Edit Mode once, then edit its links"],
      "The links are numbered by the particles as they were when Edit Mode was entered.",

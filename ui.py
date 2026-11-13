@@ -736,6 +736,10 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
             layout.operator("ree_gpuc.follow_bones", icon="BONE_DATA")
         if canon.editable_part(obj):
             _skin_rows(layout, obj)
+        elif canon.skin_part(obj):
+            layout.label(text="As in its file: values and skin weights can be edited, not its particles or faces",
+                         icon="LOCKED")
+            _skin_rows(layout, obj)
         elif canon.locked(obj):
             layout.label(text="As in its file: values can be edited, not its particles or faces",
                          icon="LOCKED")

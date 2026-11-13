@@ -158,11 +158,10 @@ def normals(co, tris) -> np.ndarray:
 
 
 def unfold(faces) -> tuple:
-    """Lay quads out on integer cells by walking them across their shared edges with one winding, not by particle
-    index. Returns (each particle's (x, y), how often each offset was met where the walk reached a particle it had
-    placed elsewhere): a ring meets one offset, its circumference, both ways; quads the walk cannot reach from the
-    first are not placed."""
-    turn = lambda d: (-d[1], d[0])  # noqa: E731
+    """Lay quads out on integer cells by walking them across their shared edges, not by particle index; a quad
+    wound against its neighbour is walked turning the other way. Returns (each particle's (x, y), how often each
+    offset was met where the walk reached a particle it had placed elsewhere): a ring meets one offset, its
+    circumference, both ways; quads the walk cannot reach from the first are not placed."""
     by_edge = collections.defaultdict(list)
     for k, q in enumerate(faces):
         for i in range(4):
@@ -171,12 +170,12 @@ def unfold(faces) -> tuple:
     if not faces:
         return coord, seams
     coord[faces[0][0]] = (0, 0)
-    start[0] = (0, (1, 0))
+    start[0] = (0, (1, 0), 1)                          # first edge, its step, 1 turning left / -1 right
     queue = collections.deque([0])
     while queue:
         k = queue.popleft()
         q = faces[k]
-        j0, d = start[k]
+        j0, d, hand = start[k]
         for s in range(4):
             i = (j0 + s) % 4
             a, b = q[i], q[(i + 1) % 4]
@@ -189,7 +188,7 @@ def unfold(faces) -> tuple:
                     continue
                 other = faces[m]
                 j = next(j for j in range(4) if {other[j], other[(j + 1) % 4]} == {a, b})
-                start[m] = (j, (-d[0], -d[1])) if other[j] == b else (j, d)
+                start[m] = (j, (-d[0], -d[1]), hand) if other[j] == b else (j, d, -hand)
                 queue.append(m)
-            d = turn(d)
+            d = (-d[1], d[0]) if hand > 0 else (d[1], -d[0])
     return coord, seams

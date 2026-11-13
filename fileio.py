@@ -1358,6 +1358,7 @@ def _build_keep(coll, head, cfg_objs, part_objs, from_mesh=False, mesh_coll=None
     vertices = vertex_drive_info(stored_file(coll)) is not None
     _write_blocks(g, head.ree_gpuc_header, cfg_objs, part_objs, vals, notes, arm, starts, vertices)
     _write_tangent_flags(g, part_objs, starts)
+    _write_skins(g, part_objs, starts, arm, notes)
     # each link's tail: the links of a part in the file's order, as the import took them
     tails = [canon.link_tails(o, canon.load(o)) for o in part_objs]
     taken = [0] * len(part_objs)
@@ -1403,6 +1404,47 @@ def _write_tangent_flags(g, part_objs, starts) -> None:
         for i, x in enumerate(topology.carry_flags(mine.tolist(), d["tri_flags"], tris)):
             if x is not None:
                 struct.pack_into("<H", s1, i * 20 + 6, x)
+
+
+def _write_skins(g, part_objs, starts, arm, notes) -> None:
+    """Write the skin of the Parts whose painted weights were taken alone (``structure.adopt_skin``) into their
+    particles' records; a bone not yet among the file's skin bones (section 11) is added to them."""
+    edited = [(obj, start) for obj, start in zip(part_objs, starts) if canon.load(obj).get("skin_edited")]
+    if not edited:
+        return
+    at = next(off for off, name in g.layout.counts.items() if name == "joint_table")
+    n11 = g.counts()["joint_table"]
+    s11 = g.sections[11].data
+    table = _u32s(g, 11, n11).tolist()
+    bones = [b.name for b in arm.data.bones] if arm is not None else []
+    added = []
+    s0 = g.sections[0].data
+    for obj, start in edited:
+        d = canon.load(obj)
+        slot = {}
+        for k, name in enumerate(d["nodes"]):
+            if name.startswith("#"):
+                bone = int(name[1:])
+            elif name in bones:
+                bone = bones.index(name)
+            else:
+                raise ExportError(f"{obj.name}: its skin bone {name} is no bone of the armature")
+            if bone not in table:
+                if len(table) >= gpuc.skin_limit(g.layout):
+                    raise ExportError(f"{obj.name}: the file holds {len(table)} skin bones, no room for {name}")
+                table.append(bone)
+                added.append(name)
+            slot[k] = table.index(bone)
+        for i in range(canon.count(d)):
+            u8 = np.round(d["skin_w"][i] * 255).astype(int)
+            gpuc.write_skin(s0, (start + i) * gp.PARTICLE, [slot[int(b)] for b in d["skin"][i]], u8.tolist(),
+                            g.layout)
+        notes.append(Info(f"{obj.name}: its painted skin weights are written into the file"))
+    if added:
+        g.sections[11].data = bytearray(np.asarray(table, "<u4").tobytes()) + s11[4 * n11:]
+        struct.pack_into("<I", g.header, at, len(table))
+        notes.append(Info(f"Skin bones added to the file: {', '.join(added[:5])}"
+                          + (f" and {len(added) - 5} more" if len(added) > 5 else "")))
 
 
 def file_part_objects(part_objs) -> list:
@@ -2095,12 +2137,10 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
                 topology.triangles(data["faces"], data["face_uv"])[0].tolist())]
         elif editable:
             fixed.append(block["part_name"] or f"part {i}")
-        obj = _new_locked_part(coll, arm, cfg_objs[min(block["config"], len(cfg_objs) - 1)], block, data)
-        obj[canon.FILE_KEY] = i
+        obj = _new_locked_part(coll, arm, cfg_objs[min(block["config"], len(cfg_objs) - 1)], block, data,
+                               {canon.FILE_KEY: i, **({canon.RE4_INDEX_KEY: i} if is_re4 else {})})
         if quads is not None:
             obj.ree_gpuc_part.diagonal_bend = bend
-        if is_re4:
-            obj["ree_gpuc_re4_index"] = i
         _set_part(obj, block, r["tails"][i], None, cfg_objs, notes)
         if block["use_root_joint"] and block["root_hash"] not in by_hash:
             obj[ROOT_HASH_KEY] = gp.signed(block["root_hash"])
@@ -2121,7 +2161,8 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
         notes.append(f"{', '.join(fixed)}: its particles and faces cannot be edited (its links are not the ones its "
                      f"faces give)")
     if lods:
-        notes.append("Its particles and faces cannot be edited: it simulates in several levels of detail")
+        notes.append("Its particles and faces cannot be edited, its skin weights can: it holds interpolations and "
+                     "restrictions, which a file written again from its Parts would lose")
     if is_re4:
         notes = ["RE4: the original skinning, output bindings and collisions are kept from the file and not editable",
                  "RE4 Config values are named by their offset in the file; their effects are unknown",
@@ -2155,7 +2196,8 @@ def _keep_welds(coll, f, notes) -> list:
     return mixed
 
 
-def _new_locked_part(coll, arm, config, block, data) -> bpy.types.Object:
+def _new_locked_part(coll, arm, config, block, data, keys=None) -> bpy.types.Object:
+    """A new imported Part holding ``data``, with the object keys ``keys`` set before its mesh is built."""
     name = generate.unique_name("GPUC_PART_", "_" + (block["part_name"] or "part"))
     obj = bpy.data.objects.new(name, bpy.data.meshes.new(name))
     obj["TYPE"] = props.PART_TYPE
@@ -2166,6 +2208,8 @@ def _new_locked_part(coll, arm, config, block, data) -> bpy.types.Object:
     p = obj.ree_gpuc_part
     p.armature, p.uv_tile = arm, data["tile"]
     p.config = config
+    for k, v in (keys or {}).items():
+        obj[k] = v
     canon.fit_ranges(obj, data)
     canon.store(obj, data)
     canon.build_mesh(obj)
@@ -2217,6 +2261,7 @@ def own_shapes(coll) -> bool:
 # --- attaching an imported cloth's Parts to bones -----------------------------------------------------------
 
 NOT_ATTACHED = "Not attached ("           # starts the first note of a file no Part of which attached (``ops``)
+NOT_ATTACHED_PART = "Not attached to bones: "   # starts the note of each Part left unattached (``ops``)
 
 def ancestors(arm) -> dict:
     """Each bone's ancestors' names."""
@@ -2618,7 +2663,7 @@ def import_attach(path: str, mesh_coll, force: bool = False) -> tuple:
     if len(left) == len(objs):
         return coll, [f"{NOT_ATTACHED}{'; '.join(left[:2])}"
                       f"{f' and {len(left) - 2} more' if len(left) > 2 else ''}): its Parts stay as in the file"] + notes
-    notes = [f"Attached, changed: {c}" for c in changed] + [f"Not attached to bones: {why}" for why in left] + notes
+    notes = [f"Attached, changed: {c}" for c in changed] + [f"{NOT_ATTACHED_PART}{why}" for why in left] + notes
     return coll, list(dict.fromkeys(notes))
 
 

@@ -723,6 +723,22 @@ def bpy_new_part(coll, arm, name, config=None):
     return obj
 
 
+def adopt_skin(obj) -> str:
+    """Take the Part's bone groups as its skin, its particles and faces unchanged (a Part whose structure stays its
+    file's), and rebuild the mesh; return the notice. Raises ``ValueError`` (the caller restores the last skin)."""
+    old = canon.load(obj)
+    names, skin, skin_w = _skin(obj, np.arange(canon.count(old)), old, old["skin"].shape[1])
+    arm = canon.skin_armature(obj)
+    lost = [n for n in names if arm is not None and n not in arm.data.bones]
+    if lost:
+        raise ValueError(f"its skin bone {lost[0]} is no bone of {arm.name}")
+    canon.store(obj, {**old, "nodes": names, "skin": skin, "skin_w": skin_w, "skin_edited": True})
+    canon.build_mesh(obj)
+    from . import sim
+    sim.invalidate(obj)
+    return "Skin weights saved; the export writes them into the file, its particles and faces as they are"
+
+
 def adopt(obj) -> str:
     """Take the Part's mesh as its new structure and rebuild the mesh; return the notice. Raises ``ValueError``
     (the caller restores the last structure) when the mesh is no cloth."""
