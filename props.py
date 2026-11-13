@@ -516,10 +516,18 @@ def _regrid(self, context):
     _redraw(self, context)
 
 
+def _through(what: str) -> list:
+    # numbered so a file saved with the old on / off switch reads as Other Meshes / Nothing
+    return [("BEHIND", "Nothing", f"{what} hidden behind every mesh", 0),
+            ("CLOTH", "Other Meshes", f"{what} in front of other meshes, hidden behind the near side of the cloth",
+             1),
+            ("FRONT", "Everything", f"{what} in front of every mesh, the far side of the cloth too", 2)]
+
+
 def _in_front(self, context):
     for obj in context.scene.objects:
         if is_part(obj):
-            obj.show_in_front = self.in_front
+            obj.show_in_front = self.in_front != "BEHIND"
     _redraw(self, context)
 
 
@@ -719,10 +727,10 @@ class REE_GPUC_Settings(bpy.types.PropertyGroup):
                                         ("POINT", "Point", "A dot of a fixed size on screen")])
     sphere_alpha: FloatProperty(name="Opacity", default=0.45, min=0.05, max=1.0, update=_redraw)
     point_size: FloatProperty(name="Size", default=8.0, min=1.0, max=30.0, update=_redraw)
-    in_front: BoolProperty(name="Draw Through Objects", default=True, update=_in_front,
-                           description="The particles, base positions and the part meshes in front of every mesh")
-    links_in_front: BoolProperty(name="Draw Through Objects", default=True, update=_redraw,
-                                 description="The links and welds in front of every mesh")
+    in_front: EnumProperty(name="Draw Through", items=_through("The particles and base positions"), default="CLOTH",
+                           update=_in_front)
+    links_in_front: EnumProperty(name="Draw Through", items=_through("The links and welds"), default="CLOTH",
+                                 update=_redraw)
     limits_in_front: BoolProperty(name="Draw Through Objects", default=False, update=_redraw,
                                   description="The space limits and backstops in front of every mesh")
     show_colliders: BoolProperty(name="Colliders", default=True, update=_redraw,

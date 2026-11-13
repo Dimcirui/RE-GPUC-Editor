@@ -310,7 +310,7 @@ def new_part(coll, arm, lay: dict, config=None) -> bpy.types.Object:
     coll.objects.link(obj)
     obj.hide_render = True
     obj.show_wire = True
-    obj.show_in_front = bpy.context.scene.ree_gpuc.in_front
+    obj.show_in_front = bpy.context.scene.ree_gpuc.in_front != "BEHIND"
     if props.header(coll) is None:
         new_header(coll, arm)
     config = config if props.is_config(config) else (props.configs(coll) or [None])[0]

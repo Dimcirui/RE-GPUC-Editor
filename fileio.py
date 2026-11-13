@@ -2164,7 +2164,7 @@ def _new_locked_part(coll, arm, config, block, data) -> bpy.types.Object:
     coll.objects.link(obj)
     obj.hide_render = True
     obj.show_wire = True
-    obj.show_in_front = bpy.context.scene.ree_gpuc.in_front
+    obj.show_in_front = bpy.context.scene.ree_gpuc.in_front != "BEHIND"
     p = obj.ree_gpuc_part
     p.armature, p.uv_tile = arm, data["tile"]
     p.config = config

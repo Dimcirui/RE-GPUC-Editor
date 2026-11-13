@@ -708,7 +708,7 @@ def bpy_new_part(coll, arm, name, config=None):
     coll.objects.link(obj)
     obj.hide_render = True
     obj.show_wire = True
-    obj.show_in_front = bpy.context.scene.ree_gpuc.in_front
+    obj.show_in_front = bpy.context.scene.ree_gpuc.in_front != "BEHIND"
     if props.header(coll) is None:
         generate.new_header(coll, arm)
     mine = props.configs(coll)

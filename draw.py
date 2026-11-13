@@ -4,13 +4,15 @@ graphs, and the particle values on the grid UV in the UV editor.
 Maintenance constraints:
 - Drawing only reads data. Follow the pose computes posed positions here from the particles' skin; the mesh
   itself stays in the rest pose.
-- Particles are drawn in front of every mesh by default without writing depth, so spheres are sorted back to
-  front and drawn with back-face culling."""
+- Particles are drawn without writing depth, so spheres are sorted back to front and drawn with back-face
+  culling. Drawn through other meshes but not the cloth's own (the default), they are drawn last, after
+  ``cloth_depth`` has written the Parts' depth over the scene's."""
 import math
 
 import bmesh
 import bpy
 import gpu
+import mathutils
 import numpy as np
 from gpu_extras.batch import batch_for_shader
 
@@ -347,6 +349,38 @@ def _draw_forces(ctx):
                                            "color": np.concatenate(cols).astype(np.float32)}).draw(shader)
 
 
+def cloth_depth(ctx, pts, push):
+    """Make the depth where the Parts' triangles ``pts`` (world, 3 per triangle) cover the screen their nearest
+    one's, each corner ``push`` farther from the eye, whatever mesh was nearer: drawn after this, a particle or
+    link shows through other meshes but not through the Parts' own near side. Other pixels keep their depth."""
+    rv = ctx.region_data
+    full = np.array(rv.perspective_matrix, float)
+    h = np.column_stack([pts, np.ones(len(pts))]) @ full.T
+    ok = (h[:, 3].reshape(-1, 3) > 1e-6).all(axis=1).repeat(3)
+    far = h[ok, :3] / h[ok, 3:]
+    far[:, 2] = 0.99999                                # first every covered pixel the farthest
+    inv = np.linalg.inv(np.array(rv.view_matrix, float))
+    if rv.is_perspective:
+        away = pts - inv[:3, 3]
+        away /= np.maximum(np.linalg.norm(away, axis=1, keepdims=True), 1e-9)
+    else:
+        away = np.broadcast_to(-inv[:3, 2], pts.shape)
+    near = pts + away * push[:, None]
+    shader = gpu.shader.from_builtin("UNIFORM_COLOR")
+    shader.uniform_float("color", (0.0, 0.0, 0.0, 0.0))
+    gpu.state.color_mask_set(False, False, False, False)
+    gpu.state.depth_mask_set(True)
+    gpu.state.depth_test_set("ALWAYS")
+    with gpu.matrix.push_pop(), gpu.matrix.push_pop_projection():
+        gpu.matrix.load_identity()
+        gpu.matrix.load_projection_matrix(mathutils.Matrix.Identity(4))
+        batch_for_shader(shader, "TRIS", {"pos": far.astype(np.float32)}).draw(shader)
+    gpu.state.depth_test_set("LESS")
+    batch_for_shader(shader, "TRIS", {"pos": near.astype(np.float32)}).draw(shader)
+    gpu.state.color_mask_set(True, True, True, True)
+    gpu.state.depth_mask_set(False)
+
+
 def _draw_3d():
     ctx = bpy.context
     s = ctx.scene.ree_gpuc
@@ -368,6 +402,8 @@ def _draw_3d():
     shapes = [k for k, x in enumerate(props.LINK_SHAPES) if getattr(s, "show_" + x[0])]
     drawn = {}
     base_points = []
+    cloth = "CLOTH" in (s.in_front, s.links_in_front)
+    cloth_tris, cloth_push = [], []
     for obj in objs:
         d = canon.load(obj)
         live = {**d, **canon.values(obj, d)}
@@ -419,6 +455,13 @@ def _draw_3d():
             else:
                 rgb = np.tile(PLAIN_LINK, (len(ln), 1))
             lcols.append(np.repeat(np.column_stack([rgb, np.full(len(rgb), 0.9)]), 2, axis=0))
+        if cloth:
+            tris = np.array([t for f in canon.faces(d) for t in ((f[0], f[k], f[k + 1]) for k in range(1, len(f) - 1))],
+                            np.int64).reshape(-1, 3)
+            ln = links(d)
+            step = np.linalg.norm(pos[ln[:, 0]] - pos[ln[:, 1]], axis=1) if len(ln) else np.zeros(1)
+            cloth_tris.append(pos[tris].reshape(-1, 3))
+            cloth_push.append(np.full(3 * len(tris), 0.5 * float(np.median(step))))
     weld_pts, weld_big = [], []
     if s.show_links:                                   # the welds joining two parts: a point (a line once apart)
         from . import weld
@@ -445,51 +488,64 @@ def _draw_3d():
         shader.uniform_float("lineWidth", 2.0)
         batch_for_shader(shader, "LINES", {"pos": np.concatenate(limit_segs).astype(np.float32),
                                            "color": np.concatenate(limit_cols).astype(np.float32)}).draw(shader)
-    gpu.state.depth_test_set("NONE" if s.links_in_front else "LESS_EQUAL")
-    if segs:
-        shader = gpu.shader.from_builtin("POLYLINE_FLAT_COLOR")
-        shader.uniform_float("viewportSize", gpu.state.viewport_get()[2:])
-        shader.uniform_float("lineWidth", 1.5)
-        batch_for_shader(shader, "LINES", {"pos": np.concatenate(segs).astype(np.float32),
-                                           "color": np.concatenate(lcols).astype(np.float32)}).draw(shader)
-    for pts, size, colour in ((weld_pts, 9.0, WELD_COLOUR), (weld_big, 14.0, WELD_SELECTED)):
-        if pts:                                    # the selected weld object's pairs larger and brighter
-            shader = gpu.shader.from_builtin("POINT_FLAT_COLOR")
-            gpu.state.point_size_set(size)
-            batch_for_shader(shader, "POINTS", {"pos": np.array(pts, np.float32),
-                                                "color": np.tile(colour, (len(pts), 1)).astype(np.float32)}
+
+    def draw_links():
+        if segs:
+            shader = gpu.shader.from_builtin("POLYLINE_FLAT_COLOR")
+            shader.uniform_float("viewportSize", gpu.state.viewport_get()[2:])
+            shader.uniform_float("lineWidth", 1.5)
+            batch_for_shader(shader, "LINES", {"pos": np.concatenate(segs).astype(np.float32),
+                                               "color": np.concatenate(lcols).astype(np.float32)}).draw(shader)
+        for pts, size, colour in ((weld_pts, 9.0, WELD_COLOUR), (weld_big, 14.0, WELD_SELECTED)):
+            if pts:                                    # the selected weld object's pairs larger and brighter
+                shader = gpu.shader.from_builtin("POINT_FLAT_COLOR")
+                gpu.state.point_size_set(size)
+                batch_for_shader(shader, "POINTS", {"pos": np.array(pts, np.float32),
+                                                    "color": np.tile(colour, (len(pts), 1)).astype(np.float32)}
+                                 ).draw(shader)
+                gpu.state.point_size_set(1.0)
+
+    def draw_particles():
+        if base_segs:
+            pts = np.concatenate(base_segs).astype(np.float32)
+            shader = gpu.shader.from_builtin("POLYLINE_FLAT_COLOR")
+            shader.uniform_float("viewportSize", gpu.state.viewport_get()[2:])
+            shader.uniform_float("lineWidth", 1.5)
+            batch_for_shader(shader, "LINES", {"pos": pts, "color": np.tile((0.65, 0.7, 1.0, 0.7), (len(pts), 1))}
                              ).draw(shader)
-            gpu.state.point_size_set(1.0)
-    gpu.state.depth_test_set("NONE" if s.in_front else "LESS_EQUAL")
-    if base_segs:
-        pts = np.concatenate(base_segs).astype(np.float32)
-        shader = gpu.shader.from_builtin("POLYLINE_FLAT_COLOR")
-        shader.uniform_float("viewportSize", gpu.state.viewport_get()[2:])
-        shader.uniform_float("lineWidth", 1.5)
-        batch_for_shader(shader, "LINES", {"pos": pts, "color": np.tile((0.65, 0.7, 1.0, 0.7), (len(pts), 1))}
-                         ).draw(shader)
-    if base_points:
-        pts = np.concatenate(base_points).astype(np.float32)
-        shader = gpu.shader.from_builtin("POINT_FLAT_COLOR")
-        gpu.state.point_size_set(5.0)
-        batch_for_shader(shader, "POINTS", {"pos": pts, "color": np.tile((0.65, 0.7, 1.0, 1.0), (len(pts), 1))}).draw(shader)
-        gpu.state.point_size_set(1.0)
-    if centres:
-        cen, col = np.concatenate(centres), np.concatenate(pcols)
-        if s.particle_style == "SPHERE":
-            view = np.array(ctx.region_data.view_matrix, float)[:3, :3]
-            pos, cols, idx = spheres(cen, np.concatenate(radii), col, s.sphere_alpha, view)
-            shader = gpu.shader.from_builtin("SMOOTH_COLOR")
-            gpu.state.face_culling_set("BACK")
-            batch_for_shader(shader, "TRIS", {"pos": pos, "color": cols}, indices=idx).draw(shader)
-            gpu.state.face_culling_set("NONE")
-        else:
+        if base_points:
+            pts = np.concatenate(base_points).astype(np.float32)
             shader = gpu.shader.from_builtin("POINT_FLAT_COLOR")
-            gpu.state.point_size_set(s.point_size)
-            batch_for_shader(shader, "POINTS", {"pos": cen.astype(np.float32),
-                                                "color": np.column_stack([col, np.ones(len(col))]).astype(np.float32)}
-                             ).draw(shader)
+            gpu.state.point_size_set(5.0)
+            batch_for_shader(shader, "POINTS", {"pos": pts, "color": np.tile((0.65, 0.7, 1.0, 1.0), (len(pts), 1))}).draw(shader)
             gpu.state.point_size_set(1.0)
+        if centres:
+            cen, col = np.concatenate(centres), np.concatenate(pcols)
+            if s.particle_style == "SPHERE":
+                view = np.array(ctx.region_data.view_matrix, float)[:3, :3]
+                pos, cols, idx = spheres(cen, np.concatenate(radii), col, s.sphere_alpha, view)
+                shader = gpu.shader.from_builtin("SMOOTH_COLOR")
+                gpu.state.face_culling_set("BACK")
+                batch_for_shader(shader, "TRIS", {"pos": pos, "color": cols}, indices=idx).draw(shader)
+                gpu.state.face_culling_set("NONE")
+            else:
+                shader = gpu.shader.from_builtin("POINT_FLAT_COLOR")
+                gpu.state.point_size_set(s.point_size)
+                batch_for_shader(shader, "POINTS", {"pos": cen.astype(np.float32),
+                                                    "color": np.column_stack([col, np.ones(len(col))]).astype(np.float32)}
+                                 ).draw(shader)
+                gpu.state.point_size_set(1.0)
+
+    later = [f for f, mode in ((draw_links, s.links_in_front), (draw_particles, s.in_front)) if mode == "CLOTH"]
+    for f, mode in ((draw_links, s.links_in_front), (draw_particles, s.in_front)):
+        if mode != "CLOTH":
+            gpu.state.depth_test_set("NONE" if mode == "FRONT" else "LESS_EQUAL")
+            f()
+    if later and cloth_tris:
+        cloth_depth(ctx, np.concatenate(cloth_tris), np.concatenate(cloth_push))
+        gpu.state.depth_test_set("LESS_EQUAL")
+        for f in later:
+            f()
     gpu.state.depth_mask_set(True)
     gpu.state.depth_test_set("NONE")
     gpu.state.blend_set("NONE")
