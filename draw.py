@@ -349,50 +349,32 @@ def _draw_forces(ctx):
                                            "color": np.concatenate(cols).astype(np.float32)}).draw(shader)
 
 
-_occluders: dict = {}
-
-
-def occluder(obj, d):
-    """(triangles, per particle how far its faces are pushed back) for ``cloth_depth``: as far as a link near the
-    particle leaves the triangles, the other diagonal of a quad bent out of plane, or a link over two steps that
-    sags below the particle between its ends; rest positions, cached until they or the faces change."""
+def occluder(d, pos, eye, forward):
+    """The Part's triangles (world, 3 points each) for ``cloth_depth``: each quad split along whichever diagonal
+    is farther from the eye (``eye`` the view's position, ``forward`` its direction when orthographic), so both
+    diagonals' links lie on or in front of them. A bend link is left to sink behind a convex side, as it does."""
     faces = canon.faces(d)
-    co = np.asarray(d["co"], float)
-    ln = links(d)
-    key = (len(co), hash(co.tobytes()), len(faces), len(ln))
-    hit = _occluders.get(obj.name)
-    if hit is not None and hit[0] == key:
-        return hit[1], hit[2]
-    tris = np.array([t for f in faces for t in ((f[0], f[k], f[k + 1]) for k in range(1, len(f) - 1))],
-                    np.int64).reshape(-1, 3)
-    push = np.zeros(len(co))
-    for f in faces:
-        if len(f) == 4:
-            a, b, c, e = co[list(f)]
-            n = np.cross(b - a, c - a)
-            length = np.linalg.norm(n)
-            if length > 1e-12:
-                bend = abs(float((e - a) @ n)) / length
-                push[list(f)] = np.maximum(push[list(f)], bend)
-    near = [set() for _ in range(len(co))]
-    for a, b, t, _ in ln.tolist():
-        if t != 2:
-            near[a].add(b)
-            near[b].add(a)
-    for a, b, t, _ in ln.tolist():
-        common = near[a] & near[b] if t == 2 else ()
-        if common:
-            mid = 0.5 * (co[a] + co[b])
-            c = min(common, key=lambda k: float(np.linalg.norm(co[k] - mid)))
-            push[c] = max(push[c], float(np.linalg.norm(co[c] - mid)))
-    _occluders[obj.name] = (key, tris, push)
-    return tris, push
+    quads = np.array([f for f in faces if len(f) == 4], np.int64).reshape(-1, 4)
+    other = [t for f in faces if len(f) != 4 for t in ((f[0], f[k], f[k + 1]) for k in range(1, len(f) - 1))]
+    out = [pos[np.array(other, np.int64).reshape(-1, 3)]]
+    if len(quads):
+        q = pos[quads]
+        ac, bd = 0.5 * (q[:, 0] + q[:, 2]), 0.5 * (q[:, 1] + q[:, 3])
+        if eye is not None:
+            ac_far = np.linalg.norm(ac - eye, axis=1) > np.linalg.norm(bd - eye, axis=1)
+        else:
+            ac_far = (ac - bd) @ forward > 0
+        along_ac = q[:, [0, 1, 2, 0, 2, 3]]
+        along_bd = q[:, [0, 1, 3, 1, 2, 3]]
+        out.append(np.where(ac_far[:, None, None], along_ac, along_bd).reshape(-1, 3, 3))
+    return np.concatenate(out).reshape(-1, 3)
 
 
-def cloth_depth(ctx, pts, push):
+def cloth_depth(ctx, pts):
     """Make the depth where the Parts' triangles ``pts`` (world, 3 per triangle) cover the screen their nearest
-    one's, each corner ``push`` (``occluder``) farther from the eye, whatever mesh was nearer: drawn after this, a particle or
-    link shows through other meshes but not through the Parts' own near side. Other pixels keep their depth."""
+    one's (pushed back just enough that a link on a face is not hidden by it), whatever mesh was nearer: drawn
+    after this, a particle or link shows through other meshes but not through the Parts' own near side. Other
+    pixels keep their depth."""
     rv = ctx.region_data
     full = np.array(rv.perspective_matrix, float)
     h = np.column_stack([pts, np.ones(len(pts))]) @ full.T
@@ -406,7 +388,7 @@ def cloth_depth(ctx, pts, push):
     else:
         away = np.broadcast_to(-inv[:3, 2], pts.shape)
     eye = np.linalg.norm(pts - inv[:3, 3], axis=1) if rv.is_perspective else np.full(len(pts), rv.view_distance)
-    near = pts + away * (push + 0.002 * eye)[:, None]     # and enough that a link on its face is not hidden by it
+    near = pts + away * (0.002 * eye)[:, None]
     shader = gpu.shader.from_builtin("UNIFORM_COLOR")
     shader.uniform_float("color", (0.0, 0.0, 0.0, 0.0))
     gpu.state.color_mask_set(False, False, False, False)
@@ -444,7 +426,9 @@ def _draw_3d():
     drawn = {}
     base_points = []
     cloth = "CLOTH" in (s.in_front, s.links_in_front)
-    cloth_tris, cloth_push = [], []
+    cloth_tris = []
+    view_inv = np.linalg.inv(np.array(ctx.region_data.view_matrix, float))
+    eye_at = view_inv[:3, 3] if ctx.region_data.is_perspective else None
     for obj in objs:
         d = canon.load(obj)
         live = {**d, **canon.values(obj, d)}
@@ -497,9 +481,7 @@ def _draw_3d():
                 rgb = np.tile(PLAIN_LINK, (len(ln), 1))
             lcols.append(np.repeat(np.column_stack([rgb, np.full(len(rgb), 0.9)]), 2, axis=0))
         if cloth:
-            tris, push = occluder(obj, d)
-            cloth_tris.append(pos[tris].reshape(-1, 3))
-            cloth_push.append(push[tris].ravel() * scale)
+            cloth_tris.append(occluder(d, pos, eye_at, -view_inv[:3, 2]))
     weld_pts, weld_big = [], []
     if s.show_links:                                   # the welds joining two parts: a point (a line once apart)
         from . import weld
@@ -580,7 +562,7 @@ def _draw_3d():
             gpu.state.depth_test_set("NONE" if mode == "FRONT" else "LESS_EQUAL")
             f()
     if later and cloth_tris:
-        cloth_depth(ctx, np.concatenate(cloth_tris), np.concatenate(cloth_push))
+        cloth_depth(ctx, np.concatenate(cloth_tris))
         gpu.state.depth_test_set("LESS_EQUAL")
         for f in later:
             f()
