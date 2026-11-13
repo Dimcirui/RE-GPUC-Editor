@@ -49,10 +49,12 @@ class ClothSpec:
                 output joint's particles must all be in one batch.
     tri_flags   optional: each triangle's u16 tangent flags, in the order the faces split (a quad gives two);
                 a triangle past its end takes ``tangent_flags``'s
+    normal_hint (P, 3) optional: the side each particle's normal is on where its faces' normals all but cancel
+                (two quads folded over one diagonal), such as its file's normal
     """
 
     def __init__(self, positions, sim_weight, skin_bones, skin_w, faces, face_uv, outputs, diagonal_bend=None,
-                 batch_of=None, tri_flags=None):
+                 batch_of=None, tri_flags=None, normal_hint=None):
         # as the file holds them (float32), so the frames follow the stored positions alone
         self.positions = np.asarray(positions, np.float32).astype(float)
         self.sim_weight = np.asarray(sim_weight, float)
@@ -64,6 +66,7 @@ class ClothSpec:
         self.diagonal_bend = None if diagonal_bend is None else np.asarray(diagonal_bend, bool)
         self.batch_of = None if batch_of is None else np.asarray(batch_of, np.int64)
         self.tri_flags = None if tri_flags is None else [int(x) for x in tri_flags]
+        self.normal_hint = None if normal_hint is None else np.asarray(normal_hint, float)
 
 
 BATCH_LIMIT = 512                 # particles a batch takes before the next Part starts another
@@ -189,19 +192,28 @@ def validate_geometry(pos, triangles):
             raise ValueError(f"degenerate rest triangle at particles {a}, {b}, {c}")
 
 
-def _frames(pos, tris, tangent):
+def _frames(pos, tris, tangent, hint=None):
     validate_geometry(pos, [(a, b, c) for a, b, c, _ in tris])
     P = len(pos)
     nsum = np.zeros((P, 3))
+    each = collections.defaultdict(list)
     for i, j, k, _ in tris:
         n = np.cross(pos[j] - pos[i], pos[k] - pos[i])
         n /= np.linalg.norm(n)
         for a in (i, j, k):
             nsum[a] += n
+            each[a].append(n)
     A = np.zeros((P, 3, 3))
     normals = np.zeros((P, 3))
     for i in range(P):
         length = np.linalg.norm(nsum[i])
+        hinted = hint is not None and np.linalg.norm(hint[i]) > 1e-6
+        # faces wound against each other (two quads folded over one diagonal): their normals cancel, or nearly and
+        # against the hint's side; each turned to the hint's side (else the first face's) and summed again
+        if each[i] and (length < 1e-10 or hinted and length < 0.25 * len(each[i]) and nsum[i] @ hint[i] < 0):
+            side = hint[i] if hinted else each[i][0]
+            nsum[i] = sum(n if n @ side >= 0 else -n for n in each[i])
+            length = np.linalg.norm(nsum[i])
         if length < 1e-10:
             raise ValueError(f"cannot construct rest normal for particle {i}")
         n = nsum[i] / length
@@ -281,7 +293,8 @@ def blank(layout):
     return g
 
 
-def build(spec, template, skin_table, capsules=None, particle_radius=None, link_tail=None, welds=None, extra=None):
+def build(spec, template, skin_table, capsules=None, particle_radius=None, link_tail=None, welds=None, extra=None,
+          drop=()):
     """template: a gpuc.Gpuc, or a gpuc.Layout to start from blank(layout) (zero particle fields, SEC28 for every
     particle, link tails ffffffffffffff0f where link_tail gives none, no config, part or capsule).
     skin_table: list of full mesh bone indices referenced by spec.skin_bones (sec 11).
@@ -292,7 +305,7 @@ def build(spec, template, skin_table, capsules=None, particle_radius=None, link_
     welds: optional list of (a, b, type, 8-byte tail): zero-length links joining coincident particles of two
     parts, written after the faces' links, a to b as given.
     extra: optional list of (a, b, type, 8-byte tail): links the faces do not give, at their rest length, written
-    after the faces' links."""
+    after the faces' links. drop: (a, b, type), a < b, of links the faces give that are not written."""
     from_blank = not isinstance(template, gpuc.Gpuc)
     t = blank(template) if from_blank else template
     tp = _template_particles(t)
@@ -304,7 +317,8 @@ def build(spec, template, skin_table, capsules=None, particle_radius=None, link_
     tris = sorted(_triangles(spec), key=lambda t: batch_of[t[0]])
     weld_tail = {(a, b, typ): tail for a, b, typ, tail in welds or ()}
     extra_tail = {(a, b, typ): tail for a, b, typ, tail in extra or ()}
-    items = _links(spec) + [((a, b), typ, "extra") for a, b, typ in sorted(extra_tail)]
+    items = [x for x in _links(spec) if (x[0][0], x[0][1], x[1]) not in drop]
+    items += [((a, b), typ, "extra") for a, b, typ in sorted(extra_tail)]
     items += [((a, b), typ, "weld") for a, b, typ in sorted(weld_tail)]
     edge_set = set()
     for i, j, k, _ in tris:
@@ -329,7 +343,7 @@ def build(spec, template, skin_table, capsules=None, particle_radius=None, link_
         start[i] = s
         s += len(adj[i])
     tangent = [adj[i][0] for i in range(P)]
-    A, normals = _frames(pos, tris, tangent)
+    A, normals = _frames(pos, tris, tangent, getattr(spec, "normal_hint", None))
 
     # template material fields per particle: nearest template particle (a blank one: zeros, SEC28)
     if not from_blank:

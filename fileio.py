@@ -988,9 +988,10 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
     file_start = {o: int(np.argmax(f_part == k)) for k, o in enumerate(file_objs)}
     order = sorted(file_objs, key=file_start.get) + new_objs        # the file's runs in its order, then the others
     positions, sim_weight, skin_bones, skin_w, faces, uvs, bend, tri_flags = [], [], [], [], [], [], [], []
+    hints = []                                        # each particle's normal as the Part holds it (``ClothSpec``)
     vals, run = [None] * len(part_objs), [0] * len(part_objs)
     shapes, starts, new_of, fresh, base, cut = {}, {}, {}, set(), 0, 0
-    extra = []                                        # links the Parts' faces do not give (``gpuc_build.build``)
+    extra, drop = [], set()                           # links the Parts' faces do not give, and give but lack
     skinned = collections.defaultdict(list)            # bone -> (particle, its share of the particle's skin)
     driving = {}                                       # a new Part's driven bone -> the Parts that drive it
     for obj, why in weld.skipped(coll):
@@ -1007,6 +1008,7 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
         n = canon.count(d)
         starts[obj] = run[k] = base
         positions.append(_posed_co(d, arm) @ to_game[:3, :3].T + to_game[:3, 3])
+        hints.append(np.asarray(d["normal"], float).reshape(-1, 3) @ to_game[:3, :3].T)
         sim_weight.append(np.clip(v["sim_weight"], 0.0, 1.0))
         geo = _part_geometry(obj, d, arm)
         tri_flags += geo["flags"]
@@ -1032,7 +1034,8 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
         for (a, b, t, _), tail in zip(canon.links(d), canon.link_tails(obj, d)):
             shapes[(base + int(a), base + int(b), int(t))] = gp.tail_bytes(*map(float, tail))   # float32 rounds
         if d.get("faces") is not None:                # links its faces do not give, as the Part holds them
-            more = topology.extra_links(d["faces"], d["links"], geo["bend"])
+            drop.update((base + a, base + b, t) for a, b, t in topology.missing_links(d["faces"], d["links"]))
+            more = topology.extra_links(d["faces"], d["links"])
             for a, b, t, _ in canon.links(d):
                 if (min(int(a), int(b)), max(int(a), int(b)), int(t)) in more:
                     extra.append((base + int(a), base + int(b), int(t), shapes[(base + int(a), base + int(b), int(t))]))
@@ -1160,7 +1163,7 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
         batch_of = _batch_of(sizes, pairs, notes, keep_batch)
         _one_batch(outputs, batch_of, notes)
     spec = gpuc_build.ClothSpec(np.vstack(positions), np.concatenate(sim_weight), skin_bones, skin_w, faces, uvs,
-                                outputs, np.concatenate(bend), batch_of, tri_flags)
+                                outputs, np.concatenate(bend), batch_of, tri_flags, np.vstack(hints))
     skin_table = sorted({b for row, w in zip(skin_bones, skin_w) for b, x in zip(row, w) if x})
     if not is_re4 and len(skin_table) > gpuc.skin_limit(layout):
         raise ExportError(f"{len(skin_table)} bones skin the cloth's particles, and {game_name(ext)} files take "
@@ -1174,7 +1177,7 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
         return data, list(dict.fromkeys(notes))
     try:
         out = gpuc_build.build(spec, layout, skin_table, link_tail=link_tail, welds=_weld_links(coll, starts),
-                               extra=extra)
+                               extra=extra, drop=drop)
     except ValueError as e:
         raise ExportError(str(e)) from e
     built = gpuc.Gpuc(out, layout)
@@ -2071,10 +2074,14 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
             quads = topology.quads(data["tris"], data["tri_uv"], data["links"][:, :3].tolist(), extra=True)
         if quads is not None:
             data["faces"], data["face_uv"], bend = quads
-            more = topology.extra_links(data["faces"], data["links"], bend)
+            more = topology.extra_links(data["faces"], data["links"])
+            less = topology.missing_links(data["faces"], data["links"])
             if more:
                 notes.append(f"{block['part_name'] or f'part {i}'}: {len(more)} links its faces do not give are kept, "
                              f"each between its own two particles")
+            if less:
+                notes.append(f"{block['part_name'] or f'part {i}'}: {len(less)} links its faces would give are not in "
+                             f"its file, and stay out")
             data["editable"] = True
             data["tri_flags"] = [x or 0 for x in topology.carry_flags(
                 data["tris"].tolist(), f["tri_flags"][tri_keep],

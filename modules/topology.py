@@ -33,26 +33,45 @@ def carry_flags(tris, flags, onto) -> list:
 def quads(tris, tri_uv, links, extra: bool = False) -> tuple | None:
     """Return (faces, face corner UVs, diagonal bend) when the part's links are exactly those ``gpuc_build`` makes
     from its triangles paired into quads, else None. ``links`` are (a, b, type) in part indices. With ``extra``,
-    the links may also hold others besides (``extra_links`` gives them)."""
+    the links may differ from the faces' (``extra_links`` and ``missing_links`` give how), and an edge of more
+    than two triangles (a non-manifold one) pairs the two whose other corners a shear link joins, as a quad's
+    other diagonal; a triangle that pairs with none stays a triangle."""
     tris = [tuple(int(v) for v in t) for t in tris]
     tri_uv = np.asarray(tri_uv, float).reshape(-1, 3, 2)
     structural = {(min(a, b), max(a, b)) for a, b, t in links if t == 0}
+    shear = {(min(a, b), max(a, b)) for a, b, t in links if t == 1}
     by_edge = collections.defaultdict(list)
     for k, t in enumerate(tris):
         for i in range(3):
             by_edge[tuple(sorted((t[i], t[(i + 1) % 3])))].append(k)
     paired, faces, uvs = set(), [], []
+
+    def other(k, edge):
+        return next(v for v in tris[k] if v not in edge)
+
     for edge, ks in sorted(by_edge.items()):
         if edge in structural:
             continue
-        if len(ks) != 2 or paired & set(ks):
+        if len(ks) == 2:
+            pairs = [tuple(ks)]
+        elif not extra:
             return None
-        quad = _join(tris[ks[0]], tri_uv[ks[0]], tris[ks[1]], tri_uv[ks[1]])
-        if quad is None:
-            return None
-        paired |= set(ks)
-        faces.append(quad[0])
-        uvs.append(quad[1])
+        else:                                         # several triangles on the edge: the shear link finds a quad
+            pairs = [(i, j) for n, i in enumerate(ks) for j in ks[n + 1:]
+                     if tuple(sorted((other(i, edge), other(j, edge)))) in shear]
+        for i, j in pairs:
+            if paired & {i, j}:
+                if not extra:
+                    return None
+                continue
+            quad = _join(tris[i], tri_uv[i], tris[j], tri_uv[j])
+            if quad is None:
+                if not extra:
+                    return None
+                continue
+            paired |= {i, j}
+            faces.append(quad[0])
+            uvs.append(quad[1])
     for k, t in enumerate(tris):
         if k not in paired:
             faces.append(t)
@@ -62,15 +81,22 @@ def quads(tris, tri_uv, links, extra: bool = False) -> tuple | None:
         if {tuple(x) for x in links_of(faces, bend).tolist()} == want and len(want) == len(links):
             return faces, np.concatenate(uvs).reshape(-1, 2), bend
     if extra:
-        for bend in (True, False):
-            if {tuple(x) for x in links_of(faces, bend).tolist()} <= want:
-                return faces, np.concatenate(uvs).reshape(-1, 2), bend
+        made = {bend: {tuple(x) for x in links_of(faces, bend).tolist()} for bend in (True, False)}
+        bend = min((True, False), key=lambda b: len(made[b] ^ want))
+        return faces, np.concatenate(uvs).reshape(-1, 2), bend
     return None
 
 
-def extra_links(faces, links, diagonal_bend: bool = True) -> set:
-    """The links, (a, b, type), that the faces do not give."""
-    made = {tuple(x) for x in links_of(faces, diagonal_bend).tolist()}
+def missing_links(faces, links) -> set:
+    """The links, (a, b, type), that the faces give and ``links`` do not hold; the diagonals' bend links, which the
+    Diagonal Bend setting gives or not, aside."""
+    have = {(min(int(a), int(b)), max(int(a), int(b)), int(t)) for a, b, t, *_ in links}
+    return {tuple(x) for x in links_of(faces, False).tolist()} - have
+
+
+def extra_links(faces, links) -> set:
+    """The links, (a, b, type), that the faces do not give, the diagonals' bend links counted as given."""
+    made = {tuple(x) for x in links_of(faces, True).tolist()}
     return {(min(int(a), int(b)), max(int(a), int(b)), int(t)) for a, b, t, *_ in links} - made
 
 

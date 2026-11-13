@@ -5,8 +5,9 @@ Maintenance constraints:
 - ``canon.PARTICLE_ID`` names the particle each vertex was; a vertex whose ID is out of range, or repeated and
   not the copy nearest the particle's last position, is a new particle. Kept particles keep their file index
   (``src``, which the export's driven joints follow), exact values, skin and link tails; welds follow them too.
-- Links come from the faces (``topology.links_of``), and the links the faces did not give before stay while both
-  their particles do; a new link takes the commonest tail of its shape on the Part,
+- Links come from the faces (``topology.links_of``); the links the faces did not give before stay while both
+  their particles do, and the ones they gave that the Part did not hold stay away. An edge may have more than two
+  faces. A new link takes the commonest tail of its shape on the Part,
   a new triangle the export's tangent flags for its UVs (``gpuc_build.tangent_flags``).
 - Every change ends in ``canon.build_mesh``, which numbers the particles again."""
 import collections
@@ -58,10 +59,6 @@ def _check(n, faces, co) -> None:
         raise ValueError(f"{n - len(used)} particles are on no face: delete them or give them faces")
     if len({frozenset(f) for f in faces}) != len(faces):
         raise ValueError("two faces share all their corners")
-    per_edge = collections.Counter(tuple(sorted((f[i], f[(i + 1) % len(f)]))) for f in faces for i in range(len(f)))
-    many = sum(1 for k in per_edge.values() if k > 2)
-    if many:
-        raise ValueError(f"{many} edges have more than two faces")
     try:
         gpuc_build.validate_geometry(co, topology.triangles(faces, np.zeros((sum(map(len, faces)), 2)))[0])
     except ValueError as e:
@@ -159,7 +156,7 @@ def _skin(obj, keep, old, slots) -> tuple:
 def _links(obj, faces, co, keep, old) -> tuple:
     """(links (a, b, type, shape), their tails) of the faces; a link both of whose particles are kept, between them
     in the file too, keeps its tail. A link the old faces did not give (one its file adds) stays while both its
-    particles do."""
+    particles do, and one they gave that the Part did not hold stays away between the same two."""
     bend = obj.ree_gpuc_part.diagonal_bend
     ln = topology.links_of(faces, bend)
     before = {(min(int(a), int(b)), max(int(a), int(b)), int(t)): (int(s), tuple(map(float, tail)))
@@ -183,8 +180,15 @@ def _links(obj, faces, co, keep, old) -> tuple:
         tails.append(tail)
     if old.get("faces") is not None:
         now = {k: v for v, k in enumerate(keep) if k >= 0}
+        gone = set()
+        for a, b, t in topology.missing_links(old["faces"], old["links"]):
+            if a in now and b in now:
+                gone.add((min(now[a], now[b]), max(now[a], now[b]), t))
+        if gone:
+            kept = [k for k, (a, b, t, _) in enumerate(out) if (min(a, b), max(a, b), t) not in gone]
+            out, tails = [out[k] for k in kept], [tails[k] for k in kept]
         made = {(int(a), int(b), int(t)) for a, b, t, _ in out}
-        for a, b, t in sorted(topology.extra_links(old["faces"], old["links"], bend)):
+        for a, b, t in sorted(topology.extra_links(old["faces"], old["links"])):
             if a in now and b in now:
                 na, nb = sorted((now[a], now[b]))
                 if (na, nb, t) not in made:
