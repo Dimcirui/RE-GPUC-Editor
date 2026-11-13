@@ -56,18 +56,24 @@ class REE_GPUC_PT_general(_Sidebar, bpy.types.Panel):
         row.operator("ree_gpuc.check", icon="VIEWZOOM")
         _collections(layout, s)
         layout.operator("ree_gpuc.new_config")
-        obj = context.active_object
-        if props.is_part(obj) and obj.select_get() and canon.attached(obj):
-            layout.operator("ree_gpuc.regenerate_part")
-            layout.operator("ree_gpuc.edit_as_mesh", icon="EDITMODE_HLT")
-        layout.operator("ree_gpuc.part_from_mesh", icon="MESH_DATA")
-        layout.operator("ree_gpuc.fit_to_mesh", icon="MOD_SHRINKWRAP")
-        row = layout.row(align=True)
-        row.operator("ree_gpuc.refit_to_mesh", icon="FILE_REFRESH")
-        row.operator("ree_gpuc.anchor_to_mesh", icon="PINNED")
-        layout.operator("ree_gpuc.weld_parts", icon="AUTOMERGE_ON")
-        layout.label(text="Create new parts in Pose Mode.")
-        layout.operator("ree_gpuc.switch_to_pose")
+        header, body = layout.panel("ree_gpuc_general_parts")
+        header.label(text="Parts")
+        if body is not None:
+            obj = context.active_object
+            if props.is_part(obj) and obj.select_get() and canon.attached(obj):
+                body.operator("ree_gpuc.regenerate_part")
+                body.operator("ree_gpuc.edit_as_mesh", icon="EDITMODE_HLT")
+            body.operator("ree_gpuc.part_from_mesh", icon="MESH_DATA")
+            body.operator("ree_gpuc.weld_parts", icon="AUTOMERGE_ON")
+            body.label(text="Create new parts in Pose Mode.")
+            body.operator("ree_gpuc.switch_to_pose")
+        header, body = layout.panel("ree_gpuc_general_mesh")
+        header.label(text="Mesh")
+        if body is not None:
+            body.operator("ree_gpuc.fit_to_mesh", icon="MOD_SHRINKWRAP")
+            row = body.row(align=True)
+            row.operator("ree_gpuc.refit_to_mesh", icon="FILE_REFRESH")
+            row.operator("ree_gpuc.anchor_to_mesh", icon="PINNED")
 
 
 class REE_GPUC_PT_pose(_Sidebar, bpy.types.Panel):
@@ -590,6 +596,20 @@ def _skin_rows(layout, obj):
     layout.operator("ree_gpuc.normalize_skin", icon="MOD_VERTEX_WEIGHT")
 
 
+def _fix(layout, text) -> None:
+    """Under a Part's problem, how to fix it (``errors``), its first sentence."""
+    from . import errors
+    found = errors.explain(str(text))
+    if found is None:
+        return
+    name, _, _, fix = found
+    col = layout.column(align=True)
+    col.scale_y = 0.8
+    import textwrap
+    for k, line in enumerate(textwrap.wrap(fix.split(". ")[0].rstrip(".") + ".", 70)):
+        col.label(text=line, icon="INFO" if k == 0 else "BLANK1")
+
+
 class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
     bl_label = "GPUC Part"
     KIND = staticmethod(props.is_part)
@@ -602,6 +622,8 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
             text = obj.get(key)
             if text and text != "ok":
                 layout.label(text=text, icon=icon)
+                if key == "ree_gpuc_check":
+                    _fix(layout, text)
         if canon.attached(obj):
             pass
         elif canon.from_bones(obj):

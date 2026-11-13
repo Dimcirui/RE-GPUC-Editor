@@ -14,6 +14,7 @@
 - **Collision planes and spheres for Wilds, RE9 and Onimusha** — a file's own planes and spheres import as objects and export to their own sections, chosen by the Part's Plane and Sphere Bits; Collision From Bones makes planes for every game.
 - **Triangle tangent flags** — on an editable imported Part's faces, as attributes you can read and set; new triangles whose UVs span no area get the flag the game's files give them.
 - **Attach to Bones** — an imported Part found to be a grid of bone chains follows its bones, and stays its file's Part.
+- **Named problems** — a failed export, import or tool names its problem and shows what it means and how to fix it; the Part panel shows the fix under a Part's problem. General Tools groups its tools under Parts and Mesh.
 - **Anchors** — particles remember where they sit on the mesh; Check and the export say when the mesh moved under them, and Refit to Mesh moves them with it.
 - **Editing files that drive mesh vertices** — their Parts can be edited, follow their bones and fit to a mesh; written again from the Parts, the vertices are bound again from the exported `.mesh`. Drive can also be changed on an imported cloth.
 - **Non-manifold Parts** — an edge may have more than two faces (a flap on a sheet), and game files whose quads fold over one diagonal (Onimusha's capes) can be edited.

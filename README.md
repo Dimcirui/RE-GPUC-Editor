@@ -142,6 +142,10 @@ The GPUC: Presets panel saves Header, Config, Part, Collision, Weld and preview 
 
 </details>
 
+### When something fails
+
+A failed export, import or tool names its problem in the report, for example `[NoMatchingMesh]`, and shows a window that says what it means and how to fix it. A Part's problem in Check is shown in the Part panel with the first step of its fix.
+
 ## License and use
 
 RE GPUC Editor is released under the [GPL-3.0-or-later](LICENSE). `data/skeletons.json` is generated from Monster Hunter Wilds `.fbxskel` files and holds only bone names, name hashes, parent links and rest poses, used to place colliders on body bones.

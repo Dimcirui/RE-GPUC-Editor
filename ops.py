@@ -18,8 +18,18 @@ def _settings(context):
 
 
 def refused(op, message: str) -> set:
-    op.report({"ERROR"}, message)
+    """Report the operator's failure, its named problem (``errors``) shown with how to fix it."""
+    problem(op, message)
     return {"CANCELLED"}
+
+
+def problem(op, message: str) -> str:
+    """Report ``message`` as an error; a named problem (``errors.explain``) gets its name in the report and a popup
+    that says what it means and how to fix it. Returns the name, "" for none."""
+    from . import errors
+    name = errors.show(message)
+    op.report({"ERROR"}, f"{message} [{name}]" if name else message)
+    return name
 
 
 def _select_only(context, obj) -> None:
@@ -148,10 +158,10 @@ class REE_GPUC_OT_import(bpy.types.Operator, ImportHelper):
                 else:
                     coll, notes = fileio.import_keep(path, mesh)
             except fileio.ImportProblem as e:
-                self.report({"ERROR"}, f"{name} not imported: {e}")
+                problem(self, f"{name} not imported: {e}")
                 continue
             except (OSError, ValueError, KeyError, IndexError, struct.error) as e:
-                self.report({"ERROR"}, f"Cannot read {name}: {e}")
+                problem(self, f"Cannot read {name}: {e}")
                 continue
             _settings(context).target = coll
             done.append(name)
@@ -506,8 +516,7 @@ class _PartOptions:
                                   self.anchor_rows, self.anchor_gap, self.hem_rows, self.side_cols,
                                   self.skin_style)
         except (generate.GenerateError, ValueError) as e:
-            self.report({"ERROR"}, str(e))
-            return {"CANCELLED"}
+            return refused(self, str(e))
         if s.target is None:
             s.target = generate.new_collection(arm.name, arm)
         obj = generate.new_part(s.target, arm, lay, s.config)
@@ -647,8 +656,7 @@ class REE_GPUC_OT_regenerate_part(bpy.types.Operator):
                                 side_cols=None if self.side_cols == max(side) else self.side_cols,
                                 skin_style=self.skin_style)
         except generate.GenerateError as e:
-            self.report({"ERROR"}, str(e))
-            return {"CANCELLED"}
+            return refused(self, str(e))
         obj["ree_gpuc_check"] = "ok"
         p = obj.ree_gpuc_part
         text = f"{obj.name}: {p.rows} x {p.cols}"
