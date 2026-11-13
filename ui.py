@@ -362,7 +362,8 @@ class REE_GPUC_PT_object_header(_ObjectPanel, bpy.types.Panel):
         sub.enabled = "ree_gpuc_raw" not in context.object.keys()     # an imported cloth: the game is the file's
         sub.prop(h, "game")
         keep = "ree_gpuc_raw" in context.object.keys()
-        if h.game in props.VERTEX_DRIVE_GAMES and not keep:
+        re4_kept = keep and h.game == ".221108868"        # an imported RE4 cloth keeps its file's outputs
+        if h.game in props.VERTEX_DRIVE_GAMES and not re4_kept:
             sub = col.column()
             sub.prop(h, "drive_mode")
             if h.drive_mode == "VERTICES" and h.game in props.EXPERIMENTAL_DRIVE:
@@ -380,7 +381,7 @@ class REE_GPUC_PT_object_header(_ObjectPanel, bpy.types.Panel):
             sub = col.column()
             sub.active = known
             sub.prop(h, name, text=label)
-        if h.drive_mode == "VERTICES" and h.game in props.VERTEX_DRIVE_GAMES and not keep:
+        if h.drive_mode == "VERTICES" and h.game in props.VERTEX_DRIVE_GAMES and not re4_kept:
             self.layout.separator()
             self.layout.label(text="Export Settings")
             col = _split(self.layout)

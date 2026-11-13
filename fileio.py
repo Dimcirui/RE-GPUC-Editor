@@ -363,7 +363,7 @@ def reference_mesh_file(coll) -> str:
     """The .mesh a cloth's reference mesh was imported from when it drives vertices picked on it, else ""."""
     head = props.header(coll) if coll is not None else None
     h = head.ree_gpuc_header if head is not None else None
-    if h is None or h.drive_mode != "VERTICES" or h.drive_selection != "REFERENCE" or keeps_structure(coll):
+    if h is None or h.drive_mode != "VERTICES" or h.drive_selection != "REFERENCE":
         return ""
     return str(h.drive_reference[REFERENCE_KEY]) if is_reference(h.drive_reference) else ""
 
@@ -866,7 +866,9 @@ def export(coll, path: str, mesh_coll=None, joints: str = "FILE", game: str = ""
     if ref and mesh_file and os.path.normcase(bpy.path.abspath(mesh_file)) != os.path.normcase(bpy.path.abspath(ref)):
         raise ExportError(f"Mesh File is {os.path.basename(mesh_file)}, but the vertices are picked on the reference "
                           f"mesh of {os.path.basename(ref)}: clear Mesh File, or import that .mesh as the reference")
-    if keeps_structure(coll) and joints != "MESH":
+    if keeps_structure(coll) and props.header(coll).ree_gpuc_header.drive_mode == "VERTICES":
+        found = find_mesh(coll, mesh_file, path)[0]            # written again, its vertices bound from it
+    elif keeps_structure(coll) and joints != "MESH":
         found = ""
     elif force or _cloth_armature(coll) is None:          # no armature: build_bytes says why it cannot export
         found = find_mesh(coll, mesh_file, path)[0]
@@ -963,7 +965,7 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
         problems = generate.check(obj) if source is None or canon.attached(obj) else []
         if problems:
             raise ExportError(f"{obj.name}: {problems[0]} (regenerate it)")
-    vertices = source is None and head.ree_gpuc_header.drive_mode == "VERTICES"
+    vertices = head.ree_gpuc_header.drive_mode == "VERTICES"       # bound again from the .mesh, a file's too
     if vertices and ext not in props.VERTEX_DRIVE_GAMES:
         raise ExportError(f"{game_name(ext)} cloth cannot drive mesh vertices: set Drive to Joints")
     weighted = None
@@ -1068,8 +1070,8 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
         notes.append(Info(POSED))
 
     # the file's driven joints, at the file's binds
-    outputs, moved, dropped, driven = [], 0, 0, set()
-    if source is not None:
+    outputs, moved, dropped, driven, rebound = [], 0, 0, set(), {}
+    if source is not None and not vertices and f["vertex"] is None:
         palette = (_mesh_palette(coll, head, arm, len(f["joints"]), mesh_coll, mesh_file, gpuc_path, notes)
                    if from_mesh else [j["palette"] for j in f["joints"]])
         rebound = moved_joints(coll, arm)
@@ -1336,8 +1338,10 @@ def _build_keep(coll, head, cfg_objs, part_objs, from_mesh=False, mesh_coll=None
         posed = False
     rebind = bool(moved_joints(coll, arm)) and all(canon.editable(canon.load(o)) or canon.attached(o)
                                                     for o in file_objs)
+    file_drives_vertices = vertex_drive_info(stored_file(coll)) is not None
+    other_drive = (head.ree_gpuc_header.drive_mode == "VERTICES") != file_drives_vertices
     if (len(file_objs) < len(part_objs) or any(canon.edited(o) or canon.attached(o) for o in file_objs)
-            or ext != game or posed or rebind):
+            or ext != game or posed or rebind or other_drive):
         if len(file_objs) != len(counts):
             raise ExportError(f"it has {len(file_objs)} of its file's {len(counts)} Parts: an imported cloth "
                               f"cannot remove its file's Parts")
@@ -2043,7 +2047,7 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
     # rebuilt by _build_cloth, which writes one simulation LOD
     lods = not is_re4 and any(struct.unpack_from("<I", raw, gp.offset_of(r["ext"], n))[0]
                               for n in ("interpolations", "restrictions"))
-    editable = not is_re4 and bool(f["flags"] & 4) and f["vertex"] is None and not lods
+    editable = not is_re4 and (bool(f["flags"] & 4) or f["vertex"] is not None) and not lods
     fixed = []                                        # parts whose links do not follow from their faces
     for i, block in enumerate(r["parts"]):
         sel = np.where(f["part_of"] == i)[0]
@@ -2103,8 +2107,9 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
     _keep_welds(coll, f, notes)                       # after the collisions: the chain editor's order
     if f.get("vertex"):
         J, S, V, L, _ = f["vertex"]
-        notes.append(f"It drives {J} of {V} mesh vertices ({L} LODs) directly; the bindings are kept from the file")
-        notes.append("Its particles and faces cannot be edited: it drives mesh vertices")
+        notes.append(f"It drives {J} of {V} mesh vertices ({L} LODs) directly: the file's bindings are kept until "
+                     f"it is written again from its Parts, then bound again from the exported .mesh")
+        _rebuild_drive(props.header(coll).ree_gpuc_header, f, path, notes)
     if fixed:
         notes.append(f"{', '.join(fixed)}: its particles and faces cannot be edited (its links are not the ones its "
                      f"faces give)")

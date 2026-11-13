@@ -129,7 +129,7 @@ def _fittable(obj) -> str:
         return "it has no particles"
     if canon.attached(obj) or canon.editable_part(obj):
         return ""
-    return "its particles keep their file's places (it drives mesh vertices, or its links are not its faces')"
+    return "its particles keep their file's places (an imported RE4 cloth, or one simulated in several LODs)"
 
 
 def _set_rest(obj, co_local) -> None:
