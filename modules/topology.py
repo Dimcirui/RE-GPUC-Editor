@@ -30,9 +30,10 @@ def carry_flags(tris, flags, onto) -> list:
     return out
 
 
-def quads(tris, tri_uv, links) -> tuple | None:
+def quads(tris, tri_uv, links, extra: bool = False) -> tuple | None:
     """Return (faces, face corner UVs, diagonal bend) when the part's links are exactly those ``gpuc_build`` makes
-    from its triangles paired into quads, else None. ``links`` are (a, b, type) in part indices."""
+    from its triangles paired into quads, else None. ``links`` are (a, b, type) in part indices. With ``extra``,
+    the links may also hold others besides (``extra_links`` gives them)."""
     tris = [tuple(int(v) for v in t) for t in tris]
     tri_uv = np.asarray(tri_uv, float).reshape(-1, 3, 2)
     structural = {(min(a, b), max(a, b)) for a, b, t in links if t == 0}
@@ -60,7 +61,17 @@ def quads(tris, tri_uv, links) -> tuple | None:
     for bend in (True, False):
         if {tuple(x) for x in links_of(faces, bend).tolist()} == want and len(want) == len(links):
             return faces, np.concatenate(uvs).reshape(-1, 2), bend
+    if extra:
+        for bend in (True, False):
+            if {tuple(x) for x in links_of(faces, bend).tolist()} <= want:
+                return faces, np.concatenate(uvs).reshape(-1, 2), bend
     return None
+
+
+def extra_links(faces, links, diagonal_bend: bool = True) -> set:
+    """The links, (a, b, type), that the faces do not give."""
+    made = {tuple(x) for x in links_of(faces, diagonal_bend).tolist()}
+    return {(min(int(a), int(b)), max(int(a), int(b)), int(t)) for a, b, t, *_ in links} - made
 
 
 def _join(t1, uv1, t2, uv2):

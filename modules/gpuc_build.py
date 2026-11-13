@@ -281,7 +281,7 @@ def blank(layout):
     return g
 
 
-def build(spec, template, skin_table, capsules=None, particle_radius=None, link_tail=None, welds=None):
+def build(spec, template, skin_table, capsules=None, particle_radius=None, link_tail=None, welds=None, extra=None):
     """template: a gpuc.Gpuc, or a gpuc.Layout to start from blank(layout) (zero particle fields, SEC28 for every
     particle, link tails ffffffffffffff0f where link_tail gives none, no config, part or capsule).
     skin_table: list of full mesh bone indices referenced by spec.skin_bones (sec 11).
@@ -290,7 +290,9 @@ def build(spec, template, skin_table, capsules=None, particle_radius=None, link_
     link_tail: optional function (type, a, b) -> 8-byte link tail or None; None falls back to the
     template's most common tail for (type, relation).
     welds: optional list of (a, b, type, 8-byte tail): zero-length links joining coincident particles of two
-    parts, written after the faces' links, a to b as given."""
+    parts, written after the faces' links, a to b as given.
+    extra: optional list of (a, b, type, 8-byte tail): links the faces do not give, at their rest length, written
+    after the faces' links."""
     from_blank = not isinstance(template, gpuc.Gpuc)
     t = blank(template) if from_blank else template
     tp = _template_particles(t)
@@ -301,7 +303,9 @@ def build(spec, template, skin_table, capsules=None, particle_radius=None, link_
     # triangles, links and edges are stored batch by batch, each batch's links and edges coloured on their own
     tris = sorted(_triangles(spec), key=lambda t: batch_of[t[0]])
     weld_tail = {(a, b, typ): tail for a, b, typ, tail in welds or ()}
-    items = _links(spec) + [((a, b), typ, "weld") for a, b, typ in sorted(weld_tail)]
+    extra_tail = {(a, b, typ): tail for a, b, typ, tail in extra or ()}
+    items = _links(spec) + [((a, b), typ, "extra") for a, b, typ in sorted(extra_tail)]
+    items += [((a, b), typ, "weld") for a, b, typ in sorted(weld_tail)]
     edge_set = set()
     for i, j, k, _ in tris:
         edge_set |= {tuple(sorted((i, j))), tuple(sorted((j, k))), tuple(sorted((i, k)))}
@@ -362,6 +366,10 @@ def build(spec, template, skin_table, capsules=None, particle_radius=None, link_
     for (a, b), typ, r in link_order:
         if r == "weld":
             sec2 += struct.pack("<HHf", a, b, 0.0) + weld_tail[(a, b, typ)]
+            sec29 += struct.pack("<I", typ)
+            continue
+        if r == "extra":
+            sec2 += struct.pack("<HHf", a, b, float(np.linalg.norm(pos[a] - pos[b]))) + extra_tail[(a, b, typ)]
             sec29 += struct.pack("<I", typ)
             continue
         tail = link_tail(typ, a, b) if link_tail else None

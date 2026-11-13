@@ -5,7 +5,8 @@ Maintenance constraints:
 - ``canon.PARTICLE_ID`` names the particle each vertex was; a vertex whose ID is out of range, or repeated and
   not the copy nearest the particle's last position, is a new particle. Kept particles keep their file index
   (``src``, which the export's driven joints follow), exact values, skin and link tails; welds follow them too.
-- Links come from the faces (``topology.links_of``); a new link takes the commonest tail of its shape on the Part,
+- Links come from the faces (``topology.links_of``), and the links the faces did not give before stay while both
+  their particles do; a new link takes the commonest tail of its shape on the Part,
   a new triangle the export's tangent flags for its UVs (``gpuc_build.tangent_flags``).
 - Every change ends in ``canon.build_mesh``, which numbers the particles again."""
 import collections
@@ -157,9 +158,11 @@ def _skin(obj, keep, old, slots) -> tuple:
 
 def _links(obj, faces, co, keep, old) -> tuple:
     """(links (a, b, type, shape), their tails) of the faces; a link both of whose particles are kept, between them
-    in the file too, keeps its tail."""
-    ln = topology.links_of(faces, obj.ree_gpuc_part.diagonal_bend)
-    before = {(int(a), int(b), int(t)): (int(s), tuple(map(float, tail)))
+    in the file too, keeps its tail. A link the old faces did not give (one its file adds) stays while both its
+    particles do."""
+    bend = obj.ree_gpuc_part.diagonal_bend
+    ln = topology.links_of(faces, bend)
+    before = {(min(int(a), int(b)), max(int(a), int(b)), int(t)): (int(s), tuple(map(float, tail)))
               for (a, b, t, s), tail in zip(old["links"], old["tails"])}
     common = {}
     for s in range(len(gp.SHAPES)):
@@ -178,6 +181,16 @@ def _links(obj, faces, co, keep, old) -> tuple:
             tail = common.get(shape, shape_tail[shape])
         out.append((a, b, t, shape))
         tails.append(tail)
+    if old.get("faces") is not None:
+        now = {k: v for v, k in enumerate(keep) if k >= 0}
+        made = {(int(a), int(b), int(t)) for a, b, t, _ in out}
+        for a, b, t in sorted(topology.extra_links(old["faces"], old["links"], bend)):
+            if a in now and b in now:
+                na, nb = sorted((now[a], now[b]))
+                if (na, nb, t) not in made:
+                    shape, tail = before[(a, b, t)]
+                    out.append((na, nb, t, shape))
+                    tails.append(tail)
     return np.asarray(out, np.int64).reshape(-1, 4), np.asarray(tails, np.float32).reshape(-1, 4)
 
 

@@ -14,6 +14,7 @@
 - **Collision planes and spheres for Wilds, RE9 and Onimusha** — a file's own planes and spheres import as objects and export to their own sections, chosen by the Part's Plane and Sphere Bits; Collision From Bones makes planes for every game.
 - **Triangle tangent flags** — on an editable imported Part's faces, as attributes you can read and set; new triangles whose UVs span no area get the flag the game's files give them.
 - **Attach to Bones** — an imported Part found to be a grid of bone chains follows its bones, and stays its file's Part.
+- **Parts with links of their own** — a game file's part that holds links its faces do not give (for example two long soft links in Wilds ch03_066_0015) can now be edited; those links stay between their two particles until one is deleted.
 - **Every Part follows its bones** — an imported Part, one made from a mesh or one edited as a mesh moves its particles with its skin bones when they move; Follow Bones does it by hand.
 - **Chains of different lengths, side columns** — a Part made from bones can take chains of different lengths (a shorter one ends early, the faces past its end left out) and Side Columns beside its outer chains.
 - **Slits and faces left out** — a Part made from bones can be cut down a column or leave faces out (GPUC: Particles > Shape, in Edit Mode); the shape carries over a change of density and comes back when the file is imported again.

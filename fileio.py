@@ -990,6 +990,7 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
     positions, sim_weight, skin_bones, skin_w, faces, uvs, bend, tri_flags = [], [], [], [], [], [], [], []
     vals, run = [None] * len(part_objs), [0] * len(part_objs)
     shapes, starts, new_of, fresh, base, cut = {}, {}, {}, set(), 0, 0
+    extra = []                                        # links the Parts' faces do not give (``gpuc_build.build``)
     skinned = collections.defaultdict(list)            # bone -> (particle, its share of the particle's skin)
     driving = {}                                       # a new Part's driven bone -> the Parts that drive it
     for obj, why in weld.skipped(coll):
@@ -1030,6 +1031,11 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
         bend.append(np.full(n, geo["bend"]))
         for (a, b, t, _), tail in zip(canon.links(d), canon.link_tails(obj, d)):
             shapes[(base + int(a), base + int(b), int(t))] = gp.tail_bytes(*map(float, tail))   # float32 rounds
+        if d.get("faces") is not None:                # links its faces do not give, as the Part holds them
+            more = topology.extra_links(d["faces"], d["links"], geo["bend"])
+            for a, b, t, _ in canon.links(d):
+                if (min(int(a), int(b)), max(int(a), int(b)), int(t)) in more:
+                    extra.append((base + int(a), base + int(b), int(t), shapes[(base + int(a), base + int(b), int(t))]))
         if obj in file_start:
             for i, s in enumerate(d["src"]):
                 if s >= 0:
@@ -1167,7 +1173,8 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
                                     notes)
         return data, list(dict.fromkeys(notes))
     try:
-        out = gpuc_build.build(spec, layout, skin_table, link_tail=link_tail, welds=_weld_links(coll, starts))
+        out = gpuc_build.build(spec, layout, skin_table, link_tail=link_tail, welds=_weld_links(coll, starts),
+                               extra=extra)
     except ValueError as e:
         raise ExportError(str(e)) from e
     built = gpuc.Gpuc(out, layout)
@@ -2059,9 +2066,15 @@ def import_keep(path: str, mesh_coll=None) -> tuple:
                              np.int64),
             "skin_w": (f["skin_w"][sel] / 255.0).astype(np.float32),
             **{field: f["values"][field][sel] for field in canon.FIELD_NAMES}}
-        quads = topology.quads(data["tris"], data["tri_uv"], data["links"][:, :3].tolist()) if editable else None
+        quads = None
+        if editable:
+            quads = topology.quads(data["tris"], data["tri_uv"], data["links"][:, :3].tolist(), extra=True)
         if quads is not None:
             data["faces"], data["face_uv"], bend = quads
+            more = topology.extra_links(data["faces"], data["links"], bend)
+            if more:
+                notes.append(f"{block['part_name'] or f'part {i}'}: {len(more)} links its faces do not give are kept, "
+                             f"each between its own two particles")
             data["editable"] = True
             data["tri_flags"] = [x or 0 for x in topology.carry_flags(
                 data["tris"].tolist(), f["tri_flags"][tri_keep],
