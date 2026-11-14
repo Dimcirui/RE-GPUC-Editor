@@ -116,6 +116,19 @@ A Part imported from a file (not attached to bones), made from bones and turned 
 </details>
 
 <details>
+  <summary>Part Groups</summary>
+
+A cloth is Header > Config > Part Group > Part. A Part Group is one part block of the .gpuc: it holds the block's settings (Config, Name, Root Joint, CLSP flags, friction, bounce, stickiness, surface area and the collision bits), and every Part in it is written into that block, so its Parts share them. They can be changed on the Group or on any of its Parts. Every Part is in a Part Group; a new Part gets one of its own.
+
+* Move Parts into another Group with Move (Part panel, next to its Part Group), or by dragging them under it in the Outliner: they take its settings. A Part dragged under a Config gets a Group of its own.
+* New Part Group (Part Group panel) adds an empty Group with the same settings. An empty Group is not written, so several Groups with other settings can be kept and Parts moved between them to compare.
+* A game file's part made of several pieces of cloth (two sleeves, a kimono's sleeves and body) imports as one Part per piece in one Part Group; with Attach to Bones each piece attaches on its own. A part linked to another part (welded) stays one Part.
+* An imported cloth exports as its file while each file part's Parts stay in a Group of their own; moving Parts between Groups writes the file again.
+* RE4 writes each Part as a block of its own: its Groups hold one Part each.
+
+</details>
+
+<details>
   <summary>Link stiffness and editing links</summary>
 
 Each link has a stiffness of its own, or takes its shape's overall stiffness (Vertical, Ring, Shear, Bend). The links of an imported file keep the file's stiffness as their own, so changing the overall stiffness leaves the file's values as they are.

@@ -341,6 +341,7 @@ def file_grid_key(d: dict) -> list:
     return key
 MESH_KEY = "ree_gpuc_from_mesh"          # on a Part made from a mesh (``structure.from_mesh``)
 FILE_KEY = "ree_gpuc_file_part"          # on a Part imported from its file: its part's index in the file
+FILE_PIECE_KEY = "ree_gpuc_file_piece"   # on one piece of cloth of a file part (several Parts of one Group): which
 
 
 def file_part(obj) -> bool:
@@ -1027,10 +1028,10 @@ def _on_depsgraph(scene, depsgraph):
              and u.id.original.type == "ARMATURE"}
     for upd in depsgraph.updates:
         obj = upd.id.original
-        if upd.is_updated_transform and isinstance(obj, bpy.types.Object) and obj.get("TYPE") == "RE_GPUC_PART":
-            parent = obj.parent                       # dragged under another Config in the outliner
-            if parent is not None and parent.get("TYPE") == "RE_GPUC_CONFIG" and obj.ree_gpuc_part.config != parent:
-                obj.ree_gpuc_part.config = parent
+        if upd.is_updated_transform and isinstance(obj, bpy.types.Object) and obj.get("TYPE") in (
+                "RE_GPUC_PART", "RE_GPUC_PART_GROUP"):          # props.PART_TYPE, GROUP_TYPE
+            from . import props
+            props.adopt_parent(obj)                   # dragged under another Group or Config in the Outliner
         if not upd.is_updated_geometry:
             continue
         ids = [upd.id.original]
@@ -1067,7 +1068,10 @@ def _after_history(*_):
 @bpy.app.handlers.persistent
 def _initialize_mapping(*_):
     # Called after registration (not inside Blender's restricted add-on context), and after file load.
-    for obj in bpy.data.objects:
+    from . import props
+    for obj in list(bpy.data.objects):
+        if props.is_part(obj):
+            props.ensure_group(obj)                   # a Part from before Part Groups
         if has(obj) and MAPPING_KEY not in obj:
             fit_ranges(obj, load(obj))
             write_groups(obj)

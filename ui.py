@@ -745,33 +745,14 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
                          icon="LOCKED")
         re4_part = props.is_re4_object(obj)
         re4_kept = re4_part and canon.locked(obj) and not canon.made_here(obj)          # RE4 imported: Parts and Configs stay the file's
-        col = _split(layout)
-        identity = col.column()
-        identity.enabled = not re4_kept
-        identity.prop(p, "config")
-        identity.prop(p, "part_name")
-        identity.prop(p, "use_root_joint")
-        sub = col.column()
-        sub.active = p.use_root_joint and not re4_kept
-        if p.armature is not None and p.armature.type == "ARMATURE":
-            sub.prop_search(p, "root_joint", p.armature.data, "bones", text="Joint")
-        else:
-            sub.prop(p, "root_joint", text="Joint")
-        if not re4_part:                        # RE4 has no CLSP flags: written -1 on export
-            _bits(col, p, "clsp_flags_a", "ree_gpuc_part.clsp_flags_a")
-            _bits(col, p, "clsp_flags_b", "ree_gpuc_part.clsp_flags_b")
-        for name in ("friction", "bounce", "stickiness", "surface_area"):
-            if re4_part and name == "surface_area":
-                continue
-            sub = col.column()
-            sub.active = name not in props.UNVERIFIED
-            sub.prop(p, name, slider=name in props.SLIDERS)
-        for name in ("plane_bits", "sphere_bits", "capsule_bits", "obb_bits"):
-            if re4_part and name == "obb_bits":
-                continue
-            _bits(col, p, name, f"ree_gpuc_part.{name}")
-        if re4_part:
-            col.prop(p, "re4_value_30")
+        group = props.group_of(obj)
+        row = layout.row(align=True)
+        row.label(text=f"Part Group: {group.name if group else '(none)'}"
+                       + (f" ({len(props.group_parts(group))} Parts)" if group else ""), icon="OUTLINER_OB_EMPTY")
+        sub = row.row()
+        sub.enabled = not re4_kept
+        sub.operator("ree_gpuc.move_to_group", text="Move", icon="FORWARD")
+        _block_settings(layout, group or obj, re4_part, re4_kept)
         if (not canon.locked(obj) or canon.made_here(obj)) and not canon.file_part(obj):
             _driven_bones(layout, obj)
         _overall_stiffness(layout, context, obj)
@@ -783,6 +764,57 @@ class REE_GPUC_PT_object_part(_ObjectPanel, bpy.types.Panel):
             col.prop(p, "flip_normals")
             col.prop(p, "other_diagonal")
             col.prop(p, "diagonal_bend")
+
+
+def _block_settings(layout, obj, re4_part, re4_kept) -> None:
+    """The part block settings a Part Group holds for its Parts (a Part in none: its own)."""
+    p = obj.ree_gpuc_part
+    col = _split(layout)
+    identity = col.column()
+    identity.enabled = not re4_kept
+    identity.prop(p, "config")
+    identity.prop(p, "part_name")
+    identity.prop(p, "use_root_joint")
+    sub = col.column()
+    sub.active = p.use_root_joint and not re4_kept
+    if p.armature is not None and p.armature.type == "ARMATURE":
+        sub.prop_search(p, "root_joint", p.armature.data, "bones", text="Joint")
+    else:
+        sub.prop(p, "root_joint", text="Joint")
+    if not re4_part:                        # RE4 has no CLSP flags: written -1 on export
+        _bits(col, p, "clsp_flags_a", "ree_gpuc_part.clsp_flags_a")
+        _bits(col, p, "clsp_flags_b", "ree_gpuc_part.clsp_flags_b")
+    for name in ("friction", "bounce", "stickiness", "surface_area"):
+        if re4_part and name == "surface_area":
+            continue
+        sub = col.column()
+        sub.active = name not in props.UNVERIFIED
+        sub.prop(p, name, slider=name in props.SLIDERS)
+    for name in ("plane_bits", "sphere_bits", "capsule_bits", "obb_bits"):
+        if re4_part and name == "obb_bits":
+            continue
+        _bits(col, p, name, f"ree_gpuc_part.{name}")
+    if re4_part:
+        col.prop(p, "re4_value_30")
+
+
+class REE_GPUC_PT_object_group(_ObjectPanel, bpy.types.Panel):
+    bl_label = "GPUC Part Group"
+    KIND = staticmethod(props.is_group)
+
+    def draw(self, context):
+        obj = context.object
+        layout = self.layout
+        parts = props.group_parts(obj)
+        re4_part = props.is_re4_object(obj)
+        re4_kept = re4_part and any(canon.locked(o) and not canon.made_here(o) for o in parts)
+        layout.label(text=f"One part block: {len(parts)} Parts" if parts else "Empty: not written on export",
+                     icon="OUTLINER_OB_EMPTY")
+        col = layout.column(align=True)
+        for part in parts:
+            col.label(text=part.name, icon="MESH_DATA")
+        layout.operator("ree_gpuc.new_group", icon="ADD")
+        _block_settings(layout, obj, re4_part, re4_kept)
 
 
 class REE_GPUC_PT_object_collision(_ObjectPanel, bpy.types.Panel):
@@ -890,7 +922,7 @@ class REE_GPUC_PT_object_force(_ObjectPanel, bpy.types.Panel):
 
 CLASSES = (REE_GPUC_PT_driven_vertices, REE_GPUC_PT_general, REE_GPUC_PT_pose, REE_GPUC_PT_presets, REE_GPUC_PT_clipboard, REE_GPUC_PT_particles, REE_GPUC_PT_links, REE_GPUC_UL_colliders, REE_GPUC_PT_simulate,
            REE_GPUC_PT_display, REE_GPUC_PT_uv, REE_GPUC_PT_object_header, REE_GPUC_UL_keys, REE_GPUC_UL_bones, REE_GPUC_PT_object_config,
-           REE_GPUC_PT_object_part, REE_GPUC_PT_object_collision, REE_GPUC_PT_object_plane, REE_GPUC_PT_object_collider, REE_GPUC_PT_object_force)
+           REE_GPUC_PT_object_part, REE_GPUC_PT_object_group, REE_GPUC_PT_object_collision, REE_GPUC_PT_object_plane, REE_GPUC_PT_object_collider, REE_GPUC_PT_object_force)
 
 
 def register():

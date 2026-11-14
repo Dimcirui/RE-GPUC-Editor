@@ -15,6 +15,8 @@
 - **Triangle tangent flags** — on an editable imported Part's faces, as attributes you can read and set; new triangles whose UVs span no area get the flag the game's files give them.
 - **Attach to Bones** — an imported Part found to be a grid of bone chains follows its bones, and stays its file's Part.
 - **Editing links** — in Edit Mode the links between the selected particles (of the shapes ticked in GPUC: Links) can get a stiffness of their own or a preset's, follow the overall stiffness, be removed, or be added between two particles, with undo. On a Part that follows its bones the changes last while its grid stays the same, also when the bones move.
+- **Part Groups** — each part block is a Part Group holding its settings, with one or more Parts in it; Parts move between Groups, and empty Groups are kept but not written.
+- **Parts of several pieces** — a game file's part made of several pieces of cloth imports as one Part per piece in one Part Group, and each piece attaches to its bones on its own.
 - **Stiffness presets** — the four link shapes' stiffness saved and applied to a Part's overall stiffness or to selected links; the built-in ones are listed with them.
 - **Named problems** — a failed export, import or tool names its problem and shows what it means and how to fix it; the Part panel shows the fix under a Part's problem. General Tools groups its tools under Parts and Mesh.
 - **Anchors** — particles remember where they sit on the mesh; Check and the export say when the mesh moved under them, and Refit to Mesh moves them with it.

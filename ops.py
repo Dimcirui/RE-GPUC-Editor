@@ -361,6 +361,74 @@ class REE_GPUC_OT_new_config(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _group_items(self, context):
+    from . import reference
+    obj = context.object
+    coll = reference.cloth_of(obj) if obj is not None else None
+    items = [(g.name, g.name, f"Into {g.name}: its part block settings, {len(props.group_parts(g))} Parts in it")
+             for g in props.groups(coll)]
+    items.append(("NEW", "New Part Group", "Into a new Part Group with the active Part's part block settings"))
+    _group_items.keep = items                      # Blender reads the strings after the call
+    return items
+
+
+class REE_GPUC_OT_move_to_group(bpy.types.Operator):
+    """Move the selected Parts into a Part Group, where they take its part block settings and are written as one
+    part block. An empty Part Group is not written"""
+    bl_idname = "ree_gpuc.move_to_group"
+    bl_label = "Move to Part Group"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_property = "group"
+
+    group: bpy.props.EnumProperty(name="Part Group", items=_group_items)
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == "OBJECT" and props.is_part(context.object)
+
+    def invoke(self, context, event):
+        context.window_manager.invoke_search_popup(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        from . import reference
+        active = context.object
+        moving = [o for o in context.selected_objects if props.is_part(o)] or [active]
+        coll = reference.cloth_of(active)
+        if any(reference.cloth_of(o) != coll for o in moving):
+            return refused(self, "The selected Parts are not of one cloth")
+        if self.group == "NEW":
+            group = props.new_group(coll, active.ree_gpuc_part.config, active)
+        else:
+            group = bpy.data.objects.get(self.group)
+            if not props.is_group(group):
+                return refused(self, f"No Part Group {self.group}")
+        for obj in moving:
+            props.put_in_group(obj, group)
+        self.report({"INFO"}, f"{len(moving)} Parts in {group.name}, {len(props.group_parts(group))} in all")
+        return {"FINISHED"}
+
+
+class REE_GPUC_OT_new_group(bpy.types.Operator):
+    """Add an empty Part Group with the active Part Group's part block settings, under the same Config: move Parts
+    into it to try them with these settings"""
+    bl_idname = "ree_gpuc.new_group"
+    bl_label = "New Part Group"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == "OBJECT" and props.is_group(context.object)
+
+    def execute(self, context):
+        from . import reference
+        src = context.object
+        name = generate.unique_name("GPUC_GROUP_", "_" + src.ree_gpuc_part.part_name)
+        group = props.new_group(reference.cloth_of(src), src.ree_gpuc_part.config, src, name)
+        self.report({"INFO"}, f"Added {group.name}")
+        return {"FINISHED"}
+
+
 class REE_GPUC_OT_check(bpy.types.Operator):
     """Compare every part of the active cloth with its bones, and with the mesh its particles were anchored to"""
     bl_idname = "ree_gpuc.check"
@@ -1865,6 +1933,7 @@ class REE_GPUC_OT_drive_spread_lods(bpy.types.Operator):
 
 
 CLASSES = (REE_GPUC_OT_import, REE_GPUC_FH_import, REE_GPUC_OT_export, REE_GPUC_OT_create_header, REE_GPUC_OT_new_config,
+           REE_GPUC_OT_move_to_group, REE_GPUC_OT_new_group,
            REE_GPUC_OT_check, REE_GPUC_OT_switch_to_pose, REE_GPUC_OT_switch_to_object, REE_GPUC_OT_part_from_parents,
            REE_GPUC_OT_part_from_selected, REE_GPUC_OT_regenerate_part, REE_GPUC_OT_select_part_bones,
            REE_GPUC_OT_add_collider, REE_GPUC_OT_remove_collider, REE_GPUC_OT_collider_from_bones, REE_GPUC_OT_copy, REE_GPUC_OT_paste,

@@ -342,6 +342,9 @@ def attach_to_bones(obj, force: bool = False) -> str:
         raise ValueError("its skin names bones the armature lacks: import it with the mesh collection")
     f = fileio.file_parts(fileio.stored_file(coll))
     i = int(obj[canon.FILE_KEY])
+    piece = np.asarray(old["src"], np.int64) if canon.FILE_PIECE_KEY in obj.keys() else None
+    if piece is not None:                                # a piece of the part: its particles alone
+        f, i = fileio.piece_file(f, i, piece), 0
     sel = np.where(f["part_of"] == i)[0]
     lay, links, gl = fileio._recognise(f, i, [b.name for b in arm.data.bones], fileio.ancestors(arm),
                                        fileio.bone_heads(arm))
@@ -397,7 +400,9 @@ def attach_to_bones(obj, force: bool = False) -> str:
         for k in grid_props:
             setattr(p, k, lay[k])
         obj[canon.FILE_GRID_KEY] = canon.file_grid_key(lay)
-        if (order != np.arange(len(order))).any():
+        if piece is not None:                           # each particle's index in the file part
+            obj[canon.FILE_ORDER_KEY] = piece[order].tolist()
+        elif (order != np.arange(len(order))).any():
             obj[canon.FILE_ORDER_KEY] = order.tolist()
         if not p.root_joint:                 # the bone a Part made from these chains takes, unused till ticked
             first = next(n for n in lay["nodes"] if n)

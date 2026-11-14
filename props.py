@@ -465,10 +465,168 @@ def _poll_config(self, obj):
 
 
 def _part_config(self, context):
-    """Parent the Part under its new Config, as a chain group sits under its chain settings."""
+    """A Part Group goes under its new Config with its Parts; a Part takes its Group there, and a Part in no Group
+    gets one (``ensure_group``)."""
     obj = self.id_data
-    if is_config(self.config) and obj.parent != self.config:
-        place_under(obj, self.config)
+    if not is_config(self.config):
+        return
+    if is_group(obj):
+        if obj.parent != self.config:
+            place_under(obj, self.config)
+        for part in group_parts(obj):
+            if part.ree_gpuc_part.config != self.config:
+                part.ree_gpuc_part.config = self.config
+    elif is_part(obj):
+        group = group_of(obj)
+        if group is None:
+            ensure_group(obj)
+        elif group.ree_gpuc_part.config != self.config:
+            group.ree_gpuc_part.config = self.config
+
+
+# --- Part Groups: one part block of the .gpuc each, its Parts the pieces of cloth in it -------------------------
+
+GROUP_TYPE = "RE_GPUC_PART_GROUP"
+# the part block's settings: a Part Group holds them, and each of its Parts a copy (``share``)
+BLOCK_FIELDS = ("part_name", "use_root_joint", "root_joint", "re4_value_30", "clsp_flags_a", "clsp_flags_b",
+                "friction", "bounce", "stickiness", "surface_area", "plane_bits", "sphere_bits", "capsule_bits",
+                "obb_bits")
+
+
+def is_group(obj) -> bool:
+    return obj is not None and obj.type == "EMPTY" and obj.get("TYPE") == GROUP_TYPE
+
+
+def groups(coll) -> list:
+    return sorted((o for o in coll.all_objects if is_group(o)), key=lambda o: o.name) if coll is not None else []
+
+
+def group_of(part):
+    """The Part Group a Part is in (its parent), else None."""
+    parent = part.parent if part is not None else None
+    return parent if is_group(parent) else None
+
+
+def group_parts(group) -> list:
+    return sorted((o for o in group.children if is_part(o)), key=lambda o: o.name)
+
+
+def blocks(part_objs) -> list:
+    """The Parts as the export's part blocks: one list per Part Group that holds some of them, in the Groups' name
+    order, each by name; a Part in no Group a block of its own, after them."""
+    by_group, alone = {}, []
+    for obj in sorted(part_objs, key=lambda o: o.name):
+        group = group_of(obj)
+        if group is None:
+            alone.append([obj])
+        else:
+            by_group.setdefault(group.name, []).append(obj)
+    return [by_group[k] for k in sorted(by_group)] + alone
+
+
+_sharing = False
+
+
+def _shared(field: str, then=None):
+    """The update of a part block setting: copied to the Part Group and its other Parts (``share``), after
+    ``then`` on a Part."""
+    def update(self, context):
+        obj = self.id_data
+        if then is not None and is_part(obj):
+            then(self, context)
+        share(obj, (field,))
+    return update
+
+
+def share(obj, fields=BLOCK_FIELDS) -> None:
+    """Copy a Part's or a Part Group's part block settings to the Group and all its Parts."""
+    global _sharing
+    if _sharing:
+        return
+    group = obj if is_group(obj) else group_of(obj)
+    if group is None:
+        return
+    _sharing = True
+    try:
+        src = obj.ree_gpuc_part
+        for other in [group] + group_parts(group):
+            if other == obj:
+                continue
+            dst = other.ree_gpuc_part
+            for field in fields:
+                if getattr(dst, field) != getattr(src, field):
+                    setattr(dst, field, getattr(src, field))
+    finally:
+        _sharing = False
+
+
+def new_group(coll, config, like=None, name: str = ""):
+    """A new Part Group under the Config, in the cloth ``coll``, with the part block settings of ``like`` (a Part
+    or a Group), else the defaults."""
+    if not name:
+        base = like.name.replace("GPUC_PART_", "GPUC_GROUP_", 1) if is_part(like) else "GPUC_GROUP"
+        name, k = base, 1
+        while name in bpy.data.objects:
+            name, k = f"{base}.{k:03d}", k + 1
+    group = bpy.data.objects.new(name, None)
+    group["TYPE"] = GROUP_TYPE
+    group.empty_display_type, group.empty_display_size = "PLAIN_AXES", 0.03
+    group.hide_render = True
+    coll.objects.link(group)
+    g = group.ree_gpuc_part
+    if like is not None:
+        global _sharing
+        g.armature = like.ree_gpuc_part.armature
+        _sharing = True
+        try:
+            for field in BLOCK_FIELDS:
+                setattr(g, field, getattr(like.ree_gpuc_part, field))
+        finally:
+            _sharing = False
+    if is_config(config):
+        g.config = config                                # and under it
+    return group
+
+
+def put_in_group(part, group) -> None:
+    """Move the Part into the Part Group: under it, its part block settings the Group's."""
+    if part.parent != group:
+        place_under(part, group)
+    share(group)
+    config = group.ree_gpuc_part.config
+    if is_config(config) and part.ree_gpuc_part.config != config:
+        part.ree_gpuc_part.config = config
+
+
+def ensure_group(part):
+    """The Part's Part Group; a Part in none (made before Part Groups, or moved under a Config) gets a new one with
+    its settings, under its Config."""
+    group = group_of(part)
+    if group is not None:
+        return group
+    config = part.parent if is_config(part.parent) else part.ree_gpuc_part.config
+    if not is_config(config) or not part.users_collection:
+        return None
+    group = new_group(part.users_collection[0], config, part)
+    place_under(part, group)
+    return group
+
+
+def adopt_parent(obj) -> None:
+    """After an object's parent changed (dragged in the Outliner): a Part under a Part Group takes its settings, a
+    Part under a Config gets a Group of its own; a Group under another Config takes it as its Config."""
+    parent = obj.parent
+    if is_part(obj):
+        if is_group(parent):
+            g, p = parent.ree_gpuc_part, obj.ree_gpuc_part
+            if g.config != p.config or any(getattr(g, f) != getattr(p, f) for f in BLOCK_FIELDS):
+                put_in_group(obj, parent)
+        elif is_config(parent):
+            if obj.ree_gpuc_part.config != parent:
+                obj.ree_gpuc_part.config = parent
+            ensure_group(obj)
+    elif is_group(obj) and is_config(parent) and obj.ree_gpuc_part.config != parent:
+        obj.ree_gpuc_part.config = parent
 
 
 def place_under(obj, parent) -> None:
@@ -541,7 +699,7 @@ class REE_GPUC_Part(bpy.types.PropertyGroup):
                                description="Which bones the Part's particles drive")
     driven_list: bpy.props.CollectionProperty(type=REE_GPUC_BoneName)
     driven_index: IntProperty()
-    re4_value_30: FloatProperty(name="Long Range Attachment Stretchiness", precision=5,
+    re4_value_30: FloatProperty(update=_shared("re4_value_30"), name="Long Range Attachment Stretchiness", precision=5,
                                description="RE4 only. Effect unknown. Usually 0")
     rows: IntProperty(name="Rows")
     cols: IntProperty(name="Columns")
@@ -563,26 +721,27 @@ class REE_GPUC_Part(bpy.types.PropertyGroup):
                                             "Attach to Bones finds it")
     uv_tile: IntProperty(name="UV tile", description="The part's place on the grid UV (u from this to this + 1)")
     # the part block (section 6); its config index and name hash follow from the hierarchy and the name
-    part_name: StringProperty(name="Name", default="_p000", description="The part block's name (usually _p000, _p001, ...)")
-    use_root_joint: BoolProperty(name="Use Root Joint", default=True,
+    part_name: StringProperty(update=_shared("part_name"), name="Name", default="_p000", description="The part block's name (usually _p000, _p001, ...)")
+    use_root_joint: BoolProperty(update=_shared("use_root_joint"), name="Use Root Joint", default=True,
                                  description="The part follows its root joint for the inertia transfer (off: the cloth "
                                              "mesh's first joint)")
-    root_joint: StringProperty(name="Root Joint", description="The joint the part follows", update=_regrid)
-    friction: FloatProperty(name="Friction", default=0.0, min=0.0, soft_max=1.0, precision=4,
+    root_joint: StringProperty(name="Root Joint", description="The joint the part follows",
+                               update=_shared("root_joint", _regrid))
+    friction: FloatProperty(update=_shared("friction"), name="Friction", default=0.0, min=0.0, soft_max=1.0, precision=4,
                             description="Usually 0 to 0.5; some Onimusha files use 30 or 100. The preview uses at "
                                         "most 1")
-    bounce: FloatProperty(name="Bounce", default=0.0, min=0.0, max=1.0, precision=4)
-    stickiness: FloatProperty(name="Stickiness", default=0.0, min=0.0, max=1.0, precision=4)
-    surface_area: FloatProperty(name="Surface area", default=1.0, min=0.0, precision=4)
-    plane_bits: IntProperty(name="Collision Plane Bits", default=-1,
+    bounce: FloatProperty(update=_shared("bounce"), name="Bounce", default=0.0, min=0.0, max=1.0, precision=4)
+    stickiness: FloatProperty(update=_shared("stickiness"), name="Stickiness", default=0.0, min=0.0, max=1.0, precision=4)
+    surface_area: FloatProperty(update=_shared("surface_area"), name="Surface area", default=1.0, min=0.0, precision=4)
+    plane_bits: IntProperty(update=_shared("plane_bits"), name="Collision Plane Bits", default=-1,
                             description="Which planes the part collides with; use the button to tick them. -1 all")
-    sphere_bits: IntProperty(name="Collision Sphere Bits", default=-1,
+    sphere_bits: IntProperty(update=_shared("sphere_bits"), name="Collision Sphere Bits", default=-1,
                              description="Which spheres the part collides with; use the button to tick them. -1 all")
-    capsule_bits: IntProperty(name="Collision Capsule Bits", default=-1,
+    capsule_bits: IntProperty(update=_shared("capsule_bits"), name="Collision Capsule Bits", default=-1,
                               description="Which capsules the part collides with; use the button to tick them. -1 "
                                           "all; with any of the first bits clear the .gpuc's own capsules do not "
                                           "collide")
-    obb_bits: IntProperty(name="Collision OBB Bits", default=-1,
+    obb_bits: IntProperty(update=_shared("obb_bits"), name="Collision OBB Bits", default=-1,
                           description="Which boxes the part collides with; use the button to tick them. -1 all")
     radius_range: FloatVectorProperty(name="Radius range", size=2, default=(0.0, 0.05), min=0.0, precision=4,
                                       update=_range("radius"), description="The collision radius (m) a gpuc_radius weight of "
@@ -635,12 +794,12 @@ class REE_GPUC_Part(bpy.types.PropertyGroup):
                                                precision=3, update=_range("unkn_particle_5"),
                                                description="The value a gpuc_unkn_particle_5 weight of 0 and 1 "
                                                            "stands for. Effect unknown; usually 0.8714")
-    clsp_flags_a: IntProperty(name="CLSP Flags A", default=1032193,
+    clsp_flags_a: IntProperty(update=_shared("clsp_flags_a"), name="CLSP Flags A", default=1032193,
                               description="With CLSP Flags B, one 64-bit mask of the CLSP tag groups the part "
                                           "collides with (as a chain group's): a CLSP shape is used when its mask "
                                           "meets this one; -1 every shape. It must include the outfit's leg "
                                           "shapes. Default: ch03_100_1005's")
-    clsp_flags_b: IntProperty(name="CLSP Flags B", default=2048,
+    clsp_flags_b: IntProperty(update=_shared("clsp_flags_b"), name="CLSP Flags B", default=2048,
                               description="The high half of the CLSP tag mask (see CLSP Flags A)")
     link_preset: EnumProperty(name="Links", default="CUSTOM", update=_link_preset,
                               items=[(key, label, desc) for key, (label, desc, _) in LINK_PRESETS.items()]

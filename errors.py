@@ -139,6 +139,11 @@ TABLE = [
      "are none.",
      "Import the character's .mesh with RE Mesh Editor, with the cloth on its armature, and check that the cloth "
      "mesh is weighted to these bones."),
+    ("PartGroupsDiffer", "The Part Groups do not fit",
+     [r"Part Groups hold several Parts", r"in a Part Group of its own"],
+     "Each Part Group is one part block of the file. Update Existing writes a file's part blocks onto a cloth made "
+     "from bones only while each Group holds one Part, and RE4 writes each Part as a block of its own.",
+     "Move the Parts so each Part Group holds one (Move, in the Part panel), or import the file as a new cloth."),
     ("SkinBoneNotWritten", "A skin bone cannot be written into the file",
      [r"its skin bone .* is no bone of", r"skin bones, no room for"],
      "A Part whose particles and faces stay its file's writes its painted skin into the file, which names each "
