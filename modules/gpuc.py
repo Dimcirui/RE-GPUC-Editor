@@ -117,6 +117,9 @@ def detect(raw):
 LAYOUT_ORDER = [6, 7, 8, 9, 10, 11, 12, 13, 0, 2, 1, 3, 4, 5, 19, 20, 14, 15, 16, 17, 18, 21, 22, 23, 24, 25, 26, 27,
                 28, 29]
 LAYOUT_RANK = {s: k for k, s in enumerate(LAYOUT_ORDER)}
+# sections that follow the one before unpadded (4-aligned), even where a start happens to fall on 16: the solver
+# reads triangles (1), edges (3), link groups (4) and edge groups (5) as one packed block
+PACKED = (3, 4, 5, 19, 20)
 
 
 class Section:
@@ -162,7 +165,7 @@ class Gpuc:
         self.order = []
         for o, s in order:
             end = starts[starts.index(o) + 1] if owner[o] == s else o
-            align = 16 if o % 16 == 0 else 4
+            align = 4 if s in PACKED or o % 16 else 16
             self.sections[s] = Section(s, o, bytearray(raw[o:end]), align)
             self.order.append(s)
         self.tail = b""

@@ -56,6 +56,7 @@
 - **Preview Simulation** — hidden in Edit Mode unless it is running.
 
 ### Fixed
+- **Severe slowdown in game** — exported Wilds, RE9 and Onimusha cloth whose triangle count is not a multiple of 4 no longer stalls the GPU. **Export such a cloth again.**
 - **Skin of Parts that keep their file's structure** — such a Part now shows its skin as bone groups and follows the pose; painted weights are written into the file.
 - **Parts with a quad wound the other way** — they are found as grids and attach to their bones.
 - **Undo after bones moved** — undoing a bone move no longer leaves a Part's particles off their bones: the Part's data goes back with its mesh, and a mesh that comes back alone is made again from the data instead of being saved as particle offsets.

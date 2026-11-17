@@ -24,9 +24,7 @@ from . import gpuc
 
 NAN = struct.unpack("<f", b"\xff\xff\xff\xff")[0]
 MIN_SLOTS = 8  # particle slots per output joint, see build()
-# sections that follow the one before unpadded (4-aligned); gpuc.Gpuc reads a start on 16 as 16-aligned, so build()
-# resets them to 4 or a built file used as the next template would pad them
-PACKED = (3, 4, 5, 19, 20)
+PACKED = gpuc.PACKED
 
 
 class ClothSpec:
@@ -444,13 +442,14 @@ def build(spec, template, skin_table, capsules=None, particle_radius=None, link_
     if capsules is not None:
         new[16] = capsule_bytes(capsules)
     g = t if from_blank else gpuc.Gpuc(t.build(), t.layout)    # a blank file does not parse (nothing in it)
-    for i in PACKED:
-        if i in g.sections:
-            g.sections[i].align = 4
     if 16 in new:
         g.set_capsules(new.pop(16))
     for i, data in new.items():
-        g.sections[i].data = bytearray(_pad16(data) if g.sections[i].align == 16 else data)
+        # no padding before a packed section: section 3 follows the triangles directly, and the next 16-aligned
+        # section's start takes the padding
+        nxt = gpuc.LAYOUT_ORDER[gpuc.LAYOUT_RANK[i] + 1] if i != gpuc.LAYOUT_ORDER[-1] else None
+        pad = g.sections[i].align == 16 and nxt not in PACKED
+        g.sections[i].data = bytearray(_pad16(data) if pad else data)
     h = g.header
     at = {name: off for off, name in t.layout.counts.items()}
     struct.pack_into("<7I", h, at["particles"], P, T, L, E, nb1, nb2, 1)

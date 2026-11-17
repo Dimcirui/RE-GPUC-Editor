@@ -1227,8 +1227,6 @@ def _build_cloth(coll, head, cfg_objs, part_objs, ext, mesh_coll=None, mesh_file
     except ValueError as e:
         raise ExportError(str(e)) from e
     built = gpuc.Gpuc(out, layout)
-    for i in gpuc_build.PACKED:                               # parsing infers 16 from a start on 16; these pack at 4
-        built.sections[i].align = 4
     _write_blocks(built, head.ree_gpuc_header, cfg_objs, part_objs, vals, notes, arm, run, vertices=vertices,
                   part_blocks=[[part_objs.index(o) for o in b] for b in sorted(grouped, key=lambda b: (
                       0, min(int(o[canon.FILE_KEY]) for o in b if o in file_start)) if any(o in file_start for o in b)
